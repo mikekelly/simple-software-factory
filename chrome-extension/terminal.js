@@ -1,9 +1,12 @@
-// The pane mirror (#414): one session's agent pane, drawn as styled text
+// The terminal page: a scratch session's live terminal (term-xterm.js, #491),
+// or else the pane mirror.
+//
+// The pane mirror (#414): one item session's agent pane, drawn as styled text
 // (pane-render.js, after collie) rather than by a terminal emulator, and typed
 // into where the factory allows it: the snapshot's `pane_input` for the
-// session, passed in the page address. A scratch session always takes typing;
-// an item's only where the factory's `item_pane_input` is on (#439: its agent
-// is otherwise spoken to by commenting on the item). The factory enforces the
+// session, passed in the page address: an item's only where the factory's
+// `item_pane_input` is on (#439: its agent is otherwise spoken to by
+// commenting on the item). The factory enforces the
 // same rule on every request.
 //
 // The factory reads the pane's visible screen a few times a second while
@@ -65,24 +68,12 @@ const scroller = document.getElementById("scroller");
 const historyBox = document.getElementById("history");
 const screenBox = document.getElementById("screen");
 document.getElementById("session").textContent = session;
+// Framed in a floating window, whose title bar already names the session.
+document.getElementById("session").hidden = window.top !== window;
 document.title = `${session} · ssf`;
 
 /// Whether what is typed goes to the pane: Type is on.
 let typing = false;
-
-// Esc closes the overlay this page is framed in, whose own keys the frame keeps
-// from it -- except while Type is on, where Esc is a key the agent reads, and
-// the overlay's close button is the way out.
-if (window.parent !== window) {
-  addEventListener(
-    "keydown",
-    (event) => {
-      if (event.key !== "Escape" || typing) return;
-      window.parent.postMessage({ type: "ssf:pane-close" }, "https://github.com");
-    },
-    true,
-  );
-}
 
 function say(text, problem = false) {
   stateLine.textContent = text;
@@ -413,4 +404,29 @@ async function start() {
   }, 30000);
 }
 
-start().catch((error) => say(String(error), true));
+if (session.includes("~")) {
+  // A scratch session is a live terminal of its own (term-xterm.js, #491); an
+  // item's stays the mirror above.
+  scroller.hidden = true;
+  startTerm().catch((error) => say(String(error), true));
+} else {
+  start().catch((error) => say(String(error), true));
+}
+
+async function startTerm() {
+  const stored = (await chrome.storage.local.get("factories")).factories ?? [];
+  if (!url || !stored.some((item) => factoryUrl(item?.url) === url)) {
+    say("this terminal names no configured factory or no session", true);
+    return;
+  }
+  const { run } = await import("./term-xterm.js");
+  run({
+    url,
+    session,
+    takesInput,
+    say,
+    box: document.getElementById("xterm"),
+    reconnect: document.getElementById("reconnect"),
+    resume: document.getElementById("resume"),
+  });
+}

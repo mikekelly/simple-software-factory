@@ -120,21 +120,6 @@ impl Engine {
         e
     }
 
-    /// Where a scratch session is, for what it is told.
-    fn scratch_place<'a>(
-        repo: &'a RepoConfig,
-        session: &'a str,
-        st: &'a ScratchState,
-    ) -> prompt::ScratchPlace<'a> {
-        prompt::ScratchPlace {
-            session,
-            repo: &repo.name,
-            owner_login: st.owner_login.as_deref(),
-            branch: st.branch.as_deref(),
-            path: st.worktree_path.as_deref(),
-        }
-    }
-
     /// `ssf scratch create`: a new scratch session on `repo`, on the stack
     /// named, in a worktree of its own cut from the default branch. Shared
     /// without `owner_login`, that person's with it.
@@ -247,16 +232,18 @@ impl Engine {
     }
 
     /// Deliver `text` to a scratch session's agent, starting its harness
-    /// again (resuming its conversation when one was captured, else fresh
-    /// with `fresh` in place of `text` when given) if it is gone. The
-    /// workspace has to be there: a killed session is only brought back by
-    /// `ssf scratch resume`.
+    /// again (resuming its conversation when one was captured, else fresh)
+    /// if it is gone; `None` only starts it. A harness started here is told
+    /// nothing of the start, as a new session is not (#487): the person at
+    /// the terminal gives it its next prompt, and a delivery pastes only its
+    /// own text. The workspace has to be there: a killed session is only
+    /// brought back by `ssf scratch resume`. A caller passing `None` has
+    /// checked that the session is not running ([`Engine::scratch_live`]).
     pub(in crate::engine) async fn deliver_scratch(
         &mut self,
         repo: &RepoConfig,
         id: &str,
-        text: &str,
-        fresh: Option<&str>,
+        text: Option<&str>,
     ) -> Result<Delivery> {
         let st = self.scratch_entry(repo, id).clone();
         let session = Scratch {
@@ -293,7 +280,15 @@ once it has been"
             .and_then(|c| sessions::resume_command(&eff.harness, &inner, c))
             .map(|c| self.scratch_launch_command(repo, &session, &c, &stack, tokens));
         let relaunch = self.scratch_launch_command(repo, &session, &inner, &stack, tokens);
-        let d = if Self::in_herdr_pane(&st, &wid) && self.driver(repo).has_live_agent(&wid).await? {
+        let herdr = match text {
+            Some(text) if Self::in_herdr_pane(&st, &wid) => self
+                .driver(repo)
+                .has_live_agent(&wid)
+                .await?
+                .then_some(text),
+            _ => None,
+        };
+        let d = if let Some(text) = herdr {
             // Started in a herdr pane before #491 and still running there:
             // it is told there until it stops, and starts in tmux after.
             self.deliver_scratch_herdr(repo, id, &st, &wid, &relaunch, resume.as_deref(), text)
@@ -307,7 +302,6 @@ once it has been"
                 &relaunch,
                 resume.as_deref(),
                 text,
-                fresh,
             )
             .await?
         };
@@ -320,13 +314,16 @@ once it has been"
             info!(session, resumed = d.resumed, "scratch harness relaunched");
         }
         e.terminal_handle = Some(d.handle.clone());
-        e.last_prompt_at = Some(now_iso());
-        e.prompts_sent += 1;
+        if text.is_some() {
+            e.last_prompt_at = Some(now_iso());
+            e.prompts_sent += 1;
+        }
         Ok(d)
     }
 
     /// [`Engine::deliver_scratch`] to a session in its tmux session, which
-    /// is started (resuming the conversation when it can) if it is gone.
+    /// is started (resuming the conversation when it can, fresh otherwise)
+    /// if it is gone, with nothing pasted but `text`.
     #[allow(clippy::too_many_arguments)]
     async fn deliver_scratch_tmux(
         &self,
@@ -336,13 +333,14 @@ once it has been"
         harness: &str,
         relaunch: &str,
         resume: Option<&str>,
-        text: &str,
-        fresh: Option<&str>,
+        text: Option<&str>,
     ) -> Result<Delivery> {
         let name = crate::tmux::session_name(&repo.name, &st.id);
         let handle = crate::tmux::handle(&name);
         if self.tmux.has_session(&name).await? {
-            self.tmux.paste(&name, text).await?;
+            if let Some(text) = text {
+                self.tmux.paste(&name, text).await?;
+            }
             return Ok(Delivery {
                 handle,
                 relaunched: false,
@@ -379,11 +377,9 @@ once it has been"
                 anyhow::bail!("{session}: {harness} exited as soon as it was started in tmux");
             }
         }
-        let body = match fresh {
-            Some(full) if !resumed => full,
-            _ => text,
-        };
-        self.tmux.paste(&name, body).await?;
+        if let Some(text) = text {
+            self.tmux.paste(&name, text).await?;
+        }
         Ok(Delivery {
             handle,
             relaunched: true,
@@ -454,9 +450,8 @@ removed the workspace"
                 "{session} is already running; nothing to resume"
             )));
         }
-        let why = if alive {
-            "stopped"
-        } else {
+        let recreated = !alive;
+        if !alive {
             let repo_id = match st.repo_id.clone() {
                 Some(r) => r,
                 None => {
@@ -504,20 +499,15 @@ removed the workspace"
             self.state
                 .save()
                 .context("recording the scratch workspace")?;
-            "killed"
-        };
-        let st = self.scratch_entry(&repo, &s.id).clone();
-        let place = Self::scratch_place(&repo, &session, &st);
-        let text = prompt::scratch_restarted_prompt(&place, why);
-        let fresh = format!("{}\n\n{text}", prompt::scratch_prompt(&place));
-        let d = self
-            .deliver_scratch(&repo, &s.id, &text, Some(&fresh))
-            .await?;
+        }
+        // Started as a new session is: nothing is pasted, and the person at
+        // the terminal gives the first prompt.
+        let d = self.deliver_scratch(&repo, &s.id, None).await?;
         let st = self.scratch_entry(&repo, &s.id).clone();
         Ok(serde_json::json!({
             "session": session,
             "resumed": d.resumed,
-            "recreated": why == "killed",
+            "recreated": recreated,
             "branch": st.branch,
             "path": st.worktree_path,
         }))
@@ -756,20 +746,12 @@ removed the workspace"
                     continue;
                 }
             }
-            let place = Self::scratch_place(repo, &session, &st);
-            let text = prompt::scratch_restarted_prompt(
-                &place,
-                "interrupted by a factory restart (the machine, the multiplexer or ssf itself)",
-            );
-            let fresh = format!("{}\n\n{text}", prompt::scratch_prompt(&place));
             info!(
                 session,
                 "scratch session was interrupted; starting it again"
             );
-            if let Err(e) = self
-                .deliver_scratch(repo, &st.id, &text, Some(&fresh))
-                .await
-            {
+            // Nothing is pasted: it waits for the person at its terminal.
+            if let Err(e) = self.deliver_scratch(repo, &st.id, None).await {
                 warn!(session, "could not start the scratch session again: {e:#}");
             }
             if let Err(e) = self.state.save() {

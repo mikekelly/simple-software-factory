@@ -44,6 +44,13 @@ pub struct Session {
     /// for a scratch session, for an item's as `item_pane_input` says for
     /// its repository.
     pub pane_input: bool,
+    /// A scratch session's state, for a client to list it by: `live` (its
+    /// terminal is running), `off` (its workspace is there and its terminal
+    /// is not: the harness exited, or the factory restarted; `ssf scratch
+    /// resume` starts it again), `releasing` (killed, its workspace goes on
+    /// the next pass) or `released` (no workspace). Absent for an item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scratch_state: Option<String>,
     pub title: String,
     pub url: String,
     /// `open`, `closed`, `merged`, or `unknown` for items bound before this was recorded.
@@ -715,10 +722,24 @@ fn join_scratch(
     s.owner = id;
     s.owner_login = st.owner_login.clone();
     s.pane_input = true;
+    s.scratch_state = Some(scratch_state(st, s.agent_live).into());
     // The stack is the session's own, chosen when it was made, and not an
     // override of the repository's.
     s.overrides = None;
     s
+}
+
+/// See [`Session::scratch_state`].
+fn scratch_state(st: &ScratchState, agent_live: bool) -> &'static str {
+    if st.worktree_id.is_none() {
+        "released"
+    } else if st.release_pending {
+        "releasing"
+    } else if agent_live {
+        "live"
+    } else {
+        "off"
+    }
 }
 
 /// The driver workspace of a record: by id, else by its link to the
@@ -822,6 +843,7 @@ fn join(
         })
     });
     Session {
+        scratch_state: None,
         id: session_id(&repo.name, item.number),
         repo: repo.name.clone(),
         number: item.number,
@@ -1430,7 +1452,8 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
             json!({"id":row["id"],"repo":row["repo"],"owner_login":row["owner_login"],
                 "active":row["active"] == true,"agent_live":row["agent_live"] == true,
                 "released_at":row["released_at"],"harness":row["harness"],"model":row["model"],
-                "effort":row["effort"],"branch":row["branch"],"pane_input":row["pane_input"] == true})
+                "effort":row["effort"],"branch":row["branch"],"pane_input":row["pane_input"] == true,
+                "state":row["scratch_state"]})
         })
         .collect();
     Ok(
@@ -1487,7 +1510,7 @@ mod dashboard_tests {
     fn lists_every_scratch_session_the_killed_ones_too() {
         let snapshot = dashboard_presentation(&json!({"sessions":[
             {"id":"o/r~live","repo":"o/r","kind":"scratch","owner":"o/r~live","active":true,
-                "agent_live":true,"agent_state":"idle","harness":"claude"},
+                "agent_live":true,"agent_state":"idle","harness":"claude","scratch_state":"live"},
             {"id":"o/r~gone","repo":"o/r","kind":"scratch","owner":"o/r~gone","active":false,
                 "released_at":"2026-09-20T10:00:00Z","owner_login":"alice","harness":"codex"},
             {"id":"o/r#1","owner":"o/r#1","active":true,"agent_live":true,"agent_state":"idle"}
@@ -1497,10 +1520,56 @@ mod dashboard_tests {
         assert_eq!(scratch.len(), 2);
         assert_eq!(scratch[0]["id"], "o/r~live");
         assert_eq!(scratch[0]["agent_live"], true);
+        assert_eq!(scratch[0]["state"], "live");
         assert_eq!(scratch[1]["id"], "o/r~gone");
         assert_eq!(scratch[1]["active"], false);
         assert_eq!(scratch[1]["owner_login"], "alice");
         assert_eq!(scratch[1]["harness"], "codex");
+    }
+
+    /// A scratch session's state says what a client lists it as: running,
+    /// off (its workspace kept, its terminal gone: the harness exited or the
+    /// factory restarted), being released, or released.
+    #[test]
+    fn a_scratch_session_says_whether_it_is_live_off_or_released() {
+        let cfg: Config =
+            toml::from_str("[[repo]]\nname = \"o/r\"\nharness = \"claude\"\n").unwrap();
+        let mut state = State::default();
+        let scratch =
+            |id: &str, worktree: Option<&str>, pending: bool| crate::state::ScratchState {
+                id: id.into(),
+                worktree_id: worktree.map(str::to_string),
+                worktree_path: worktree.map(|_| "/w".to_string()),
+                release_pending: pending,
+                ..Default::default()
+            };
+        let rs = state.repo_mut("o/r");
+        for (id, worktree, pending) in [
+            ("off1", Some("local:1"), false),
+            ("kill", Some("local:2"), true),
+            ("gone", None, false),
+        ] {
+            rs.scratch.insert(id.into(), scratch(id, worktree, pending));
+        }
+        let rows = sessions(&cfg, &state, Some(&[]));
+        let of = |id: &str| {
+            rows.iter()
+                .find(|s| s.id == format!("o/r~{id}"))
+                .unwrap()
+                .scratch_state
+                .clone()
+        };
+        assert_eq!(of("off1").as_deref(), Some("off"));
+        assert_eq!(of("kill").as_deref(), Some("releasing"));
+        assert_eq!(of("gone").as_deref(), Some("released"));
+        assert!(
+            rows.iter()
+                .all(|s| s.is_scratch() == s.scratch_state.is_some())
+        );
+        let mut live = scratch("up", Some("local:3"), false);
+        assert_eq!(scratch_state(&live, true), "live");
+        live.worktree_id = None;
+        assert_eq!(scratch_state(&live, true), "released");
     }
 
     /// Each session says whether its pane takes typing, so a client need not

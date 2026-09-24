@@ -156,7 +156,7 @@ async fn a_scratch_session_is_not_told_while_it_is_being_released() {
         .get_mut("k3f9")
         .unwrap()
         .release_pending = true;
-    let err = e.deliver_scratch(&r, "k3f9", "hi", None).await.unwrap_err();
+    let err = e.deliver_scratch(&r, "k3f9", Some("hi")).await.unwrap_err();
     assert!(format!("{err:#}").contains("being released"), "{err:#}");
     assert!(d.log().is_empty(), "nothing relaunched");
 }
@@ -262,16 +262,14 @@ async fn a_scratch_session_in_tmux_is_pasted_to_and_started_again_when_gone() {
 
     // Live: the text is pasted, nothing is started.
     t.with(|s| s.live.insert(name.clone()));
-    let got = e.deliver_scratch(&r, "k3f9", "hello", None).await.unwrap();
+    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
     assert!(!got.relaunched);
     assert_eq!(t.log(), vec![format!("paste:{name}:hello")]);
 
-    // Gone: the conversation is resumed in a new session and told.
+    // Gone: the conversation is resumed in a new session, and only the
+    // delivery itself is pasted -- no word of the restart.
     t.with(|s| s.live.clear());
-    let got = e
-        .deliver_scratch(&r, "k3f9", "hello", Some("the whole story"))
-        .await
-        .unwrap();
+    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
     assert!(got.relaunched && got.resumed);
     assert_eq!(
         t.log(),
@@ -279,15 +277,13 @@ async fn a_scratch_session_in_tmux_is_pasted_to_and_started_again_when_gone() {
     );
     assert!(t.with(|s| s.launches.last().unwrap().contains("conv-1")));
 
-    // A resume that exits: a fresh harness, which gets the whole story.
+    // A resume that exits: a fresh harness, which again gets only the
+    // delivery, with no preamble.
     t.with(|s| {
         s.live.clear();
         s.resume_exits = true;
     });
-    let got = e
-        .deliver_scratch(&r, "k3f9", "hello", Some("the whole story"))
-        .await
-        .unwrap();
+    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
     assert!(got.relaunched && !got.resumed);
     assert_eq!(
         t.log(),
@@ -295,7 +291,7 @@ async fn a_scratch_session_in_tmux_is_pasted_to_and_started_again_when_gone() {
             format!("new:{name}"),
             format!("kill:{name}"),
             format!("new:{name}"),
-            format!("paste:{name}:the whole story"),
+            format!("paste:{name}:hello"),
         ]
     );
     assert!(
@@ -303,6 +299,51 @@ async fn a_scratch_session_in_tmux_is_pasted_to_and_started_again_when_gone() {
         "the driver is not asked to start anything"
     );
     assert!(scratch_state(&e, &r).agent_session_id.is_none());
+}
+
+/// A scratch session that is off (its harness exited: Ctrl+C) starts again
+/// as a new one does: the harness, resuming its conversation, and nothing
+/// pasted -- by `ssf scratch resume` and by the daemon's startup pass alike.
+#[tokio::test]
+async fn a_scratch_session_started_again_is_told_nothing() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let mut e = engine();
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let t = crate::tmux::StubTmux::default();
+    e.tmux = crate::tmux::Tmux::stub(t.clone());
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    let name = seed_tmux_scratch(&mut e, &r, &d);
+    let sent = scratch_state(&e, &r).prompts_sent;
+
+    let got = e.resume_scratch("o/r~k3f9").await.unwrap();
+    assert_eq!(got["resumed"], true);
+    assert_eq!(got["recreated"], false);
+    assert_eq!(t.log(), vec![format!("new:{name}")]);
+    assert!(t.with(|s| s.launches.last().unwrap().contains("conv-1")));
+
+    // Off again; the startup pass starts it the same way.
+    t.with(|s| s.live.clear());
+    e.resume_scratch_sessions(&r).await;
+    assert_eq!(t.log(), vec![format!("new:{name}")]);
+
+    // A resume that exits falls back to a fresh start, also silent.
+    t.with(|s| {
+        s.live.clear();
+        s.resume_exits = true;
+    });
+    e.resume_scratch("o/r~k3f9").await.unwrap();
+    assert_eq!(
+        t.log(),
+        vec![
+            format!("new:{name}"),
+            format!("kill:{name}"),
+            format!("new:{name}"),
+        ]
+    );
+    assert_eq!(scratch_state(&e, &r).prompts_sent, sent, "nothing was sent");
+    assert!(d.prompts().is_empty());
 }
 
 #[tokio::test]
@@ -369,7 +410,7 @@ async fn a_legacy_scratch_session_live_in_herdr_is_left_there() {
     e.cfg.repos = vec![r.clone()];
     seed_scratch(&mut e, &r, "/nonexistent/scratch");
     d.seed("w9", "t9", READY_SCREEN);
-    let got = e.deliver_scratch(&r, "k3f9", "hello", None).await.unwrap();
+    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
     assert!(!got.relaunched);
     assert_eq!(d.log(), vec!["deliver:w9:hello"]);
     assert!(t.log().is_empty());
@@ -378,7 +419,7 @@ async fn a_legacy_scratch_session_live_in_herdr_is_left_there() {
     d.with(|s| {
         s.live.clear();
     });
-    let got = e.deliver_scratch(&r, "k3f9", "again", None).await.unwrap();
+    let got = e.deliver_scratch(&r, "k3f9", Some("again")).await.unwrap();
     assert!(got.relaunched);
     let name = crate::tmux::session_name(&r.name, "k3f9");
     assert_eq!(t.log()[0], format!("new:{name}"));

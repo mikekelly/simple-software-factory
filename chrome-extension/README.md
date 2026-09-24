@@ -391,26 +391,56 @@ model and effort pickers and whose session it is: **Shared**, or **Mine**
 (the login GitHub's page names in `<meta name="user-login">`). That login only
 labels the session; it is not access control.
 
-Each scratch session has **Open**, **Kill** and, once killed, **Resume**. Kill
-removes the workspace. When the factory's checks find nothing to lose it goes
-at once; when they find uncommitted or unpushed work the card shows what they
-found and says that all work in the workspace will be lost, and only **Kill
-anyway** (a second request, forced) removes it.
+**New scratch** opens the new session's terminal as soon as the factory has
+started it. The list reads each session's `state` from the factory:
 
-**Open** — **Show agent** at the head of an item's Actions row (on a factory whose
-Writes switch is on) and at the end of a scratch session's first line, shows
-the session's agent pane over the GitHub page, mirrored from
-`api/pane/<session>`. The close button, a click outside the panel, or Esc
-closes it; while **Type** is on (below), Esc is a key the agent reads, so then
-it closes only from outside the terminal.
+- **Live** sessions have **Open** (the terminal icon) and a red **×** that
+  kills the session.
+- **Off** sessions still have a workspace but their harness is not running:
+  it exited (Ctrl+C in the terminal, say), or the factory restarted and has
+  not started it again yet. They have **Resume**, which starts the harness
+  again in the same workspace, resuming its conversation, and the **×**.
+- **Released** sessions (killed) are under their own **Released** tab, each
+  with **Resume**, which recreates the workspace on the session's branch.
 
+The **×** asks only when there is something to lose. When the factory's checks
+find nothing uncommitted or unpushed, the session is killed at once; when they
+find work, the card shows what they found, warns that it will be lost, and only
+**Kill anyway** (a second request, forced) removes it.
+
+**Open** — **Show agent** at the head of an item's Actions row (on a factory
+whose Writes switch is on) and the terminal icon at the end of a scratch
+session's first line — opens
+the session's terminal in a window floating over the GitHub page. The window is
+not modal: the page underneath still scrolls and takes clicks. Drag it by its
+title bar (which names the session), resize it from its bottom-right corner
+(down to 320×200 pixels), and close it with its **×**, or Esc while the title
+bar has focus; Esc in the terminal is a key the terminal reads. It is kept
+inside the browser window, and the place and size you last gave a window is
+remembered for the next one. Each session has one window: open several
+sessions and each gets its own, set a little down and right of the last; a
+click on a window brings it to the front, and Open on a session whose window is
+already open brings that window forward.
+
+A **scratch session**'s window is a live terminal: [xterm.js](https://xtermjs.org/)
+attached to the session's tmux session through the factory's `api/term/<session>`
+WebSocket (`ws://`, or `wss://` for an `https://` factory URL). It is sized to
+the window, and the tmux session follows its size; everything the terminal
+takes (keys, paste, mouse) goes straight to the session, so there is no Type
+button. On a factory whose Writes switch is off it is view-only. When the
+socket closes — the session ended (its harness exited, or it was killed), the
+factory went away, or the extension's service worker stopped — the terminal
+says so and offers **Reconnect**, and **Resume** to start a session that ended
+again. The terminal never moves on to another session: ssf's tmux sessions
+detach their terminal when they end.
+
+An **item**'s window is a mirror of the agent's pane, from `api/pane/<session>`.
 The pane is drawn as styled text rather than by a terminal emulator — the
 approach, and much of the code, of [collie](https://github.com/AltanS/collie)
 (`pane-render.js`, `pane-keys.js`; see [Credits](#credits)). The factory sends
 the pane's screen as herdr renders it, with only colour sequences in it, so
 there is nothing to emulate: the text is drawn at a fixed 13px in a monospace
-stack, rows 1.25em apart, and wraps at the panel's width, which is 90% of the
-window's width and 85% of its height. The pane itself is never resized. A row
+stack, rows 1.25em apart, and wraps at the window's width. The pane itself is never resized. A row
 that is a box's border or a rule is clipped at the right rather than wrapped,
 and a table — markdown, `+---+`, or box-drawn with crosses — keeps its columns
 and pans sideways in its own box (a trackpad, or Shift and the wheel). Block
@@ -419,15 +449,14 @@ join up.
 
 The pane's history (up to 1000 rows, as the factory sends it) sits above its
 screen in the same scroller, and the wheel scrolls back through it without
-typing into the pane; while it is open the page underneath does not scroll.
+typing into the pane.
 The view follows the live screen while it is at the bottom; scrolled back, it
 stays where it is as the agent works, and a history that changed meanwhile is
 drawn once you are back at the bottom. Text you have selected in the terminal
 is not redrawn under you until you let go of the selection.
 
-Where the snapshot says the session's pane takes typing (`pane_input`: always
-for a scratch session, for an item's only where the factory's
-`item_pane_input` is on), the terminal has a **Type** button. Typing goes to the
+Where the snapshot says an item's pane takes typing (`pane_input`: only where
+the factory's `item_pane_input` is on), the terminal has a **Type** button. Typing goes to the
 pane only while it is on: each character is a keystroke (herdr's `pane
 send-keys`, with any space, Tab and Enter by name), as are Esc, Tab, Shift+Tab,
 the arrows, Backspace, Enter and Ctrl with a letter; an input method's text is
@@ -475,8 +504,8 @@ forward, and keep tailnet ACLs restrictive.
 - The **service worker** also carries every write and the two listings the
   forms' pickers need: `api/assign`, `api/handover`, `api/release`, the
   scratch routes, `api/pane/input`, `api/agents` and `api/models/<harness>`,
-  and it reads the terminal's `api/pane/<session>` stream and passes it on a
-  port. The terminal is the extension's own page (`terminal.html`), framed over
+  and it reads the mirror's `api/pane/<session>` stream and opens a scratch
+  terminal's `api/term/<session>` WebSocket, passing each on a port. The terminal is the extension's own page (`terminal.html`), framed over
   github.com and listed in `web_accessible_resources` for github.com alone; it
   talks to no factory itself, since Chrome's local-network rules can hold a
   request from a frame under a public page to a factory on a private or
@@ -525,7 +554,7 @@ forward, and keep tailnet ACLs restrictive.
   by the agent on #N*: that card is a pointer to the same session, and its own
   card carries the actions. A comment on the item still reaches the session that
   works it.
-- The terminal draws the pane's rows at the panel's width, not the pane's, so a
+- The item mirror draws the pane's rows at the window's width, not the pane's, so a
   line longer than the panel wraps and the pane's own column layout is kept
   only where it matters: in a clipped border row and a table's own box. A table
   the pane had already wrapped at its own width cannot be put back together, and
@@ -537,3 +566,11 @@ The terminal's renderer and key mapping (`pane-render.js`, `pane-keys.js`, and
 the painted-glyph rules in `terminal.css`) are ported from
 [collie](https://github.com/AltanS/collie) by Altan Sarisin, under the MIT
 license; each file carries the notice.
+
+The scratch terminal is [xterm.js](https://github.com/xtermjs/xterm.js) with
+its fit addon, vendored unmodified in `vendor/xterm/` (a Manifest V3 extension
+may load no remote code) from the npm registry: `@xterm/xterm` 6.0.0
+(`lib/xterm.mjs`, `css/xterm.css`) and `@xterm/addon-fit` 0.11.0
+(`lib/addon-fit.mjs`), under the MIT license (`LICENSE-xterm`,
+`LICENSE-addon-fit`). To update them, `npm pack` the new versions, copy the
+same files over, and change the versions here.
