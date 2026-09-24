@@ -178,8 +178,6 @@
   background: var(--bgColor-muted, #f6f8fa);
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
   "Liberation Mono", monospace; }
-.ssf-tag[data-effort] { background: var(--bgColor-attention-muted, #fff8c5);
-  border-color: var(--borderColor-attention-emphasis, #eac54f); }
 .ssf-next { color: var(--fgColor-muted, #59636e); font-size: 11px; }
 .ssf-message { overflow-wrap: anywhere; white-space: pre-wrap; }
 .ssf-message[data-clamped="true"] { display: -webkit-box; -webkit-box-orient: vertical;
@@ -772,11 +770,12 @@
   /// that can be missing is a different fact: an OMP session never has one,
   /// since OMP keeps no transcript ssf can read (#439). The overlay's own two
   /// readings -- an item ssf monitors, one it has no record of -- have no
-  /// session to date at all, and say that instead of "no activity recorded",
+  /// session to date at all (the second includes a released item, whose record
+  /// went with its workspace), and say that instead of "no activity recorded",
   /// which read as a claim about the agent.
   function activityNote(match) {
     if (match.kind === "monitored") return "no agent, so nothing is running to date";
-    if (match.kind === "assignable") return "no record, so no session has run on this item";
+    if (match.kind === "assignable") return "no session is running on this item";
     return match.item?.activity_note ?? null;
   }
 
@@ -1171,17 +1170,15 @@
   }
 
   /// The stack as chips -- harness, model, effort -- in the monospace GitHub
-  /// uses for something a person might copy. The effort is the chip the eye is
-  /// drawn to, since it is what the session costs. A next launch on another
+  /// uses for something a person might copy. A next launch on another
   /// stack follows as muted text; Details carries it in full.
   function stackChips(item) {
     const parts = [item?.harness, item?.model, item?.effort];
     if (!parts.some(Boolean)) return null;
     const row = element("div", "ssf-stack");
-    parts.forEach((part, index) => {
+    parts.forEach((part) => {
       if (!part) return;
       const chip = element("span", "ssf-tag", String(part));
-      if (index === 2) chip.dataset.effort = "true";
       row.append(chip);
     });
     const next = item?.next_launch;
