@@ -253,12 +253,7 @@ struct ConflictPair {
 /// The child is killed when the bounded command future is dropped.
 async fn conflict_git_status(path: &str, args: &[&str]) -> Result<std::process::Output> {
     let mut command = tokio::process::Command::new("git");
-    command
-        .arg("-C")
-        .arg(path)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .kill_on_drop(true);
+    crate::release::unattended(command.arg("-C").arg(path).args(args).kill_on_drop(true));
     let out = tokio::time::timeout(CONFLICT_GIT_TIMEOUT, command.output())
         .await
         .with_context(|| format!("git {} timed out", args.join(" ")))??;

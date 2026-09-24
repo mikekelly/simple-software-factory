@@ -1259,12 +1259,14 @@ pub async fn ensure_local_checkout(
         std::fs::create_dir_all(projects_dir)
             .with_context(|| format!("creating {}", projects_dir.display()))?;
         info!(clone_url, dest = %path.display(), "cloning repository");
-        let out = tokio::process::Command::new("git")
-            .args(["clone", clone_url])
-            .arg(&path)
-            .output()
-            .await
-            .context("running git clone")?;
+        let out = crate::release::unattended(
+            tokio::process::Command::new("git")
+                .args(["clone", clone_url])
+                .arg(&path),
+        )
+        .output()
+        .await
+        .context("running git clone")?;
         if !out.status.success() {
             bail!(
                 "git clone {clone_url} failed: {}",

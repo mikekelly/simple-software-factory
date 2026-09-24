@@ -9,6 +9,11 @@ pub(super) fn engine() -> Engine {
     cfg.daemon.allowed_users = Some(vec!["*".into()]);
     cfg.daemon.accepted_anyone_risk = true;
     cfg.driver = Some(DriverKind::Herdr);
+    // Onboarding clones under the projects directory when the checkout is
+    // missing. The machine's own `~/ssf/projects` is a real directory the
+    // factory uses, so a test may not write there (#140): a temporary
+    // directory of the test process instead.
+    cfg.herdr.projects_dir = temp_projects_dir();
     Engine {
         cfg,
         gh: GitHub::new("https://api.github.invalid", "t").unwrap(),
@@ -51,8 +56,23 @@ pub(super) fn repo() -> RepoConfig {
     RepoConfig {
         name: "o/r".into(),
         harness: "claude".into(),
+        // Onboarding clones `clone_url` when the checkout is missing, and
+        // the tests that reach it want the clone to fail: `o/r` is not a
+        // repository, and reaching github.com for it left the suite waiting
+        // on a credential prompt in `makepkg`'s terminal (#495). A path
+        // that is not a repository fails here, at once, without a network.
+        clone_url: Some("/nonexistent/ssf-test-origin.git".into()),
         ..Default::default()
     }
+}
+
+/// A projects directory under the temporary directory of this test process,
+/// for the config a test is handed. See [`engine`].
+fn temp_projects_dir() -> String {
+    std::env::temp_dir()
+        .join(format!("ssf-test-projects-{}", std::process::id()))
+        .to_string_lossy()
+        .into_owned()
 }
 
 // A real checkout with one branch that conflicts with a moved `main`,
