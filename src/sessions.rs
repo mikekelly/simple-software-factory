@@ -436,7 +436,7 @@ mod tests {
         )
         .unwrap();
         let path = codex_rollout(sandbox.root(), "t-1").unwrap();
-        assert_eq!(codex_context_of(&path).as_deref(), Some("12% of 258400"));
+        assert_eq!(codex_context_of(&path).as_deref(), Some("12% of 258k"));
         assert!(codex_rollout(sandbox.root(), "t-2").is_none());
         std::fs::write(day.join("rollout-x-t-2.jsonl"), count(50_000, 200_000)).unwrap();
         let path = codex_rollout(sandbox.root(), "t-2").unwrap();
