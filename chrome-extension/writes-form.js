@@ -8,7 +8,7 @@
 //
 //   ssfWrites.onChange(scheduleRender);
 //   const node = ssfWrites.render({ factories, repo, number });          // No agent
-//   const node = ssfWrites.renderActions({ factories, repo, number, item }); // an agent
+//   const node = ssfWrites.renderActions({ factories, repo, number, item, open }); // an agent
 //   const node = ssfWrites.renderScratch({ factories, repo, login, sessions }); // a repository
 //   ssfWrites.applySnapshot(payload);
 //
@@ -18,7 +18,8 @@
 // with addEventListener: the page keeps a mounted node and copies a new
 // frame's handlers onto it, so a reused button does what the new one does.
 // `renderActions` is the Actions row, for an item whose state is Working,
-// Waiting on you, Done or Problem: Hand over… (the assign pickers, prefilled
+// Waiting on you, Done or Problem: `open` (content.js's Show agent) and a •••
+// menu holding Hand over… (the assign pickers, prefilled
 // with the stack the card is on, plus a note) and Release (a confirm step naming
 // the branch). It is drawn once per factory that has an agent on the item --
 // `factories` is that one factory -- so two factories working one item are two
@@ -107,6 +108,30 @@
 /* A scratch row's first line, with Open at its end. */
 .ssf-writes-title { display: flex; align-items: center; gap: 6px; }
 .ssf-writes a { color: var(--fgColor-accent, #0969da); }
+/* The Actions row: Show agent, then everything else behind the ••• menu. */
+.ssf-writes-row { display: flex; gap: 6px; }
+.ssf-writes.ssf-writes-bare { padding-top: 0; border-top: 0; }
+.ssf-writes-menu { position: relative; display: flex; margin-left: auto; }
+.ssf-writes-menu > summary { display: flex; align-items: center; list-style: none; padding: 3px 8px; line-height: 1;
+  font-size: 14px; color: var(--fgColor-muted, #59636e);
+  background: var(--bgColor-muted, #f6f8fa);
+  border: 1px solid var(--borderColor-default, #d1d9e0); border-radius: 6px;
+  cursor: pointer; }
+.ssf-writes-menu > summary::-webkit-details-marker { display: none; }
+.ssf-writes-menu-list { position: absolute; right: 0; top: calc(100% + 4px);
+  z-index: 2; width: 160px; display: flex; flex-direction: column;
+  padding: 8px 0; border-radius: 12px;
+  border: 1px solid var(--borderColor-default, #d1d9e0);
+  background: var(--overlay-bgColor, var(--bgColor-default, #ffffff));
+  box-shadow: 0 8px 24px rgba(140, 149, 159, 0.2); }
+.ssf-writes .ssf-writes-menu-list button { text-align: left; font-size: 13px;
+  padding: 6px 16px; border: 0; border-radius: 0; background: none; }
+.ssf-writes .ssf-writes-menu-list button:hover:not(:disabled) {
+  background: var(--bgColor-muted, #f6f8fa); }
+.ssf-writes .ssf-writes-menu-list button.danger:hover:not(:disabled) {
+  background: var(--bgColor-danger-muted, #ffebe9); }
+.ssf-writes-menu-list hr { width: 100%; height: 1px; margin: 6px 0; border: 0;
+  background: var(--borderColor-muted, #d1d9e0); }
 `;
 
   /// Renders again once a listing has arrived; content.js sets this to its own
@@ -573,8 +598,9 @@
     });
   }
 
-  /// The Actions row for an item that has an agent: Hand over… and Release,
-  /// with whichever step is open below them, and what the factory answered the
+  /// The Actions row for an item that has an agent: `open` -- Show agent, the
+  /// node content.js draws -- and a ••• menu of Hand over… and Release, or
+  /// whichever step is open in their place, and what the factory answered the
   /// last one with. `state.item` is the card's own item object, which is what
   /// the pickers are prefilled from and the confirm names.
   ///
@@ -582,9 +608,11 @@
   /// the exchange is part of the item's record and belongs to everyone working
   /// it; a text box on a card would make the overlay a second conversation
   /// nobody else can read (#439).
-  function actions(state) {
+  function actions(state, open) {
     const body = element("div", "ssf-writes");
-    body.append(element("div", "ssf-writes-head", "Actions", "head"));
+    // The row sits straight under the card's facts, as its own promoted
+    // buttons; a step open in its place keeps the rule that sets it apart.
+    if (!state.open) body.classList.add("ssf-writes-bare");
     const picker = factoryPicker(state);
     if (picker) body.append(picker);
     if (state.actionResult) {
@@ -605,19 +633,37 @@
       body.append(releaseConfirm(state));
     } else {
       if (state.error) body.append(element("p", "ssf-writes-error", state.error, "error"));
-      const actions = element("div", "ssf-writes-actions", undefined, "actions");
+      // Show agent leads; Hand over… and Release sit behind the ••• menu,
+      // whose open state lives here so a repaint does not shut it.
+      const row = element("div", "ssf-writes-row", undefined, "actions");
+      if (open) row.append(open);
+      const menu = element("details", "ssf-writes-menu", undefined, "menu");
+      menu.open = Boolean(state.menu);
+      menu.addEventListener("toggle", () => {
+        state.menu = menu.open;
+      });
+      const more = element("summary", undefined, "\u2022\u2022\u2022");
+      more.title = "Additional options";
+      more.setAttribute("aria-label", "Additional options");
+      const list = element("div", "ssf-writes-menu-list");
       const hand = element("button", undefined, "Hand over\u2026");
       hand.type = "button";
-      hand.onclick = () => openHandover(state);
+      hand.onclick = () => {
+        state.menu = false;
+        openHandover(state);
+      };
       const release = element("button", "danger", "Release");
       release.type = "button";
       release.onclick = () => {
+        state.menu = false;
         state.open = "release";
         state.error = null;
         redraw();
       };
-      actions.append(hand, release);
-      body.append(actions);
+      list.append(hand, element("hr"), release);
+      menu.append(more, list);
+      row.append(menu);
+      body.append(row);
       // Where a message to this agent goes, said once, now that the box that
       // used to be here is gone: the row is the only place a person meets the
       // question.
@@ -1094,17 +1140,22 @@
   /// that has the agent -- so the row needs no Factory picker and its state is
   /// its own, keyed by that factory: a second factory's row on the same item is
   /// a second session to act on, not the same one under another name.
-  function renderActions({ factories, repo, number, item }) {
+  function renderActions({ factories, repo, number, item, open }) {
     const choices = contenders(factories);
     if (!choices.length) return null;
     const state = remember(`${repo}#${number}`, "actions", choices[0].url);
     state.item = item ?? null;
     chooseFactory(state, choices, choices[0].url);
-    if (state.agentsError) return agentsRefused(state, "Actions");
+    if (state.agentsError) {
+      // Show agent still works without the listing the menu's steps need.
+      const refused = agentsRefused(state, "Actions");
+      if (open) refused.prepend(open);
+      return refused;
+    }
     loadAgents(state);
     // The pickers are only drawn once a step is open, so the listing they need
     // is asked for when it opens rather than on every frame.
-    return actions(state);
+    return actions(state, open);
   }
 
   /// A repository's scratch sessions on one factory, or `null` when that
