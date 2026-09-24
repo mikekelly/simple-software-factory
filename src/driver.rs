@@ -580,7 +580,10 @@ impl Driver {
         match self {
             Driver::Herdr(d) => {
                 let handle = d.launch(worktree_id, command, title, harness).await?;
-                d.send_first_prompt(&handle, text).await?;
+                // An empty first prompt leaves the harness at its composer.
+                if !text.is_empty() {
+                    d.send_first_prompt(&handle, text).await?;
+                }
                 Ok(handle)
             }
             #[cfg(test)]

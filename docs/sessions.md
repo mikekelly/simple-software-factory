@@ -581,7 +581,9 @@ yet. `ssf scratch create owner/repo --harness ID [--model M] [--effort E]
 generated characters; nobody names it). Without `--for` it is shared; with
 it, it is that person's, and `ssf status --json` reports the login as
 `owner_login` (null when shared) on a row of `kind` `scratch`. A repository
-can have any number of them.
+can have any number of them. Its harness starts at an empty composer: ssf
+sends no first message, and the person at the terminal gives the first
+prompt.
 
 Each has its own worktree on branch `scratch/<id>`, cut from the default
 branch. Inside it `SSF_SESSION` names the session and `SSF_ISSUE` is unset;
