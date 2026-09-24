@@ -226,6 +226,7 @@ server's own browser page and its CSS and JavaScript.
 | `GET /<capability>/api/models/<harness>` | what `ssf models <harness> --json` prints |
 | `GET /<capability>/api/pane/<session>` | a server-sent events mirror of a session's agent pane (below) |
 | `GET /<capability>/api/term/<session>` | a WebSocket terminal attached to a scratch session's tmux session ([Terminal](#terminal)) |
+| `GET /<capability>/chrome-extension.zip` | this build's [Chrome extension](#chrome-extension) as a zip download (`ssf-chrome-extension.zip`), which the browser page links to |
 
 `api/events` sends the current snapshot immediately as an `event: status` frame
 whose `data` is the JSON `api/status` returns, then another `status` frame for
@@ -469,7 +470,10 @@ on a session from a browser is visible in the server's journal.
 The optional [Chrome extension](../chrome-extension/README.md) is the client
 these endpoints are for: it overlays session state on github.com instead of in
 a browser tab, and offers assign, hand-over and release through the
-write routes. Its own guide covers installation, the states it draws and the
+write routes. The factory carries the extension that matches it: download it
+from the browser page's **Download Chrome extension** link, or write it with
+`ssf chrome-extension [--output PATH] [--force]`, then unzip it and load the
+unzipped directory unpacked. Its own guide covers installation, the states it draws and the
 options page.
 
 On a pull request page the extension shows the factory's own card for the pull

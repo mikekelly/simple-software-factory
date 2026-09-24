@@ -37,8 +37,15 @@ in the [dashboard guide](../docs/dashboard.md).
    this behaviour — that upgrade mints the first stored secret, so a URL saved
    before it must be re-entered.
 
-3. Load the extension: open `chrome://extensions`, turn on **Developer mode**,
-   choose **Load unpacked**, and select this `chrome-extension/` directory.
+3. Get the extension and load it. The `ssf` binary carries the extension that
+   matches it: run `ssf chrome-extension` (it writes
+   `./ssf-chrome-extension.zip`; `--output PATH` writes elsewhere, and
+   `--force` replaces an existing file), or open the capability URL in a
+   browser and use its **Download Chrome extension** link. Unzip it, open
+   `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked**,
+   and select the unzipped directory (the one holding `manifest.json`). From a
+   repository checkout you can instead select this `chrome-extension/`
+   directory directly.
 
 4. Open the extension's options page (the toolbar icon, or **Details → Extension
    options**) and add one entry per factory: press **Add a factory**, give it a

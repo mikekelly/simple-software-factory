@@ -47,6 +47,7 @@ body {
 h1 { margin: 0; font-size: clamp(2rem, 5vw, 3.6rem); letter-spacing: -.055em; }
 
 .refresh-block { display: flex; align-items: center; gap: .8rem; color: var(--muted); font-size: .82rem; }
+.refresh-block .download { color: inherit; }
 
 button {
   border: 1px solid var(--line);
