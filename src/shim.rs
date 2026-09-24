@@ -164,7 +164,14 @@ pub fn run() -> ! {
     let utf8: Option<Vec<String>> = raw.iter().map(|a| a.to_str().map(str::to_string)).collect();
     let bot = session.var("SSF_BOT");
     let gh_repo = session.var("GH_REPO");
-    let stack = session.stack();
+    // The byline names how full the session's context is where its
+    // harness can tell.
+    let stack = session.stack().map(|mut stack| {
+        stack.context = crate::harness::harness(&stack.harness)
+            .and_then(|h| h.context)
+            .and_then(|context| context());
+        stack
+    });
     match (utf8, session.origin()) {
         (Some(args), Some(origin)) => {
             let shim = Shim {

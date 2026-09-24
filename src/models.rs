@@ -350,6 +350,35 @@ pub(crate) fn claude_refresh() {
     start_refresh("claude", &["--print"]);
 }
 
+/// The context window of Claude model `id` in tokens, where ssf knows it:
+/// the catalogue Claude Code caches does not say. A `[1m]` suffix asks for
+/// the 1M window; the Claude 5 family has it by default, Haiku 4.5 200k.
+pub(crate) fn claude_context_window(id: &str) -> Option<u64> {
+    let id = id.strip_prefix("anthropic/").unwrap_or(id);
+    if id.ends_with("[1m]") {
+        return Some(1_000_000);
+    }
+    let five = ["claude-opus-5", "claude-sonnet-5", "claude-fable-5"];
+    if five.iter().any(|f| id.starts_with(f)) {
+        Some(1_000_000)
+    } else if id.starts_with("claude-haiku-4-5") {
+        Some(200_000)
+    } else {
+        None
+    }
+}
+
+/// A token count as a byline spells it: `1M`, `200k`, or the bare count.
+pub(crate) fn token_size(tokens: u64) -> String {
+    if tokens >= 1_000_000 && tokens.is_multiple_of(1_000_000) {
+        format!("{}M", tokens / 1_000_000)
+    } else if tokens >= 1_000 && tokens.is_multiple_of(1_000) {
+        format!("{}k", tokens / 1_000)
+    } else {
+        tokens.to_string()
+    }
+}
+
 /// Claude Code caches the model catalogue it fetched under
 /// `cache/model-catalog/`, one file per account or configuration. The newest
 /// file that lists models answers: a file that is part-way through being
