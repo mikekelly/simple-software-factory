@@ -7,22 +7,41 @@
 //! on its branch. Anything
 //! git cannot answer (a detached head, an unreachable origin, a missing
 //! directory) counts as unknown, which is unsafe.
+//!
+//! It also holds the way ssf runs git itself: [`git`], and [`unattended`],
+//! which every git ssf spawns goes through so a credential prompt can never
+//! wait on a person who is not there (#495).
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+/// Set up a git command nobody is watching: credentials come from the
+/// configured helper, or the command fails. Git prompts on `/dev/tty`
+/// wherever it has one, so without this the command waits on a terminal that
+/// belongs to whoever started it — the daemon's own terminal, or, for the
+/// tests, the terminal `makepkg` ran in, where the builder's arrow keys were
+/// read as a username (#495). `ssf` runs git unattended: there is never
+/// someone to answer. Configuration that answers without asking — a
+/// credential helper, a stored key — still works; only the prompt is
+/// refused (`GCM_INTERACTIVE=never` is for Git Credential Manager, which
+/// prompts through a UI of its own rather than the terminal).
+pub fn unattended(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+}
+
 /// Run git in `path` and return its trimmed stdout.
 pub async fn git(path: &str, args: &[&str]) -> Result<String> {
-    let out = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(args)
-        // Never wait on a terminal for credentials (`ssf doctor` has one):
-        // a fetch that needs them fails and is reported instead.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .await
-        .context("running git")?;
+    let out = unattended(
+        tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args),
+    )
+    .output()
+    .await
+    .context("running git")?;
     if !out.status.success() {
         anyhow::bail!(
             "git {} failed: {}",
@@ -458,6 +477,22 @@ pub(crate) mod testkit {
 mod tests {
     use super::testkit::*;
     use super::*;
+
+    /// The daemon has no terminal of its own to answer a prompt on, and the
+    /// terminal it might reach belongs to whoever started it: a credential
+    /// prompt there hangs the command, and under `makepkg` it read the
+    /// builder's arrow keys as a username (#495).
+    #[tokio::test]
+    async fn git_ssf_runs_is_never_allowed_to_prompt() {
+        let out = unattended(tokio::process::Command::new("sh").args([
+            "-c",
+            r#"printf '%s %s' "$GIT_TERMINAL_PROMPT" "$GCM_INTERACTIVE""#,
+        ]))
+        .output()
+        .await
+        .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "0 never");
+    }
 
     /// A worktree of the scratch checkout under `work.worktrees/<name>`,
     /// on branch `bot/<name>` from `main`.
