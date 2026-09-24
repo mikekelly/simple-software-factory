@@ -20,16 +20,21 @@
 //
 // Collie maps no Ctrl chords from the keyboard (its phones have none); this
 // adds Ctrl with a letter, and Shift+Tab, for a desktop keyboard. The paste
-// framing (pasteChunks) is ssf's own, not collie's.
+// framing (pasteBody) is ssf's own, not collie's.
 
 /// Typed text as keys: each character literal and case-kept, whitespace by
-/// name. A line break the person typed is Enter; none is ever added.
+/// name. A line break the person typed is Enter; none is ever added. Any other
+/// whitespace (a no-break or ideographic space) is Space, and a control
+/// character is dropped: `api/pane/input` takes neither as a literal key (its
+/// `is_key` refuses Rust's whitespace and control characters, the Unicode
+/// White_Space and Cc sets), and a refused write turns typing off.
 export function textToKeys(text) {
-  return Array.from(text.replace(/\r\n?/g, "\n"), (char) => {
-    if (char === " ") return "Space";
-    if (char === "\t") return "Tab";
-    if (char === "\n") return "Enter";
-    return char;
+  return Array.from(text.replace(/\r\n?/g, "\n")).flatMap((char) => {
+    if (char === "\t") return ["Tab"];
+    if (char === "\n") return ["Enter"];
+    if (/\p{White_Space}/u.test(char)) return ["Space"];
+    if (/\p{Cc}/u.test(char)) return [];
+    return [char];
   });
 }
 
@@ -68,20 +73,25 @@ export function keyForInputType(inputType) {
   return null;
 }
 
-/// A paste, as the text writes that send it (`api/pane/input`'s `text`, herdr
-/// `pane send-text`): one bracketed paste, so an agent reads it as a paste
-/// rather than as typing, with each line break a CR as a terminal sends it.
-/// Other control characters are dropped: an ESC in pasted text could end the
-/// bracket early and type the rest as keys. The body of a write is bounded, so
-/// the paste goes in pieces of at most `size` characters and a marker each.
-export function pasteChunks(text, size) {
-  const body = Array.from(
-    text.replace(/\r\n?|\n/g, "\r").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, ""),
-  );
-  if (body.length === 0) return [];
-  const chunks = [];
-  for (let at = 0; at < body.length; at += size) chunks.push(body.slice(at, at + size).join(""));
-  chunks[0] = `\x1b[200~${chunks[0]}`;
-  chunks[chunks.length - 1] += "\x1b[201~";
-  return chunks;
+/// A paste, as the one `api/pane/input` write that sends it (`text`, herdr
+/// `pane send-text`), or null for an empty one: one bracketed paste, so an
+/// agent reads it as a paste rather than as typing, with each line break a CR
+/// as a terminal sends it. Other control characters are dropped: an ESC in
+/// pasted text could end the bracket early and type the rest as keys. It is
+/// never split across writes: typing that stops between pieces would leave the
+/// agent inside an unclosed bracketed paste.
+export function pasteBody(session, text) {
+  const body = text.replace(/\r\n?|\n/g, "\r").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  if (body === "") return null;
+  return { session, text: `\x1b[200~${body}\x1b[201~` };
+}
+
+/// The most bytes of a write's body the factory reads (`MAX_BODY` in
+/// src/dashboard_web.rs); it answers a longer one 413.
+const MAX_WRITE = 4096;
+
+/// Whether a write's body, as the service worker sends it (JSON, UTF-8), is
+/// one the factory reads.
+export function fitsWrite(body) {
+  return new TextEncoder().encode(JSON.stringify(body)).length <= MAX_WRITE;
 }

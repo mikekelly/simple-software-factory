@@ -30,11 +30,10 @@
 // sends what is typed.
 import { factoryUrl } from "./factory-url.js";
 import { render } from "./pane-render.js";
-import { keyForInputType, keyForKeyDown, pasteChunks, textToKeys } from "./pane-keys.js";
+import { fitsWrite, keyForInputType, keyForKeyDown, pasteBody, textToKeys } from "./pane-keys.js";
 
-/// The body bound of a write is 4096 bytes: a paste goes in pieces of this
-/// many characters, and typed keys in batches of at most this many keys.
-const CHUNK = 500;
+/// The body bound of a write is 4096 bytes: typed keys go in batches of at
+/// most this many keys. A paste is one write, or none (pasteBody).
 const MAX_KEYS = 200;
 
 /// Failures in a row, with no frame between them, before the page stops
@@ -390,8 +389,12 @@ async function start() {
     event.preventDefault();
     if (!typing) return;
     lastActivity = Date.now();
-    const text = event.clipboardData?.getData("text/plain") ?? "";
-    for (const chunk of pasteChunks(text, CHUNK)) queue.push({ text: chunk });
+    const body = pasteBody(session, event.clipboardData?.getData("text/plain") ?? "");
+    if (!body) return;
+    // A paste too long for one write is not sent in part: said, and typing
+    // turned off, so the person sees it did not go.
+    if (!fitsWrite(body)) return stopTyping("the paste is longer than the factory takes in one write");
+    queue.push({ text: body.text });
     flush();
   });
   // A click in the terminal gives typing its field back, unless it was to

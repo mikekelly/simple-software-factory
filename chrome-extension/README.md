@@ -419,12 +419,14 @@ Where the snapshot says the session's pane takes typing (`pane_input`: always
 for a scratch session, for an item's only where the factory's
 `item_pane_input` is on), the terminal has a **Type** button. Typing goes to the
 pane only while it is on: each character is a keystroke (herdr's `pane
-send-keys`, with Space, Tab and Enter by name), as are Esc, Tab, Shift+Tab, the
-arrows, Backspace, Enter and Ctrl with a letter; an input method's text is sent
-once it is committed; and a paste goes as one bracketed paste, its control
-characters dropped. It turns itself off when the tab is hidden, the stream
-stops, the factory refuses a keystroke, or after half an hour with nothing done
-in the terminal, and says so on its status line. What is typed goes through the
+send-keys`, with any space, Tab and Enter by name), as are Esc, Tab, Shift+Tab,
+the arrows, Backspace, Enter and Ctrl with a letter; an input method's text is
+sent once it is committed; and a paste goes as one bracketed paste in one write,
+its control characters dropped. A paste longer than one write takes (the
+factory reads 4096 bytes of a request, so about 4,000 plain characters) is not
+sent at all. Typing turns itself off when the tab is hidden, the stream stops,
+the factory refuses a keystroke or a paste is too long, or after half an hour
+with nothing done in the terminal, and says so on its status line. What is typed goes through the
 service worker to `api/pane/input`; typing is a write, so a factory whose Writes
 switch is off shows the pane read-only. Otherwise the terminal is view-only:
 speak to an item's agent by commenting on the item.
