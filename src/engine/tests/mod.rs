@@ -593,9 +593,11 @@ fn engine_at(api_url: &str) -> Engine {
     e
 }
 
-// Every hit is one of the four listings: nothing was fetched by number.
+// Every hit is one of the four listings: nothing was fetched by number. The
+// repository's linked-projects read (#499) is not about any item.
 fn assert_listings_only(hits: &[String]) {
-    let fetched: Vec<&String> = hits
+    let hits: Vec<&String> = hits.iter().filter(|h| *h != "/graphql").collect();
+    let fetched: Vec<&&String> = hits
         .iter()
         .filter(|h| {
             let path = h.split('?').next().unwrap_or("");

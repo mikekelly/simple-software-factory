@@ -345,6 +345,12 @@ yet. This list is what lets a client tell such an item, which can take a
 session, from one the factory has never heard of, which is refused. A server
 that does not publish it sends an empty list.
 
+`dashboard.repository_projects` maps each watched repository (`owner/name`)
+to the URLs of the Projects v2 linked to it, which the daemon reads from
+GitHub at most every ten minutes (a failed read keeps the last list).
+Repositories with no linked projects are left out, and a server that does not
+publish it sends nothing: a client reads a missing field as no projects.
+
 `dashboard.scratch` lists the factory's scratch sessions (`ssf scratch`),
 released ones included so a client can offer to resume them: each has `id`
 (`owner/name~id`), `repo`, `owner_login` (`null` for a shared session),

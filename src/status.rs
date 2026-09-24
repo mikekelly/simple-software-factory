@@ -507,6 +507,7 @@ impl Snapshot {
                     "allowed_users": self.cfg.access_summary(r),
                     "anyone_allowed": self.cfg.anyone_allowed(r),
                     "issues": issues,
+                    "projects": self.state.repos.get(&r.name).map(|rs| rs.projects.clone()).unwrap_or_default(),
                 })
             })
             .collect();
@@ -1303,6 +1304,23 @@ fn watched_repositories(payload: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The Projects v2 linked to each watched repository, `owner/name` to
+/// project URLs, so a client on a project page can tell which repositories
+/// it covers (#499). Repositories with none, and payloads from servers that
+/// do not publish them, are left out.
+fn repository_projects(payload: &Value) -> serde_json::Map<String, Value> {
+    payload["repos"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|repo| {
+            let name = text(repo, "name");
+            let projects = repo["projects"].as_array().filter(|p| !p.is_empty())?;
+            (!name.is_empty()).then(|| (name.to_owned(), Value::Array(projects.clone())))
+        })
+        .collect()
+}
+
 pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
     let rows = payload["sessions"]
         .as_array()
@@ -1457,7 +1475,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
         })
         .collect();
     Ok(
-        json!({"cards":cards,"monitored_items":unattached,"scratch":scratch,"repositories":watched_repositories(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
+        json!({"cards":cards,"monitored_items":unattached,"scratch":scratch,"repositories":watched_repositories(payload),"repository_projects":repository_projects(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
     )
 }
 
@@ -1817,6 +1835,23 @@ mod dashboard_tests {
         // empty rather than absent, so a client reads one shape.
         let older = dashboard_presentation(&json!({"sessions":[]})).unwrap();
         assert_eq!(older["repositories"], json!([]));
+        assert_eq!(older["repository_projects"], json!({}));
+    }
+
+    /// Each watched repository's linked projects reach the model, so a client
+    /// on a project page can serve the repositories it covers (#499).
+    #[test]
+    fn the_model_names_each_repositorys_projects() {
+        let snapshot = dashboard_presentation(&json!({
+            "sessions":[],
+            "repos":[{"name":"o/r","projects":["https://github.com/users/o/projects/5"]},
+                {"name":"o/other","projects":[]},{"name":"o/old"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            snapshot["repository_projects"],
+            json!({"o/r":["https://github.com/users/o/projects/5"]})
+        );
     }
 }
 

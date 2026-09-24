@@ -9,7 +9,7 @@
 //   ssfWrites.onChange(scheduleRender);
 //   const node = ssfWrites.render({ factories, repo, number });          // No agent
 //   const node = ssfWrites.renderActions({ factories, repo, number, item, open }); // an agent
-//   const node = ssfWrites.renderScratch({ factories, repo, login, sessions }); // a repository
+//   const node = ssfWrites.renderScratch({ factories, repos, login, sessions }); // repositories
 //   ssfWrites.applySnapshot(payload);
 //
 // `render` is the Assign agent form, for an item with no agent; one form per
@@ -26,9 +26,11 @@
 // rows, each writing through its own factory, with its own state. `item` is the
 // card's item object, which is what the pickers are prefilled from.
 //
-// `renderScratch` is a repository page's scratch sessions (#414): each with
-// Open (pane-overlay.js), Kill or Resume, and New scratch, the assign pickers
-// plus whose it is.
+// `renderScratch` is the scratch sessions (#414) of the repositories a page
+// serves -- a repository's, or every watched repository linked to a project
+// (#499): each with Open (pane-overlay.js), Kill or Resume, and New scratch,
+// the assign pickers plus whose it is, and which repository when there are
+// several.
 // A kill the factory's checks refuse is asked again, once, naming what will be
 // lost; a clean workspace goes on the first click.
 //
@@ -151,9 +153,11 @@
 .ssf-writes button.ssf-writes-kill:hover:not(:disabled) {
   background: var(--bgColor-danger-muted, #ffebe9);
   border-color: var(--borderColor-danger-muted, #ffcecb); }
-/* Open and Kill share the end of the line. */
+/* Open leads the line; Kill ends it. A live row opens its terminal. */
 .ssf-writes-title .ssf-writes-kill { margin-left: auto; }
-.ssf-writes-title .ssf-pane-open + .ssf-writes-kill { margin-left: 0; }
+.ssf-writes-title .ssf-pane-open { margin-left: 0; }
+.ssf-scratch-open { cursor: pointer; border-radius: 6px; }
+.ssf-scratch-open:hover { background: var(--bgColor-muted, #f6f8fa); }
 /* New scratch: the card's Show agent, as its one neutral full-width button. */
 .ssf-writes button.ssf-writes-new { flex: 1 1 auto; font-weight: 500;
   background: var(--bgColor-muted, #f6f8fa); }
@@ -933,7 +937,8 @@
     }
     const shown = state.tab === "released" ? released : current;
     if (!shown.length) {
-      body.append(element("p", "ssf-writes-note", "No scratch sessions on this repository.", "none"));
+      const where = state.repos?.length > 1 ? "these repositories" : "this repository";
+      body.append(element("p", "ssf-writes-note", `No scratch sessions on ${where}.`, "none"));
     }
     for (const one of shown) body.append(scratchRow(state, one));
     if (state.rowNote) body.append(element("p", "ssf-writes-note", state.rowNote.text, "result"));
@@ -970,15 +975,25 @@
     const phase = scratchPhase(one);
     const pill = element("span", "ssf-scratch-phase", one.stateLabel || phase);
     pill.dataset.ssfBand = PHASE_BAND[phase];
-    title.append(
-      element("span", "ssf-scratch-id", short),
-      element("span", "ssf-scratch-whose", whose),
-      pill,
-    );
     const busy = state.rowBusy === id;
-    // Open while its terminal runs; off, Resume starts it first.
+    // Open while its terminal runs, as the row's leading icon; off, Resume
+    // starts it first.
     const open = phase === "live" && globalThis.ssfPane?.button(state.url, id, one.pane_input === true);
-    if (open) title.append(open);
+    if (open) {
+      title.append(open);
+      // The whole row opens the terminal; its own buttons (×) keep theirs.
+      row.classList.add("ssf-scratch-open");
+      row.onclick = (event) => {
+        if (event.target.closest?.("button, a, select, input, summary")) return;
+        open.click();
+      };
+    }
+    title.append(element("span", "ssf-scratch-id", short));
+    // Which repository, when the list spans several.
+    if (state.repos?.length > 1 && one.repo) {
+      title.append(element("span", "ssf-scratch-whose", String(one.repo)));
+    }
+    title.append(element("span", "ssf-scratch-whose", whose), pill);
     if (phase === "live" || phase === "off") {
       const kill = element("button", "ssf-writes-kill", "\u00d7", "kill");
       kill.type = "button";
@@ -995,7 +1010,6 @@
     [one.harness, one.model, one.effort].forEach((part, index) => {
       if (!part) return;
       const chip = element("span", "ssf-tag", String(part));
-      if (index === 2) chip.dataset.effort = "true";
       chips.append(chip);
     });
     if (chips.childElementCount) row.append(chips);
@@ -1046,6 +1060,18 @@
     const owners = [{ value: "shared", text: "Shared" }];
     if (state.login) owners.push({ value: "mine", text: `Mine (@${state.login})` });
     if (state.whose === "mine" && !state.login) state.whose = "shared";
+    if (state.repos?.length > 1) {
+      body.append(
+        select(
+          "Repository",
+          state.repos.map((value) => ({ value, text: value })),
+          state.repo,
+          (value) => {
+            state.repo = value;
+          },
+        ),
+      );
+    }
     body.append(
       select("Harness", harnesses, state.harness, (value) => {
         state.harness = value;
@@ -1254,14 +1280,20 @@
     return actions(state, open);
   }
 
-  /// A repository's scratch sessions on one factory, or `null` when that
-  /// factory does not accept writes. `sessions` are the factory's scratch
-  /// rows for the repository, each with the `stateLabel` the page drew for it;
-  /// `login` is the signed-in GitHub user, which is what `mine` means.
-  function renderScratch({ factories, repo, login, sessions }) {
+  /// The scratch sessions of one or more repositories on one factory, or
+  /// `null` when that factory does not accept writes. `repos` are the
+  /// repositories served (`repo` alone is one); with several, New scratch
+  /// asks which. `sessions` are the factory's scratch rows for them, each with
+  /// the `stateLabel` the page drew for it; `login` is the signed-in GitHub
+  /// user, which is what `mine` means.
+  function renderScratch({ factories, repo, repos, login, sessions }) {
     const choices = contenders(factories);
-    if (!choices.length) return null;
-    const state = remember(`${repo}#0`, "scratch", choices[0].url);
+    const served = (repos?.length ? repos : [repo]).filter(Boolean);
+    if (!choices.length || !served.length) return null;
+    const state = remember(`${served.join(",")}#0`, "scratch", choices[0].url);
+    state.repos = served;
+    // The repository last chosen for this set stays chosen.
+    if (!served.includes(state.repo)) state.repo = served[0];
     chooseFactory(state, choices, choices[0].url);
     state.login = login || null;
     state.sessions = sessions ?? [];
@@ -1309,9 +1341,39 @@
     if (changed) redraw();
   }
 
+  /// A project board's identity, `owner/number` in lower case, out of a URL
+  /// or a path: `/users|orgs/<owner>/projects/<n>` and a repository's
+  /// `/<owner>/<repo>/projects/<n>`, whatever view or path follows. `null`
+  /// for anything else (#499).
+  function projectKey(url) {
+    let path = String(url ?? "");
+    try {
+      path = new URL(path, "https://github.com").pathname;
+    } catch {
+      return null;
+    }
+    const match =
+      /^\/(?:users|orgs)\/([^/]+)\/projects\/(\d+)(?:\/|$)/i.exec(path) ??
+      /^\/([^/]+)\/[^/]+\/projects\/(\d+)(?:\/|$)/i.exec(path);
+    return match ? `${match[1].toLowerCase()}/${match[2]}` : null;
+  }
+
+  /// The repositories a factory serves on a project page: those whose linked
+  /// projects (`repository_projects`, repository -> project URLs) include
+  /// the page's project.
+  function projectRepos(repositoryProjects, url) {
+    const key = projectKey(url);
+    if (!key) return [];
+    return Object.entries(repositoryProjects ?? {})
+      .filter(([, projects]) => (projects ?? []).some((one) => projectKey(one) === key))
+      .map(([repo]) => repo);
+  }
+
   globalThis.ssfWrites = {
     STYLE,
     scratchPhase,
+    projectKey,
+    projectRepos,
     render,
     renderActions,
     renderScratch,

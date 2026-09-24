@@ -411,6 +411,42 @@ impl Engine {
         }
     }
 
+    /// Read the Projects v2 linked to a repository, at most every ten
+    /// minutes, for clients that serve a project's repositories (#499). A
+    /// failed read keeps the last known list and never fails the pass.
+    pub(in crate::engine) async fn refresh_linked_projects(
+        &mut self,
+        repo: &RepoConfig,
+        owner: &str,
+        name: &str,
+    ) {
+        let now = chrono::Utc::now();
+        let due = self
+            .state
+            .repos
+            .get(&repo.name)
+            .and_then(|rs| rs.projects_checked_at.as_deref())
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .is_none_or(|at| now.signed_duration_since(at).num_minutes() >= 10);
+        if !due {
+            return;
+        }
+        match self.gh.repository_projects(owner, name).await {
+            Ok(projects) => {
+                let rs = self.state.repo_mut(&repo.name);
+                rs.projects = projects;
+                rs.projects_checked_at = Some(now.to_rfc3339());
+            }
+            Err(e) => {
+                warn!(
+                    repo = repo.name,
+                    "linked projects could not be read; keeping the last list: {e:#}"
+                );
+                self.state.repo_mut(&repo.name).projects_checked_at = Some(now.to_rfc3339());
+            }
+        }
+    }
+
     /// Whether whoever asked the bot onto an item (see `allow::askers`) is
     /// allowed to; `Err` says who was not, for the log.
     pub(in crate::engine) fn gate(

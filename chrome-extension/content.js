@@ -10,8 +10,10 @@
 //   * issue and pull request lists, search results and project boards get one
 //     chip per tracked item, and a click on a chip opens the same card in a
 //     popover;
-//   * a repository's home page gets its scratch sessions (#414) at the top of
-//     the right sidebar, with New scratch, for each factory that watches it;
+//   * a repository's pages and a project board get a button in GitHub's top
+//     bar, next to the repository's or the project's name, counting their
+//     scratch sessions (#414); a click opens them in a popover with New
+//     scratch. A project serves every watched repository linked to it (#499);
 //   * every other page gets nothing.
 //
 // The five user-facing states are fixed in colour and icon so they read the
@@ -33,8 +35,10 @@
 
   /// An issue or pull request page, including its subpages (`/pull/5/files`).
   const DETAIL_PATH = /^\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)(?:\/|$)/;
-  /// A repository's home page: where its scratch sessions are listed.
-  const REPO_PATH = /^\/([^/]+)\/([^/]+)\/?$/;
+  /// A repository's pages: where its scratch sessions are offered. Only a
+  /// repository some factory watches gets anything, so the other two-segment
+  /// paths (`/orgs/x`, `/settings/profile`) never draw.
+  const REPO_PATH = /^\/([^/]+)\/([^/]+)(?:\/|$)/;
   /// A link to exactly one issue or pull request, as lists and boards make them.
   const LINK_PATH = /^\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)\/?$/;
   /// The two shapes a project board has. A board carries a card for an item
@@ -74,6 +78,16 @@
   border-top: 1px solid var(--borderColor-muted, #d1d9e0); }
 :host([data-ssf-list]) { display: inline-flex; vertical-align: middle; }
 :host([data-ssf-popover]) { position: fixed; z-index: 2147483000; }
+:host([data-ssf-slot="topbar"]) { display: inline-flex; align-items: center;
+  flex: none; align-self: center; margin-left: 8px; }
+/* The top bar's button: GitHub's own small button shape. */
+.ssf-topbar { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+  "Noto Sans", Helvetica, Arial, sans-serif; font-size: 12px; font-weight: 600;
+  line-height: 20px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+  white-space: nowrap; color: var(--fgColor-default, #1f2328);
+  background: var(--button-default-bgColor-rest, #f6f8fa);
+  border: 1px solid var(--button-default-borderColor-rest, #d1d9e0); }
+.ssf-topbar:hover { background: var(--button-default-bgColor-hover, #eff2f5); }
 .ssf-section, .ssf-popover { font-family: -apple-system, BlinkMacSystemFont,
   "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; font-size: 12px;
   line-height: 1.5; text-align: left; color: var(--fgColor-default, #1f2328); }
@@ -1413,20 +1427,53 @@
     return placed;
   }
 
-  /// A repository page's scratch sessions: one card per factory that watches
-  /// the repository, holding its sessions and New scratch. `mine` is the
-  /// GitHub user signed in on this page, from GitHub's own `user-login` meta
-  /// tag: it says whose session to make, and is not an access control.
+  /// A page's scratch sessions, as a button in GitHub's top bar: `SSF · N
+  /// scratch`, N being the sessions not yet released. A click opens the list
+  /// in a popover (`scratchCards`). Nothing is drawn where the top bar cannot
+  /// be found.
   function updateScratch(entry, want) {
-    const section = element("div", "ssf-section");
+    entry.scratch = want;
+    const count = want.factories
+      .flatMap((one) => scratchRows(one.factory, one.repos))
+      .filter((one) => globalThis.ssfWrites?.scratchPhase(one) !== "released").length;
+    const button = element("button", "ssf-topbar", `SSF \u00b7 ${count} scratch`);
+    button.type = "button";
+    button.setAttribute("aria-haspopup", "dialog");
+    button.setAttribute("aria-expanded", String(popoverOpen(want.name)));
+    button.title = `Scratch sessions on ${want.label}`;
+    reconcile(entry.shadow, [button]);
+    const slot = topBar();
+    if (!slot) return false;
+    if (entry.host.dataset.ssfSlot !== "topbar") entry.host.dataset.ssfSlot = "topbar";
+    if (slot.after) {
+      if (slot.after.nextElementSibling !== entry.host) {
+        slot.after.insertAdjacentElement("afterend", entry.host);
+      }
+    } else if (entry.host.parentElement !== slot || slot.lastElementChild !== entry.host) {
+      slot.append(entry.host);
+    }
+    return true;
+  }
+
+  /// A factory's scratch rows for some repositories.
+  function scratchRows(factory, repos) {
+    return (factory.scratch ?? []).filter((one) => repos.some((repo) => sameRepo(one?.repo, repo)));
+  }
+
+  /// The popover's body: one card per factory, in the sidebar card's shape
+  /// (#497) -- a neutral band naming the list, and the sessions in its body.
+  /// `mine` is the GitHub user signed in on this page, from GitHub's own
+  /// `user-login` meta tag: it says whose session to make, and is not an
+  /// access control.
+  function scratchCards(want) {
+    const section = element("div", "ssf-popover");
     const login = document.querySelector('meta[name="user-login"]')?.content?.trim() || null;
     const label = (snapshot?.factories?.length ?? 0) > 1;
-    for (const factory of want.factories) {
-      const sessions = (factory.scratch ?? [])
-        .filter((one) => sameRepo(one?.repo, want.repo))
-        .map((one) => ({ ...one, stateLabel: scratchState(factory, one) }));
-      // The sidebar card's shape (#497): a neutral band naming the list,
-      // and the sessions in its body.
+    for (const { factory, repos } of want.factories) {
+      const sessions = scratchRows(factory, repos).map((one) => ({
+        ...one,
+        stateLabel: scratchState(factory, one),
+      }));
       const node = named(element("div", "ssf-card"), `card:${factory.url}`);
       const band = element("div", "ssf-state ssf-band");
       band.dataset.ssfBand = "no-agent";
@@ -1438,7 +1485,7 @@
       node.append(body);
       const panel = globalThis.ssfWrites?.renderScratch({
         factories: [factory],
-        repo: want.repo,
+        repos,
         login,
         sessions,
       });
@@ -1452,25 +1499,52 @@
       }
       section.append(node);
     }
-    reconcile(entry.shadow, [section]);
-    const slot = repoSidebar();
-    if (!slot) return false;
-    if (entry.host.dataset.ssfSlot !== "sidebar") entry.host.dataset.ssfSlot = "sidebar";
-    if (entry.host.parentElement !== slot || slot.firstElementChild !== entry.host) {
-      slot.prepend(entry.host);
-    }
-    return true;
+    return section;
   }
 
-  /// Where a repository page's scratch section goes: the top of the right
-  /// sidebar, wherever that page's own markup puts it. GitHub's code view
-  /// renders that column as a React pane (`CodeViewSidebar-...`); the classic
-  /// `Layout-sidebar` is what the older markup had.
-  function repoSidebar() {
-    return (
-      document.querySelector(".Layout-sidebar") ??
-      document.querySelector('[class*="CodeViewSidebar-module__borderGrid"]')
-    );
+  /// Where the scratch button goes: right after the repository's or the
+  /// project's name in GitHub's global header. The name is found as the
+  /// header link to this page's repository or project, since the header's
+  /// class names are generated and change; the button goes after its breadcrumb
+  /// list. The `AppHeader-context` regions of the older
+  /// header are the fallback. Only a visible place is used.
+  function topBar() {
+    const home = namePath(location.pathname);
+    if (home) {
+      for (const link of document.querySelectorAll("header a[href]")) {
+        let path;
+        try {
+          path = new URL(link.href, location.href).pathname.replace(/\/+$/, "");
+        } catch {
+          continue;
+        }
+        if (path.toLowerCase() !== home || !link.getClientRects().length) continue;
+        // After the whole breadcrumb list, not inside it: the name's crumb
+        // box holds its menu arrow, and a crumb that is no longer the list's
+        // last child draws a separator after it.
+        return { after: link.closest("ol, ul") ?? link.closest("li") ?? link.parentElement };
+      }
+    }
+    for (const selector of [
+      "header.AppHeader .AppHeader-context-full",
+      "header.AppHeader .AppHeader-context-compact",
+      ".AppHeader-context-full",
+      ".AppHeader-context",
+    ]) {
+      for (const node of document.querySelectorAll(selector)) {
+        if (node.getClientRects().length) return node;
+      }
+    }
+    return null;
+  }
+
+  /// The path the header's name link points to: a project's own page, or the
+  /// repository's home, lowercased.
+  function namePath(pathname) {
+    const project = /^\/(?:(?:users|orgs)\/[^/]+|[^/]+\/[^/]+)\/projects\/\d+/.exec(pathname);
+    if (project) return project[0].toLowerCase();
+    const repo = /^\/[^/]+\/[^/]+/.exec(pathname);
+    return repo ? repo[0].toLowerCase() : null;
   }
 
   function sameRepo(a, b) {
@@ -1627,8 +1701,27 @@
     renderPopover();
   }
 
+  /// The scratch button's popover: its list, drawn from the entry's latest
+  /// frame, and gone with the button.
+  function openScratchPopover(name, entry) {
+    closePopover();
+    const own = shadowHost("data-ssf-popover", name);
+    popover = { name, key: null, anchor: entry.host, entry: own, scratch: entry };
+    document.body.append(own.host);
+    renderPopover();
+  }
+
   function renderPopover() {
     if (!popover) return;
+    if (popover.scratch) {
+      const body = scratchCards(popover.scratch.scratch);
+      const previous = popover.entry.shadow.querySelector(".ssf-popover");
+      const scrolled = previous ? previous.scrollTop : 0;
+      reconcile(popover.entry.shadow, [body]);
+      if (body.scrollTop !== scrolled) body.scrollTop = scrolled;
+      placePopover();
+      return;
+    }
     // The reading the chip was drawn from, so a popover of a board card for an
     // item the factory has no record of still knows the repository is watched.
     const matches = matchesFor(popover.key, { unrecorded: popover.unrecorded });
@@ -1729,15 +1822,30 @@
           }
         }
       }
-      const repoPage = REPO_PATH.exec(location.pathname);
-      if (repoPage) {
-        const repo = `${repoPage[1]}/${repoPage[2]}`;
-        const watching = (snapshot?.factories ?? []).filter((factory) =>
-          (factory.repositories ?? []).some((one) => sameRepo(one, repo)),
-        );
-        if (watching.length) {
-          wanted.set(`scratch:${repo}`, { scratch: true, repo, factories: watching, anchor: null });
-        }
+      // The top bar's scratch sessions: a project board serves every watched
+      // repository linked to it (#499), a repository's pages that repository.
+      const project = globalThis.ssfWrites?.projectKey(location.pathname) ?? null;
+      const repoPage = project ? null : REPO_PATH.exec(location.pathname);
+      const serving = (snapshot?.factories ?? [])
+        .map((factory) => ({
+          factory,
+          repos: project
+            ? globalThis.ssfWrites.projectRepos(factory.repositoryProjects, location.pathname)
+            : repoPage
+              ? (factory.repositories ?? []).filter((one) =>
+                  sameRepo(one, `${repoPage[1]}/${repoPage[2]}`),
+                )
+              : [],
+        }))
+        .filter((one) => one.repos.length);
+      if (serving.length) {
+        const label = project ? "this project" : `${repoPage[1]}/${repoPage[2]}`;
+        wanted.set(`scratch:${project ?? label.toLowerCase()}`, {
+          scratch: true,
+          label,
+          factories: serving,
+          anchor: null,
+        });
       }
       if (!page && chipPage(location.pathname)) {
         // A board card stands for one item, and picking an item up is what a
@@ -1780,7 +1888,15 @@
           want.anchor === null ? "data-ssf-card" : "data-ssf-list",
           name,
         );
-        if (want.anchor !== null) {
+        if (want.scratch) {
+          entry.host.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (popoverOpen(name)) closePopover();
+            else openScratchPopover(name, entry);
+            scheduleRender();
+          });
+        } else if (want.anchor !== null) {
           entry.host.dataset.ssfKey = name.slice("chip:".length);
           entry.host.addEventListener("click", (event) => chipActivate(event, entry));
           entry.host.addEventListener("keydown", (event) => {
@@ -1829,7 +1945,19 @@
   }
 
   function connect() {
-    port = chrome.runtime.connect({ name: "ssf-overlay" });
+    // A reloaded or updated extension leaves this script running in tabs it
+    // was injected into, cut off from the new one: it stops here rather than
+    // retrying forever with "Extension context invalidated".
+    if (!chrome.runtime?.id) {
+      clearInterval(pingTimer);
+      return;
+    }
+    try {
+      port = chrome.runtime.connect({ name: "ssf-overlay" });
+    } catch {
+      clearInterval(pingTimer);
+      return;
+    }
     port.onMessage.addListener((message) => {
       if (message?.type === "snapshot") apply(message.payload);
     });

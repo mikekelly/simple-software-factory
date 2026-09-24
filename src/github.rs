@@ -211,6 +211,26 @@ fragment card on ProjectV2Item {
   }
 }"#;
 
+const REPOSITORY_PROJECTS_QUERY: &str = r#"query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) { projectsV2(first: 50) { nodes { url } } }
+}"#;
+
+/// The URLs of the Projects v2 linked to a repository, out of a
+/// `projectsV2` GraphQL response (#499).
+pub fn parse_repository_projects(data: &Value) -> Vec<String> {
+    data.pointer("/repository/projectsV2/nodes")
+        .and_then(Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|n| value_str(n, &["url"]))
+                .filter(|url| !url.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Cards out of a `projectItems` GraphQL response. Closed boards are left
 /// out: nothing is expected to be kept accurate on them.
 pub fn parse_project_items(data: &Value) -> Vec<ProjectCard> {
@@ -667,6 +687,37 @@ impl GitHub {
         Ok(parse_project_items(v.get("data").unwrap_or(&Value::Null)))
     }
 
+    /// The URLs of the Projects v2 linked to a repository (#499).
+    pub async fn repository_projects(&self, owner: &str, repo: &str) -> Result<Vec<String>> {
+        let url = self.url("graphql");
+        let resp = self
+            .post(&url)
+            .json(&serde_json::json!({
+                "query": REPOSITORY_PROJECTS_QUERY,
+                "variables": {"owner": owner, "name": repo},
+            }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let what = format!("looking up the projects of {owner}/{repo}");
+        let resp = Self::check(resp, &what).await?;
+        let v: Value = resp.json().await.context("decoding GraphQL response")?;
+        if let Some(errors) = v
+            .get("errors")
+            .and_then(Value::as_array)
+            .filter(|e| !e.is_empty())
+        {
+            let msgs: Vec<&str> = errors
+                .iter()
+                .filter_map(|e| value_str(e, &["message"]))
+                .collect();
+            bail!("GraphQL error {what}: {}", msgs.join("; "));
+        }
+        Ok(parse_repository_projects(
+            v.get("data").unwrap_or(&Value::Null),
+        ))
+    }
+
     pub async fn issue(&self, owner: &str, repo: &str, number: u64) -> Result<Issue> {
         self.issue_opt(owner, repo, number)
             .await?
@@ -851,6 +902,21 @@ pub fn value_u64(v: &Value, path: &[&str]) -> Option<u64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn repository_projects_are_parsed() {
+        let data = serde_json::json!({"repository":{"projectsV2":{"nodes":[
+            {"url":"https://github.com/users/o/projects/5"},{"url":""},{},
+            {"url":"https://github.com/orgs/x/projects/2"}]}}});
+        assert_eq!(
+            parse_repository_projects(&data),
+            vec![
+                "https://github.com/users/o/projects/5",
+                "https://github.com/orgs/x/projects/2"
+            ]
+        );
+        assert!(parse_repository_projects(&Value::Null).is_empty());
+    }
 
     #[test]
     fn project_items_are_parsed_and_closed_boards_dropped() {

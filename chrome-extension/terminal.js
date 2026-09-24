@@ -31,7 +31,7 @@
 // factory on a private or tailnet address. The service worker reads the stream
 // with the extension's permission and passes it on a port (`ssf-pane`), as it
 // sends what is typed.
-import { factoryUrl } from "./factory-url.js";
+import { factoryLabel, factoryUrl } from "./factory-url.js";
 import { render } from "./pane-render.js";
 import { fitsWrite, keyForInputType, keyForKeyDown, pasteBody, textToKeys } from "./pane-keys.js";
 
@@ -173,6 +173,10 @@ async function start() {
 
   // An item's agent has somewhere else to be spoken to; a scratch session's
   // pane is view-only only where this factory takes no writes.
+  // Which factory the session runs on: the options page's name for it, or its
+  // host.
+  const item = stored.find((one) => factoryUrl(one?.url) === url);
+  const on = ` \u00b7 on ${String(item?.label ?? "").trim() || factoryLabel(url)}`;
   const viewOnly = session.includes("~")
     ? "live · view only"
     : "live · view only: comment on the item to speak to its agent";
@@ -187,10 +191,10 @@ async function start() {
   function showLive() {
     live = true;
     typeButton.hidden = !takesInput;
-    if (!takesInput) say(viewOnly);
-    else if (typing) say("live · typing into the pane");
-    else if (notice) say(`live · typing turned off: ${notice}`, true);
-    else say("live");
+    if (!takesInput) say(viewOnly + on);
+    else if (typing) say(`live${on} · typing into the pane`);
+    else if (notice) say(`live${on} · typing turned off: ${notice}`, true);
+    else say(`live${on}`);
   }
 
   function notLive() {

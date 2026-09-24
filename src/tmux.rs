@@ -114,6 +114,12 @@ pub fn attach_args(name: &str) -> Vec<String> {
         "detach-on-destroy",
         "on",
         ";",
+        "set-option",
+        "-t",
+        &pane,
+        "status",
+        "off",
+        ";",
         "attach-session",
         "-t",
         &session,
@@ -327,7 +333,13 @@ impl Tmux {
         let target = pane_target(name);
         // A terminal attached to the session is detached when it ends, rather
         // than moved to another session (as a tmux.conf setting it off would).
-        for (option, value) in [("window-size", "latest"), ("detach-on-destroy", "on")] {
+        // The session's own status line is off: the browser's window already
+        // names the session, and a user's tmux.conf is not ours to change.
+        for (option, value) in [
+            ("window-size", "latest"),
+            ("detach-on-destroy", "on"),
+            ("status", "off"),
+        ] {
             if let Err(e) = self
                 .run(&["set-option", "-t", &target, option, value], None)
                 .await
@@ -652,6 +664,12 @@ mod tests {
                 "detach-on-destroy",
                 "on",
                 ";",
+                "set-option",
+                "-t",
+                "=ssf-o_sr_tab12:",
+                "status",
+                "off",
+                ";",
                 "attach-session",
                 "-t",
                 "=ssf-o_sr_tab12",
@@ -801,6 +819,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(option.trim(), "on");
+        // No status line of its own, whatever tmux.conf says.
+        let status = tmux
+            .run(
+                &["show-options", "-v", "-t", &pane_target(&name), "status"],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.trim(), "off");
         let size = tmux
             .run(
                 &[
