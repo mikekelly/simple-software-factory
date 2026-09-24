@@ -43,6 +43,50 @@ async fn worktree_listing_refuses_a_repo_id_that_is_no_directory() {
     assert!(!msg.contains("cannot change to"), "{msg}");
 }
 
+/// The daemon clones by itself, so an origin that wants credentials must
+/// fail there and then, not wait for someone to type them: git prompts on
+/// the terminal it inherits, which belongs to whoever started the daemon —
+/// under `makepkg` the builder's, who found their arrow keys read as a
+/// username (#495).
+#[tokio::test]
+async fn a_clone_that_wants_credentials_fails_instead_of_prompting() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // An origin that answers every request with 401, so git asks for a
+    // username and password.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let _ = sock.read(&mut [0u8; 1024]).await;
+            let _ = sock
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\n\
+                      WWW-Authenticate: Basic realm=\"ssf\"\r\n\
+                      Content-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            let _ = sock.shutdown().await;
+        }
+    });
+
+    let projects = std::env::temp_dir().join(format!("ssf-clone-auth-{}", std::process::id()));
+    let err = ensure_local_checkout(
+        "o/r",
+        &format!("http://127.0.0.1:{port}/o/r.git"),
+        None,
+        &projects,
+    )
+    .await
+    .unwrap_err();
+    // Git's own reason for refusing: it never opened a terminal (it says
+    // "No such device or address" when one is simply missing, which is not
+    // the same thing — this process does have one under `cargo test`).
+    let msg = format!("{err:#}");
+    assert!(msg.contains("terminal prompts disabled"), "{msg}");
+    let _ = std::fs::remove_dir_all(&projects);
+}
+
 #[test]
 fn repo_root_tolerates_compound_ids() {
     assert_eq!(repo_root("/p/widgets::w7"), "/p/widgets");
