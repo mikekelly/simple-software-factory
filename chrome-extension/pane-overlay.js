@@ -62,7 +62,8 @@ button.ssf-pane-open.ssf-pane-show:hover:not(:disabled) {
   BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
 .ssf-pane-head:focus-visible { outline: 2px solid #1f6feb; outline-offset: -2px; }
 .ssf-pane-head span { flex: 1 1 auto; min-width: 0; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
+  text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular,
+  "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
 .ssf-pane-close { flex: none; width: 24px; height: 24px; padding: 0; border: 0;
   border-radius: 6px; background: none; color: #8b949e; font: 18px/24px sans-serif;
   cursor: pointer; }

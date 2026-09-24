@@ -1419,15 +1419,23 @@
   /// tag: it says whose session to make, and is not an access control.
   function updateScratch(entry, want) {
     const section = element("div", "ssf-section");
-    section.append(element("h3", "ssf-title", "SSF scratch"));
     const login = document.querySelector('meta[name="user-login"]')?.content?.trim() || null;
     const label = (snapshot?.factories?.length ?? 0) > 1;
     for (const factory of want.factories) {
       const sessions = (factory.scratch ?? [])
         .filter((one) => sameRepo(one?.repo, want.repo))
         .map((one) => ({ ...one, stateLabel: scratchState(factory, one) }));
+      // The sidebar card's shape (#497): a neutral band naming the list,
+      // and the sessions in its body.
       const node = named(element("div", "ssf-card"), `card:${factory.url}`);
-      if (label) node.append(named(element("div", "ssf-via", factory.label), "via"));
+      const band = element("div", "ssf-state ssf-band");
+      band.dataset.ssfBand = "no-agent";
+      band.append(element("span", "ssf-word", "Scratch sessions"));
+      if (label) band.append(element("span", "ssf-when", `on ${factory.label}`));
+      band.append(element("span", "ssf-brand", "SSF"));
+      node.append(named(band, "state"));
+      const body = named(element("div", "ssf-body"), "body");
+      node.append(body);
       const panel = globalThis.ssfWrites?.renderScratch({
         factories: [factory],
         repo: want.repo,
@@ -1435,10 +1443,10 @@
         sessions,
       });
       if (panel) {
-        node.append(named(panel, "writes"));
+        body.append(named(panel, "writes"));
       } else {
         const count = `${sessions.length} scratch session${sessions.length === 1 ? "" : "s"}`;
-        node.append(
+        body.append(
           named(element("p", "ssf-hold", `${count}; writes are off for this factory.`), "off"),
         );
       }

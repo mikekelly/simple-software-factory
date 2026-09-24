@@ -132,19 +132,42 @@
   background: var(--bgColor-danger-muted, #ffebe9); }
 .ssf-writes-menu-list hr { width: 100%; height: 1px; margin: 6px 0; border: 0;
   background: var(--borderColor-muted, #d1d9e0); }
-/* Kill, a small red cross at the end of a scratch row's first line. */
-.ssf-writes button.ssf-writes-kill { flex: none; padding: 0 5px; border: 0; background: none;
-  color: var(--fgColor-danger, #cf222e); font: 16px/18px sans-serif; }
+/* A scratch row, in the sidebar card's terms (#497): its id in the monospace
+   the card gives a branch, whose it is muted, its state as a small pill in
+   the band's colours, and its stack as the card's chips. */
+.ssf-scratch-id { font-weight: 600; font-family: ui-monospace, SFMono-Regular,
+  "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+.ssf-scratch-whose { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-weight: 400; color: var(--fgColor-muted, #59636e); }
+.ssf-scratch-phase { flex: none; padding: 0 6px; border-radius: 999px; font-size: 11px;
+  font-weight: 500; line-height: 18px; color: var(--ssf-band-fg);
+  background: var(--ssf-band-bg); border: 1px solid var(--ssf-band-border); }
+/* Kill: a red × the size of the card's ••• button, at the end of the line. */
+.ssf-writes button.ssf-writes-kill { flex: none; display: inline-flex; align-items: center;
+  justify-content: center; width: 24px; height: 24px; padding: 0; line-height: 1;
+  font-size: 16px; color: var(--fgColor-danger, #d1242f);
+  background: var(--bgColor-muted, #f6f8fa);
+  border: 1px solid var(--borderColor-default, #d1d9e0); }
 .ssf-writes button.ssf-writes-kill:hover:not(:disabled) {
-  background: var(--bgColor-danger-muted, #ffebe9); }
+  background: var(--bgColor-danger-muted, #ffebe9);
+  border-color: var(--borderColor-danger-muted, #ffcecb); }
 /* Open and Kill share the end of the line. */
 .ssf-writes-title .ssf-writes-kill { margin-left: auto; }
 .ssf-writes-title .ssf-pane-open + .ssf-writes-kill { margin-left: 0; }
-/* The scratch list's tabs: sessions with a workspace, and released ones. */
-.ssf-writes-tabs { display: flex; gap: 4px; }
-.ssf-writes button.ssf-writes-tab { padding: 1px 8px; }
+/* New scratch: the card's Show agent, as its one neutral full-width button. */
+.ssf-writes button.ssf-writes-new { flex: 1 1 auto; font-weight: 500;
+  background: var(--bgColor-muted, #f6f8fa); }
+.ssf-writes button.ssf-writes-new:hover:not(:disabled) {
+  background: var(--bgColor-neutral-muted, #afb8c133); }
+/* The scratch list's tabs: GitHub's segmented control. */
+.ssf-writes-tabs { display: flex; padding: 2px; gap: 2px; border-radius: 6px;
+  background: var(--bgColor-muted, #f6f8fa);
+  border: 1px solid var(--borderColor-default, #d1d9e0); }
+.ssf-writes button.ssf-writes-tab { flex: 1 1 0; padding: 2px 8px; border-color: transparent;
+  background: none; color: var(--fgColor-muted, #59636e); font-weight: 500; }
 .ssf-writes button.ssf-writes-tab[aria-selected="true"] {
-  background: var(--bgColor-neutral-muted, #afb8c133); font-weight: 600; }
+  color: var(--fgColor-default, #1f2328); background: var(--bgColor-default, #ffffff);
+  border-color: var(--borderColor-default, #d1d9e0); font-weight: 600; }
 `;
 
   /// Renders again once a listing has arrived; content.js sets this to its own
@@ -884,8 +907,8 @@
   /// A repository's scratch sessions on one factory: a row each, the kill
   /// confirmation when one is open, and New scratch or its form.
   function scratchPanel(state) {
-    const body = element("div", "ssf-writes");
-    body.append(element("div", "ssf-writes-head", "Scratch sessions", "head"));
+    // The card's band names the list; the panel sits bare in its body.
+    const body = element("div", "ssf-writes ssf-writes-bare");
     const released = state.sessions.filter((one) => scratchPhase(one) === "released");
     const current = state.sessions.filter((one) => scratchPhase(one) !== "released");
     if (!released.length) state.tab = "sessions";
@@ -920,7 +943,7 @@
     }
     if (state.error) body.append(element("p", "ssf-writes-error", state.error, "error"));
     const actions = element("div", "ssf-writes-actions", undefined, "actions");
-    const create = element("button", "primary", "New scratch");
+    const create = element("button", "ssf-writes-new", "New scratch");
     create.type = "button";
     create.onclick = () => {
       state.open = "new";
@@ -943,10 +966,15 @@
     const id = String(one.id ?? "");
     const short = id.slice(id.lastIndexOf("~"));
     const whose = one.owner_login ? `@${one.owner_login}` : "shared";
-    const stack = [one.harness, one.model, one.effort].filter(Boolean).join(" \u00b7 ");
     const title = element("p", "ssf-writes-stack ssf-writes-title", undefined, "id");
-    title.append(`${short} \u00b7 ${whose}`);
     const phase = scratchPhase(one);
+    const pill = element("span", "ssf-scratch-phase", one.stateLabel || phase);
+    pill.dataset.ssfBand = PHASE_BAND[phase];
+    title.append(
+      element("span", "ssf-scratch-id", short),
+      element("span", "ssf-scratch-whose", whose),
+      pill,
+    );
     const busy = state.rowBusy === id;
     // Open while its terminal runs; off, Resume starts it first.
     const open = phase === "live" && globalThis.ssfPane?.button(state.url, id, one.pane_input === true);
@@ -962,10 +990,15 @@
       kill.onclick = () => sendKill(state, id, false);
       title.append(kill);
     }
-    row.append(
-      title,
-      element("p", "ssf-writes-note", [stack, one.stateLabel].filter(Boolean).join(" \u00b7 "), "state"),
-    );
+    row.append(title);
+    const chips = element("div", "ssf-stack", undefined, "stack");
+    [one.harness, one.model, one.effort].forEach((part, index) => {
+      if (!part) return;
+      const chip = element("span", "ssf-tag", String(part));
+      if (index === 2) chip.dataset.effort = "true";
+      chips.append(chip);
+    });
+    if (chips.childElementCount) row.append(chips);
     if (state.kill?.session === id) {
       row.append(
         element("p", "ssf-writes-error", state.kill.message, "check"),
@@ -1151,6 +1184,10 @@
   /// restarted), `releasing` (killed; the workspace goes on the next pass) or
   /// `released`. The factory says so in `state`; an older one that does not
   /// is read from `active` and `agent_live`.
+  /// The band colours (content.js, #497) a scratch row's state pill takes:
+  /// green while it runs, grey otherwise.
+  const PHASE_BAND = { live: "working", off: "no-agent", releasing: "no-agent", released: "done" };
+
   function scratchPhase(one) {
     const said = String(one?.state ?? "");
     if (["live", "off", "releasing", "released"].includes(said)) return said;
