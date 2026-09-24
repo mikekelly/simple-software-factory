@@ -63,9 +63,10 @@
 
   const STYLE = `
 /* One surface language for the sidebar card and the popover: the same frame,
-   the same radii, the same 1px rules GitHub draws its own boxes with. Nothing
-   is animated and nothing carries a state colour except the icon and the state
-   word, so a state cannot leak into the text beside it. */
+   the same radii, the same 1px rules GitHub draws its own boxes with. A card's
+   state colour is its band (#497's option 1a) and nothing else: the body under
+   it, the chips and the message stay neutral, so a state cannot leak into the
+   text beside it. A chip carries it in its icon and word alone. */
 :host { display: block; }
 :host([data-ssf-slot="sidebar"]) { margin-bottom: 16px; }
 :host([data-ssf-slot="sidebar-legacy"]) {
@@ -90,9 +91,57 @@
   border: 1px solid var(--borderColor-default, #d1d9e0);
   background: var(--bgColor-default, #ffffff);
   box-shadow: 0 8px 24px rgba(31, 35, 40, 0.2); }
-.ssf-card { padding: 10px 12px; border-radius: 6px;
+/* No overflow clip: the ••• menu opens past the card's edge. The band and the
+   Details bar round their own corners instead. */
+.ssf-card { border-radius: 6px;
   border: 1px solid var(--borderColor-default, #d1d9e0);
-  background: var(--bgColor-muted, #f6f8fa); }
+  background: var(--bgColor-default, #ffffff); }
+/* The band: the state, tinted by it -- green working, yellow waiting on you,
+   grey done or no agent, red a problem -- with the time and SSF beside it. */
+.ssf-band { padding: 8px 12px; font-size: 13px; border-radius: 5px 5px 0 0;
+  border-bottom: 1px solid var(--ssf-band-border); color: var(--ssf-band-fg);
+  background: var(--ssf-band-bg); }
+.ssf-band .ssf-word, .ssf-band .ssf-when, .ssf-band .ssf-icon { color: inherit; }
+.ssf-band .ssf-when { font-size: 12px; opacity: 0.8; }
+.ssf-band .ssf-when[data-stale="true"] { opacity: 1; }
+.ssf-brand { margin-left: auto; font-size: 11px; font-weight: 600;
+  letter-spacing: 0.04em; }
+[data-ssf-band="working"] {
+  --ssf-band-bg: var(--bgColor-success-muted, #dafbe1);
+  --ssf-band-border: var(--borderColor-success-muted, #aceebb);
+  --ssf-band-fg: var(--fgColor-success, #116329); }
+[data-ssf-band="waiting"] {
+  --ssf-band-bg: var(--bgColor-attention-muted, #fff8c5);
+  --ssf-band-border: var(--borderColor-attention-muted, #eac54f66);
+  --ssf-band-fg: var(--fgColor-attention, #7d4e00); }
+[data-ssf-band="done"], [data-ssf-band="no-agent"] {
+  --ssf-band-bg: var(--bgColor-muted, #f6f8fa);
+  --ssf-band-border: var(--borderColor-muted, #d1d9e0);
+  --ssf-band-fg: var(--fgColor-muted, #59636e); }
+[data-ssf-band="problem"] {
+  --ssf-band-bg: var(--bgColor-danger-muted, #ffebe9);
+  --ssf-band-border: var(--borderColor-danger-muted, #ffcecb);
+  --ssf-band-fg: var(--fgColor-danger, #d1242f); }
+/* A live working agent's icon breathes; a stale snapshot's never does. */
+[data-ssf-band="working"]:not([data-stale]) .ssf-icon {
+  animation: ssf-pulse 2s infinite; }
+@keyframes ssf-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  [data-ssf-band] .ssf-icon { animation: none; } }
+.ssf-body { display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  padding: 12px; }
+.ssf-body > .ssf-via { margin: 0; }
+/* One long value, one line: the whole of it is its tooltip. */
+.ssf-clip { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.ssf-branch { display: flex; align-items: center; gap: 6px; min-width: 0;
+  color: var(--fgColor-muted, #59636e);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+  "Liberation Mono", monospace; }
+.ssf-branch-mark { flex: none; }
+.ssf-branch .ssf-clip { color: var(--fgColor-default, #1f2328); }
+.ssf-where { color: var(--fgColor-muted, #59636e); }
+.ssf-where strong { font-weight: 600; color: var(--fgColor-default, #1f2328); }
 .ssf-card + .ssf-card { margin-top: 8px; }
 /* The lead line of a card: the state, at a size it can be read at, with the
    time beside it in the muted colour GitHub uses for a fact about a thing. */
@@ -104,37 +153,48 @@
 /* Which item a card is about, and whose agent it is: the small print above
    the state, never competing with it. */
 .ssf-via { margin-bottom: 3px; color: var(--fgColor-muted, #59636e); }
-/* The stack -- harness, model, effort -- in the monospace GitHub uses for
-   something a person might copy, since that is what it is. */
-.ssf-stack { margin-top: 3px; color: var(--fgColor-muted, #59636e);
+/* The stack -- harness, model, effort -- as chips, in the monospace GitHub
+   uses for something a person might copy, since that is what it is. */
+.ssf-stack { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.ssf-tag { padding: 1px 6px; border-radius: 4px; overflow-wrap: anywhere;
+  border: 1px solid var(--borderColor-default, #d1d9e0);
+  background: var(--bgColor-muted, #f6f8fa);
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-  "Liberation Mono", monospace; font-size: 11px; overflow-wrap: anywhere; }
-.ssf-said { margin-top: 6px; }
+  "Liberation Mono", monospace; }
+.ssf-tag[data-effort] { background: var(--bgColor-attention-muted, #fff8c5);
+  border-color: var(--borderColor-attention-emphasis, #eac54f); }
+.ssf-next { color: var(--fgColor-muted, #59636e); font-size: 11px; }
 .ssf-message { overflow-wrap: anywhere; white-space: pre-wrap; }
 .ssf-message[data-clamped="true"] { display: -webkit-box; -webkit-box-orient: vertical;
   -webkit-line-clamp: 2; overflow: hidden; white-space: normal; }
 .ssf-more { margin: 2px 0 0; padding: 0; border: 0; background: none;
   font: inherit; font-weight: 600; color: var(--fgColor-accent, #0969da);
   cursor: pointer; }
-.ssf-also { margin-top: 6px; color: var(--fgColor-muted, #59636e); }
+.ssf-also { color: var(--fgColor-muted, #59636e); }
 .ssf-also a { color: var(--fgColor-accent, #0969da); text-decoration: none; }
 .ssf-also a:hover { text-decoration: underline; }
 /* Where the Assign agent form would be drawn, for an item the write would be
    refused for: the same rule above the text as the form itself carries. */
-.ssf-hold { margin: 6px 0 0; padding-top: 6px;
+.ssf-hold { margin: 0; padding-top: 6px;
   border-top: 1px solid var(--borderColor-muted, #d1d9e0); }
 /* Details: a term/definition list with its own label column, so a long
    workspace path wraps under its own value instead of pushing every term out
    of line. The disclosure marker is GitHub's own triangle. */
-.ssf-details { margin-top: 8px; padding-top: 6px;
-  border-top: 1px solid var(--borderColor-muted, #d1d9e0); }
-.ssf-details summary { font-weight: 600; color: var(--fgColor-muted, #59636e);
-  cursor: pointer; }
+.ssf-details { border-top: 1px solid var(--borderColor-muted, #d1d9e0); }
+.ssf-details summary { padding: 6px 12px; color: var(--fgColor-muted, #59636e);
+  background: var(--bgColor-muted, #f6f8fa); cursor: pointer; }
+.ssf-details:not([open]) summary { border-radius: 0 0 5px 5px; }
 .ssf-details summary:hover { color: var(--fgColor-default, #1f2328); }
-.ssf-details dl { display: grid; grid-template-columns: minmax(4.5em, auto) 1fr;
-  gap: 3px 10px; margin: 6px 0 0; }
+.ssf-details dl { display: grid; grid-template-columns: minmax(4.5em, auto) minmax(0, 1fr);
+  gap: 4px 8px; margin: 0; padding: 8px 12px; }
 .ssf-details dt { color: var(--fgColor-muted, #59636e); }
-.ssf-details dd { margin: 0; overflow-wrap: anywhere; }
+/* A value is one line, whole in its tooltip; a path keeps its tail, which is
+   the part that tells two workspaces apart. */
+.ssf-details dd { margin: 0; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.ssf-details dd[data-path] { direction: rtl; text-align: left;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+  "Liberation Mono", monospace; }
 /* The chip: a compact pill that sits on GitHub's own row baseline. Its height
    is the line box it lands in, so a list of titles does not grow a pixel per
    tracked item. */
@@ -1022,39 +1082,57 @@
     const list = element("dl");
     for (const [term, value] of detailFacts(factory, match, closed)) {
       if (!value) continue;
-      list.append(
-        element("dt", undefined, term),
-        element("dd", undefined, String(value)),
-      );
+      const dd = element("dd");
+      dd.title = String(value);
+      if (term === "Workspace" && String(value).startsWith("/")) {
+        dd.dataset.path = "true";
+        dd.append(element("bdi", undefined, String(value)));
+      } else {
+        dd.textContent = String(value);
+      }
+      list.append(element("dt", undefined, term), dd);
     }
     details.append(list);
     return details;
   }
 
-  /// One factory's card for an item. An issue that is an additional item of
-  /// another agent leads with `worked on by the agent on #N`, so the card never
-  /// claims an agent that belongs to a different issue.
+  /// One factory's card for an item, laid out as #497's option 1a: a band at
+  /// the top tinted by the state -- the one place a state colour fills a
+  /// container -- then the body (the stack, the branch, the factory, the
+  /// message and the writes), and Details folded away at the foot. An issue
+  /// that is an additional item of another agent leads its body with `worked
+  /// on by the agent on #N`, so the card never claims an agent that belongs to
+  /// a different issue.
   function card(name, factory, match, closed = false) {
     const node = element("div", "ssf-card");
+    const band = stateLine(factory, match, closed);
+    const state = stateFact(factory, match, closed);
+    band.classList.add("ssf-band");
+    band.dataset.ssfBand = state.kind;
+    if (state.stale) band.dataset.stale = "true";
+    band.append(element("span", "ssf-brand", "SSF"));
+    node.append(named(band, "state"));
+    const body = element("div", "ssf-body");
+    node.append(named(body, "body"));
     if (match.kind === "additional") {
       const via = element("div", "ssf-via");
       via.append("worked on by the agent on ", itemLink(match.item.origin?.id));
-      node.append(named(via, "worked"));
+      body.append(named(via, "worked"));
     }
-    const lead = stateLine(factory, match, closed);
-    // Open, at the end of the lead line, on the card of an agent that is this
-    // item's own and of a factory that takes writes: the cards that carry the
-    // Actions row.
-    if (match.kind === "agent" && factory.writes !== false) {
-      const session = match.item.owner ?? match.item.origin?.id;
-      const open = globalThis.ssfPane?.button(factory.url, session, match.item.pane_input === true);
-      if (open) lead.append(open);
+    const stack = stackChips(match.item);
+    if (stack) body.append(named(stack, "stack"));
+    if (match.item.branch) {
+      const branch = element("div", "ssf-branch");
+      branch.append(element("span", "ssf-branch-mark", "\u2387"));
+      const value = element("span", "ssf-clip", match.item.branch);
+      value.title = match.item.branch;
+      branch.append(value);
+      body.append(named(branch, "branch"));
     }
-    node.append(named(lead, "state"));
-    const stack = stackLine(match.item);
-    if (stack) node.append(named(element("div", "ssf-stack", stack), "stack"));
+    const where = whereLine(factory, match, closed);
+    if (where) body.append(named(where, "where"));
     const message = messageBlock(name, factory, match);
-    if (message) node.append(named(message, "said"));
+    if (message) body.append(named(message, "said"));
     const also = (match.item.additional ?? []).filter((issue) => issue?.id);
     if (match.kind === "agent" && also.length) {
       const line = element("div", "ssf-also");
@@ -1063,7 +1141,7 @@
         if (index) line.append(" ");
         line.append(itemLink(issue.id));
       });
-      node.append(named(line, "also"));
+      body.append(named(line, "also"));
     }
     // A factory that never answered has nothing to report about this item, and
     // neither has one with no record of it: there is no tool call, branch,
@@ -1073,6 +1151,50 @@
       node.append(named(detailsBlock(name, factory, match, closed), "details"));
     }
     return node;
+  }
+
+  /// The stack as chips -- harness, model, effort -- in the monospace GitHub
+  /// uses for something a person might copy. The effort is the chip the eye is
+  /// drawn to, since it is what the session costs. A next launch on another
+  /// stack follows as muted text; Details carries it in full.
+  function stackChips(item) {
+    const parts = [item?.harness, item?.model, item?.effort];
+    if (!parts.some(Boolean)) return null;
+    const row = element("div", "ssf-stack");
+    parts.forEach((part, index) => {
+      if (!part) return;
+      const chip = element("span", "ssf-tag", String(part));
+      if (index === 2) chip.dataset.effort = "true";
+      row.append(chip);
+    });
+    const next = item?.next_launch;
+    if (next?.harness) {
+      const to = [next.harness, next.model, next.effort].filter(Boolean).join(" · ");
+      row.append(element("span", "ssf-next", `→ ${to} next launch`));
+    }
+    return row;
+  }
+
+  /// `on <factory> · <why there is no activity time>`. The factory is named
+  /// when there is more than one to tell apart, and always on a card for an
+  /// item it has no record of (the write goes to it) or one it could not be
+  /// read for (which factory is the whole point). The note is there only when
+  /// the band has no time to show.
+  function whereLine(factory, match, closed) {
+    const state = stateFact(factory, match, closed);
+    const many = (snapshot?.factories?.length ?? 0) > 1;
+    const parts = [];
+    const line = element("div", "ssf-where");
+    if (many || match.kind === "assignable" || match.kind === "unreadable") {
+      line.append("on ", element("strong", undefined, factory.label));
+      parts.push(true);
+    }
+    if (state.activity) {
+      if (parts.length) line.append(" · ");
+      line.append(state.activity);
+      parts.push(true);
+    }
+    return parts.length ? line : null;
   }
 
   /// An item's writes for `itemKey`, on the card of the factory they belong to:
@@ -1092,7 +1214,10 @@
   /// the note about what frees it. An agent still on it keeps its Actions row,
   /// whose Release is what gives a kept workspace back.
   function withWrites(section, matches, itemKey, closed = false) {
-    const cards = section.querySelectorAll(".ssf-card");
+    // Each card's writes go at the foot of its body, above Details.
+    const cards = [...section.querySelectorAll(".ssf-card")].map(
+      (card) => card.querySelector(".ssf-body") ?? card,
+    );
     // An item ssf already has a workspace for is one the write would be refused
     // for, so its card says what frees it rather than offering the form; a
     // factory whose answer is the one that takes the write draws the form
@@ -1108,11 +1233,20 @@
     // through one factory, and an agent is that factory's, so two factories
     // with a session each are two sessions to act on and each needs its own.
     for (const match of matches.filter((one) => one.kind === "agent")) {
+      // Show agent leads the row: the agent's own terminal, over the page.
+      const session = match.item.owner ?? match.item.origin?.id;
+      const open = globalThis.ssfPane?.button(
+        match.factory.url,
+        session,
+        match.item.pane_input === true,
+        "Show agent",
+      );
       const row = globalThis.ssfWrites?.renderActions({
         factories: [match.factory],
         repo,
         number: where,
         item: match.item,
+        open,
       });
       if (row) cards[matches.indexOf(match)]?.append(named(row, "writes"));
     }
@@ -1149,22 +1283,17 @@
   /// does not show).
   function cards(name, matches, unreadable, { forLabel = null, popover = false, closed = false } = {}) {
     const section = element("div", popover ? "ssf-popover" : "ssf-section");
-    section.append(element("h3", "ssf-title", "SSF agent"));
-    // The factory is named only when there is more than one to tell apart --
-    // except on a card for an item the factory has no record of, which is drawn
-    // because that factory watches the repository and whose write goes to it, so
-    // it is named whoever else is in the snapshot.
-    const label = (snapshot?.factories?.length ?? 0) > 1;
+    // Which factory a card is from is its body's `on <factory>` line; see
+    // `whereLine`.
     let first = true;
     for (const match of matches) {
       // A card is its factory's: an item that gains an agent keeps the node it
       // had, and the form in it is patched into the row that replaces it.
       const node = named(card(name, match.factory, match, closed), `card:${match.factory.url}`);
       if (first && forLabel) {
-        node.prepend(named(element("div", "ssf-via", `for ${forLabel}`), "for"));
-      }
-      if (label || match.kind === "assignable") {
-        node.prepend(named(element("div", "ssf-via", match.factory.label), "via"));
+        node.querySelector(".ssf-body").prepend(
+          named(element("div", "ssf-via", `for ${forLabel}`), "for"),
+        );
       }
       first = false;
       section.append(node);
@@ -1178,11 +1307,10 @@
         }),
         `card:${factory.url}`,
       );
-      // Always named: which factory could not be read is the whole point of the
-      // card, and it is the only card when that factory is the only one.
-      node.prepend(named(element("div", "ssf-via", factory.label), "via"));
       if (first && forLabel) {
-        node.prepend(named(element("div", "ssf-via", `for ${forLabel}`), "for"));
+        node.querySelector(".ssf-body").prepend(
+          named(element("div", "ssf-via", `for ${forLabel}`), "for"),
+        );
       }
       first = false;
       section.append(node);

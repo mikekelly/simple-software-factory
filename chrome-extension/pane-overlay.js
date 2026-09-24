@@ -38,6 +38,13 @@ button.ssf-pane-open { flex: none; display: inline-flex; align-items: center;
 button.ssf-pane-open:hover:not(:disabled) {
   background: var(--bgColor-neutral-muted, #afb8c133);
   color: var(--fgColor-default, #1f2328); }
+/* Show agent: the same Open, labelled, leading a card's Actions row. */
+button.ssf-pane-open.ssf-pane-show { flex: 1 1 auto; gap: 6px; margin-left: 0;
+  padding: 3px 8px; font-weight: 500; color: var(--fgColor-default, #1f2328);
+  background: var(--bgColor-muted, #f6f8fa);
+  border: 1px solid var(--borderColor-default, #d1d9e0); }
+button.ssf-pane-open.ssf-pane-show:hover:not(:disabled) {
+  background: var(--bgColor-neutral-muted, #afb8c133); }
 .ssf-pane-open:focus-visible { outline: 2px solid var(--fgColor-accent, #0969da);
   outline-offset: 1px; }
 `;
@@ -102,13 +109,15 @@ button.ssf-pane-open:hover:not(:disabled) {
 
   /// Open for one session. `input` is the snapshot's `pane_input`: whether the
   /// factory lets a person type there. The handler is an `onclick` property,
-  /// which content.js copies onto a button it keeps between frames.
-  function button(factoryUrl, session, input) {
-    const open = element("button", "ssf-pane-open");
+  /// which content.js copies onto a button it keeps between frames. `label`,
+  /// where given, is drawn beside the icon: a card's Show agent.
+  function button(factoryUrl, session, input, label) {
+    const open = element("button", label ? "ssf-pane-open ssf-pane-show" : "ssf-pane-open");
     open.type = "button";
     open.title = "Open terminal";
-    open.setAttribute("aria-label", "Open terminal");
+    open.setAttribute("aria-label", label ?? "Open terminal");
     open.append(terminalIcon());
+    if (label) open.append(label);
     open.onclick = (event) =>
       show(factoryUrl, String(session ?? ""), input === true, event.currentTarget);
     return open;

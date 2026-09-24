@@ -140,13 +140,18 @@ page rather than left out, since staying silent would read as "no agent".
 **An issue or pull request page gets a card in the right sidebar, above
 Assignees:**
 
-![An issue page whose right sidebar carries an ssf agent card above Assignees: the state, the stack the session runs, the last message with a `more` toggle, "also on" links, a collapsed Details section, and the Actions row](docs/issue-card.png)
+![An ssf agent card above Assignees: a yellow "Waiting on you · 23m ago" band marked SSF, the stack as omp, deepseek-flash and high chips, the branch, the last message, Show agent with a ••• menu, and a collapsed Details bar](docs/issue-card.png)
 
-Always visible: the state line, the stack the session is on — `harness · model ·
-effort`, the effort included because it is what the session's tokens cost and
-because it is a third of what the hand-over pickers move — and the last message
-trimmed to two lines behind a `more` toggle that appears only when the text is
-really clipped. Then:
+The card leads with a **band tinted by the state** — green Working, yellow
+Waiting on you, grey Done or No agent, red Problem — carrying the state word,
+the last activity time and SSF. The band is the only place the card uses a
+state colour. Under it, always visible: the stack the session is on as
+`harness`, `model` and `effort` chips (effort included because it is what the
+session's tokens cost and because it is a third of what the hand-over pickers
+move), the **branch** on one line with the full name in its tooltip, `on
+<factory>` when there is more than one factory to tell apart, why there is no
+activity time where there is none, and the last message trimmed to two lines
+behind a `more` toggle that appears only when the text is really clipped. Then:
 
 - **also on: #a #b** — the other issues this agent has taken on;
 - **Details**, collapsed — every fact the card holds, one row each: what ssf
@@ -160,7 +165,10 @@ really clipped. Then:
   falls back to the label you gave the factory on the options page, or to its URL
   host when you gave none:
 
-![The same card with Details open: State, Item, Stack, Doing, Branch, Workspace, Session, Factory and Active rows](docs/issue-card-details.png)
+Each Details value is one line, whole in its tooltip; a workspace path is cut
+from the left, so the end that tells workspaces apart stays visible.
+
+![The same card with Details open: State, Item, Stack, Branch, Workspace, Session, Factory and Active rows](docs/issue-card-details.png)
 
 Where there is no activity time to show, nothing is shown in its place. ssf dates
 a session from the local transcript its harness keeps, which is a thing an `omp`
@@ -320,12 +328,14 @@ A refusal is the server's own words, with the form kept and nothing retried:
 ## Acting on an agent
 
 An item whose state is **Working**, **Waiting on you**, **Done** or **Problem**
-carries an **Actions** row on the card of the factory that has it — Hand over…
-and Release, both sent from the service worker and never from the page. A second
+carries an **Actions** row on the card of the factory that has it — **Show
+agent**, which opens the agent's terminal over the page, and a **•••** menu
+holding Hand over… and Release, both sent from the service worker and never
+from the page. A second
 factory with an agent on the same item draws its own row, so each session is
 acted on through the factory that runs it:
 
-![An item's card with the Actions row: Hand over… and Release, and the line saying a comment on the item is how to talk to the agent](docs/actions.png)
+![An item's card with the ••• menu open under Show agent: Hand over… and Release](docs/actions.png)
 
 The row starts, moves and frees sessions. It does not talk to them: **a person
 speaks to an agent by commenting on the item**, which is what the note under the
@@ -366,7 +376,7 @@ an item can be acted on without leaving the board:
   ![Release accepted, with the item and the daemon's next pass](docs/action-release-accepted.png)
 
 **Writes** switches on the options page, on by default, govern all of it.
-Turning one off hides the assign form, the Actions row and Open for that
+Turning one off hides the assign form, the Actions row and Show agent for that
 factory and refuses every write in the service worker. It is the extension's
 own side of the rule the factory enforces: the server accepts a write only from
 an extension origin, so nothing else that can reach a capability URL can act on
@@ -387,7 +397,7 @@ at once; when they find uncommitted or unpushed work the card shows what they
 found and says that all work in the workspace will be lost, and only **Kill
 anyway** (a second request, forced) removes it.
 
-**Open**, the terminal icon at the top of an item's card (on a factory whose
+**Open** — **Show agent** at the head of an item's Actions row (on a factory whose
 Writes switch is on) and at the end of a scratch session's first line, shows
 the session's agent pane over the GitHub page, mirrored from
 `api/pane/<session>`. The close button, a click outside the panel, or Esc
