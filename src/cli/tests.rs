@@ -625,6 +625,57 @@ fn config_set_updates_the_startup_wait() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `ssf config set` is the only way a person changes the scratch grace, and
+/// it is the generic path: the number is written and loads back, `0` (keep
+/// released sessions for ever) is a value like any other, and a value the
+/// daemon could not load is refused before anything is written.
+#[test]
+fn config_set_takes_the_scratch_release_grace() {
+    let dir = std::env::temp_dir().join(format!(
+        "ssf-config-set-grace-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, "").unwrap();
+    assert_eq!(
+        Config::load_from(&path)
+            .unwrap()
+            .daemon
+            .scratch_release_grace_hours,
+        24
+    );
+    config_set_at(&path, "daemon.scratch_release_grace_hours", "6", false).unwrap();
+    assert_eq!(
+        Config::load_from(&path)
+            .unwrap()
+            .daemon
+            .scratch_release_grace_hours,
+        6
+    );
+    config_set_at(&path, "daemon.scratch_release_grace_hours", "0", false).unwrap();
+    assert_eq!(
+        Config::load_from(&path)
+            .unwrap()
+            .daemon
+            .scratch_release_grace_hours,
+        0
+    );
+    let written = std::fs::read_to_string(&path).unwrap();
+    for bad in ["-1", "soon", "1.5"] {
+        assert!(
+            config_set_at(&path, "daemon.scratch_release_grace_hours", bad, false).is_err(),
+            "{bad} was written"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written, "{bad}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn config_set_switches_event_comments_through_the_generic_path() {
     let dir = std::env::temp_dir().join(format!(

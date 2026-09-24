@@ -352,7 +352,9 @@ Repositories with no linked projects are left out, and a server that does not
 publish it sends nothing: a client reads a missing field as no projects.
 
 `dashboard.scratch` lists the factory's scratch sessions (`ssf scratch`),
-released ones included so a client can offer to resume them: each has `id`
+released ones included until the factory drops them
+(`daemon.scratch_release_grace_hours`, 24 hours by default), so a client can
+offer to resume them: each has `id`
 (`owner/name~id`), `repo`, `owner_login` (`null` for a shared session),
 `active`, `agent_live`, `state`, `released_at`, `harness`, `model`,
 `effort`, `branch` and `pane_input`. `state` is `live` (its tmux session

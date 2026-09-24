@@ -75,6 +75,7 @@ impl Engine {
             self.capture_scratch(&repo);
             self.run_cleanups(&repo).await;
             self.run_scratch_cleanups(&repo).await;
+            self.drop_released_scratch(&repo);
             if let Err(e) = self.state.save() {
                 error!("saving state: {e:#}");
             }

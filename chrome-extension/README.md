@@ -413,7 +413,10 @@ started it. The list reads each session's `state` from the factory:
   not started it again yet. They have **Resume**, which starts the harness
   again in the same workspace, resuming its conversation, and the **×**.
 - **Released** sessions (killed) are under their own **Released** tab, each
-  with **Resume**, which recreates the workspace on the session's branch.
+  with **Resume**, which recreates the workspace on the session's branch. The
+  factory keeps one for 24 hours after its release
+  (`daemon.scratch_release_grace_hours`) and then drops it: the row goes from
+  the tab, and a resume is refused because the session is no longer known.
 
 The **×** asks only when there is something to lose. When the factory's checks
 find nothing uncommitted or unpushed, the session is killed at once; when they

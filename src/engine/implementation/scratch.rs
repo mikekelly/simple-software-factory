@@ -63,8 +63,16 @@ impl Engine {
             .and_then(|rs| rs.scratch.get(&s.id))
             .cloned()
             .ok_or_else(|| {
+                let grace = self.cfg.daemon.scratch_release_grace_hours;
+                let dropped = match grace {
+                    0 => String::new(),
+                    _ => format!(
+                        ", or released more than {grace} hours ago and dropped by the factory"
+                    ),
+                };
                 Refused::conflict(format!(
-                    "{session} is not a scratch session ssf knows (see `ssf status`)"
+                    "{session} is not a scratch session ssf knows (never created{dropped}; \
+`ssf status` lists the ones ssf has)"
                 ))
             })?;
         let s = Scratch {
@@ -669,6 +677,58 @@ removed the workspace"
         e.worktree_path = None;
         e.terminal_handle = None;
         e.released_at = Some(now_iso());
+    }
+
+    /// The pass's other half of a scratch release (#501): one released
+    /// longer ago than `daemon.scratch_release_grace_hours` is forgotten.
+    /// Its record goes, and with it the id, the conversation a resume would
+    /// use and what it followed; its branch and the harness's own
+    /// transcript are left where they are.
+    pub(in crate::engine) fn drop_released_scratch(&mut self, repo: &RepoConfig) {
+        let hours = self.cfg.daemon.scratch_release_grace_hours;
+        if hours == 0 {
+            return;
+        }
+        let cutoff = chrono::Utc::now() - chrono::Duration::hours(hours as i64);
+        let Some(rs) = self.state.repos.get_mut(&repo.name) else {
+            return;
+        };
+        let gone: Vec<String> = rs
+            .scratch
+            .iter()
+            .filter(|(_, st)| {
+                st.worktree_id.is_none()
+                    && st
+                        .released_at
+                        .as_deref()
+                        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                        .is_some_and(|t| t < cutoff)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &gone {
+            rs.scratch.remove(id);
+        }
+        if gone.is_empty() {
+            return;
+        }
+        for id in gone {
+            let session = Scratch {
+                repo: repo.name.clone(),
+                id: id.clone(),
+            }
+            .to_string();
+            // What it followed is not left answering to a session that is
+            // gone (a subscriber that no longer exists is warned about on
+            // every delivery).
+            let dropped = self.state.unsubscribe_everywhere(&session);
+            info!(
+                session,
+                hours,
+                ?dropped,
+                "dropped a released scratch session; it is past the grace"
+            );
+        }
     }
 
     /// Record the harness conversation of scratch sessions that do not

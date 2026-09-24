@@ -631,6 +631,16 @@ shell). The record, its branch and the harness conversation are kept, and
 `ssf scratch resume owner/repo~<id>` recreates the worktree, on that branch
 when it still exists, and resumes the conversation.
 
+A killed session is forgotten by the factory 24 hours after its release
+(`daemon.scratch_release_grace_hours`; `0` keeps released sessions for
+ever): the record goes on the next pass, so it leaves `ssf status` and the
+extension's list, and `ssf scratch resume` no longer knows it (the refusal
+says so). What it followed is unsubscribed with it. Its branch stays in the
+checkout (and on origin, where it was pushed), and the harness's own
+transcript is left where the harness keeps it: ssf forgets which
+conversation was whose, it does not delete one. A session that is live or
+merely **off** is never dropped whatever its record says.
+
 However a scratch session is started again -- a resume, a daemon restart, or
 a message that finds it gone -- it starts as it did when it was created: the
 harness resumes its conversation where it can (fresh where it cannot, or where
