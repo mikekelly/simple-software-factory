@@ -368,12 +368,13 @@ pub(crate) fn claude_context_window(id: &str) -> Option<u64> {
     }
 }
 
-/// A token count as a byline spells it: `1M`, `200k`, or the bare count.
+/// A token count as a byline spells it: `1M`, `200k`, or rounded to
+/// thousands (`258k` for Codex's 258400), the bare count below that.
 pub(crate) fn token_size(tokens: u64) -> String {
     if tokens >= 1_000_000 && tokens.is_multiple_of(1_000_000) {
         format!("{}M", tokens / 1_000_000)
-    } else if tokens >= 1_000 && tokens.is_multiple_of(1_000) {
-        format!("{}k", tokens / 1_000)
+    } else if tokens >= 1_000 {
+        format!("{}k", (tokens + 500) / 1_000)
     } else {
         tokens.to_string()
     }

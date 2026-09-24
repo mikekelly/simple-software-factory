@@ -161,7 +161,7 @@ pub static HARNESSES: &[Harness] = &[
         ],
         api_key_vars: &["OPENAI_API_KEY"],
         reads_transcript: true,
-        context: None,
+        context: Some(crate::sessions::codex_context),
         channel: &Codex,
     },
     // Pi, Oh My Pi and OpenCode use their own `provider/model` identifiers.

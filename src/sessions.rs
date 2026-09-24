@@ -42,6 +42,24 @@ pub fn last_activity(harness: &str, cwd: &str, id: &str) -> Option<String> {
     })
 }
 
+/// The newest `<root>/sessions/**/rollout-*-<id>.jsonl`; `id` must already
+/// be checked to be a plain file-name fragment.
+fn codex_rollout(root: &Path, id: &str) -> Option<PathBuf> {
+    let suffix = format!("-{id}.jsonl");
+    let mut latest: Option<(SystemTime, PathBuf)> = None;
+    walk(&root.join("sessions"), 0, &mut |path| {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with("rollout-")
+            && name.ends_with(&suffix)
+            && let Ok(time) = std::fs::metadata(path).and_then(|m| m.modified())
+            && latest.as_ref().is_none_or(|(old, _)| time > *old)
+        {
+            latest = Some((time, path.to_path_buf()));
+        }
+    });
+    latest.map(|(_, path)| path)
+}
+
 fn transcript_modified(root: &Path, harness: &str, cwd: &str, id: &str) -> Option<SystemTime> {
     // The reference comes from another process and must remain a file name.
     if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
@@ -62,20 +80,10 @@ fn transcript_modified(root: &Path, harness: &str, cwd: &str, id: &str) -> Optio
             .modified()
             .ok()
         }
-        "codex" => {
-            let suffix = format!("-{id}.jsonl");
-            let mut latest = None;
-            walk(&root.join("sessions"), 0, &mut |path| {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name.starts_with("rollout-")
-                    && name.ends_with(&suffix)
-                    && let Ok(time) = std::fs::metadata(path).and_then(|m| m.modified())
-                {
-                    latest = Some(latest.map_or(time, |old: SystemTime| old.max(time)));
-                }
-            });
-            latest
-        }
+        "codex" => std::fs::metadata(codex_rollout(root, id)?)
+            .ok()?
+            .modified()
+            .ok(),
         _ => None,
     }
 }
@@ -174,14 +182,7 @@ fn claude_transcript(root: &Path, id: &str) -> Option<PathBuf> {
 /// transcript at `path`; only its tail is read, since a transcript grows
 /// with the conversation.
 fn context_of(path: &Path) -> Option<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    const TAIL: u64 = 4 << 20;
-    let mut file = std::fs::File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
-    file.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
-    let mut tail = Vec::new();
-    file.read_to_end(&mut tail).ok()?;
-    let tail = String::from_utf8_lossy(&tail);
+    let tail = tail_of(path)?;
     tail.lines().rev().find_map(|line| {
         let v: serde_json::Value = serde_json::from_str(line).ok()?;
         if v.get("type")?.as_str()? != "assistant" || v["isSidechain"].as_bool() == Some(true) {
@@ -201,6 +202,68 @@ fn context_of(path: &Path) -> Option<String> {
             return None;
         }
         let window = crate::models::claude_context_window(message.get("model")?.as_str()?)?;
+        Some(format!(
+            "{}% of {}",
+            (used * 100 / window).min(100),
+            crate::models::token_size(window)
+        ))
+    })
+}
+
+/// The last 4 MiB of the transcript at `path`: a transcript grows with the
+/// conversation, and only its latest turn matters.
+fn tail_of(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 4 << 20;
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).ok()?;
+    Some(String::from_utf8_lossy(&tail).into_owned())
+}
+
+/// How full a Codex session's context is, as its byline shows it
+/// (`12% of 258k`): Codex gives the commands it runs its session as
+/// `CODEX_THREAD_ID` (and `CODEX_SESSION_ID`), which names its rollout, and
+/// the usage is the rollout's latest `token_count` event. `None` whenever
+/// any of that is missing.
+pub fn codex_context() -> Option<String> {
+    let id = std::env::var("CODEX_THREAD_ID")
+        .or_else(|_| std::env::var("CODEX_SESSION_ID"))
+        .ok()?;
+    if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+        return None;
+    }
+    let root = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".codex"));
+    codex_context_of(&codex_rollout(&root, &id)?)
+}
+
+/// The input of the last turn against the model's window, from the latest
+/// `token_count` event in the rollout at `path`. Codex counts cached input
+/// inside `input_tokens`.
+fn codex_context_of(path: &Path) -> Option<String> {
+    let tail = tail_of(path)?;
+    tail.lines().rev().find_map(|line| {
+        if !line.contains("\"token_count\"") {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        let payload = v.get("payload")?;
+        if payload.get("type")?.as_str()? != "token_count" {
+            return None;
+        }
+        let info = payload.get("info")?;
+        let used = info
+            .get("last_token_usage")?
+            .get("input_tokens")?
+            .as_u64()?;
+        let window = info.get("model_context_window")?.as_u64()?;
+        if used == 0 || window == 0 {
+            return None;
+        }
         Some(format!(
             "{}% of {}",
             (used * 100 / window).min(100),
@@ -350,6 +413,36 @@ mod tests {
             transcript_modified(root, "pi", "/work/tree", "session-2"),
             None
         );
+    }
+
+    #[test]
+    fn codex_context_is_the_last_token_count() {
+        let sandbox = crate::config::test_support::sandbox();
+        let day = sandbox.root().join("sessions/2026/09/24");
+        std::fs::create_dir_all(&day).unwrap();
+        let count = |input: u64, window: u64| {
+            serde_json::json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900_000},"last_token_usage":{"input_tokens":input,"cached_input_tokens":input / 2,"output_tokens":80},"model_context_window":window}}}).to_string()
+        };
+        let lines = [
+            r#"{"type":"session_meta","payload":{"id":"t-1","cwd":"/a"}}"#.to_string(),
+            count(1_000, 258_400),
+            count(31_008, 258_400),
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":null}}"#.to_string(),
+            r#"{"type":"response_item","payload":{"type":"message"}}"#.to_string(),
+        ];
+        std::fs::write(
+            day.join("rollout-2026-09-24T12-00-00-t-1.jsonl"),
+            lines.join("\n"),
+        )
+        .unwrap();
+        let path = codex_rollout(sandbox.root(), "t-1").unwrap();
+        assert_eq!(codex_context_of(&path).as_deref(), Some("12% of 258k"));
+        assert!(codex_rollout(sandbox.root(), "t-2").is_none());
+        std::fs::write(day.join("rollout-x-t-2.jsonl"), count(50_000, 200_000)).unwrap();
+        let path = codex_rollout(sandbox.root(), "t-2").unwrap();
+        assert_eq!(codex_context_of(&path).as_deref(), Some("25% of 200k"));
+        std::fs::write(&path, lines[0].as_str()).unwrap();
+        assert_eq!(codex_context_of(&path), None);
     }
 
     #[test]
