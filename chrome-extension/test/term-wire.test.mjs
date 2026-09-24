@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { termUrl } from "../factory-url.js";
-import { fromBase64, resizeMessage, toBase64 } from "../term-wire.js";
+import { fromBase64, resizeMessage, termSend, toBase64 } from "../term-wire.js";
 
 test("the terminal's socket follows the factory's scheme and escapes the session", () => {
   assert.equal(
@@ -28,4 +28,14 @@ test("a resize is the factory's JSON, for sizes it takes", () => {
   assert.equal(resizeMessage(0, 40), null);
   assert.equal(resizeMessage(80, 1001), null);
   assert.equal(resizeMessage(80.5, 24), null);
+});
+
+test("typing and resizing reach the socket only while Writes is on", () => {
+  const input = { type: "input", data: "bHMN" };
+  const resize = { type: "resize", data: '{"type":"resize","cols":80,"rows":24}' };
+  assert.deepEqual(termSend(input, true), new Uint8Array([108, 115, 13]));
+  assert.equal(termSend(resize, true), resize.data);
+  assert.equal(termSend(input, false), null);
+  assert.equal(termSend(resize, false), null);
+  assert.equal(termSend({ type: "ping" }, true), null);
 });

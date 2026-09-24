@@ -26,3 +26,14 @@ export function resizeMessage(cols, rows) {
   if (!ok(cols) || !ok(rows)) return null;
   return JSON.stringify({ type: "resize", cols, rows });
 }
+
+/// What a page's message to the terminal sends down the socket: the typed
+/// bytes of `input`, the JSON text of `resize`, or null -- for anything else,
+/// and for both while the factory's Writes switch (`writes`) is off, since a
+/// view-only terminal neither types nor resizes the session.
+export function termSend(message, writes) {
+  if (!writes) return null;
+  if (message?.type === "input") return fromBase64(message.data);
+  if (message?.type === "resize") return String(message.data);
+  return null;
+}

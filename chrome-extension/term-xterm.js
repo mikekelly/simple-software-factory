@@ -3,7 +3,8 @@
 // the service worker, on a port (`ssf-term`). What the terminal prints comes
 // as bytes, what is typed goes as bytes, and the terminal is sized to its
 // window: every change of size (debounced) is fitted and sent as a resize,
-// which the tmux session follows.
+// which the tmux session follows. A view-only terminal neither types nor
+// resizes the session.
 import { Terminal } from "./vendor/xterm/xterm.mjs";
 import { FitAddon } from "./vendor/xterm/addon-fit.mjs";
 import { fromBase64, resizeMessage, toBase64 } from "./term-wire.js";
@@ -41,7 +42,7 @@ export function run({ url, session, takesInput, say, box, reconnect }) {
   };
   const sendSize = () => {
     const text = resizeMessage(term.cols, term.rows);
-    if (connected && text) post({ type: "resize", data: text });
+    if (connected && takesInput && text) post({ type: "resize", data: text });
   };
 
   function closed(text) {

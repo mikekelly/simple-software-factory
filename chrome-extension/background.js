@@ -20,7 +20,7 @@
 // content script running on github.com has none, so these are sent from here;
 // the same rule is why the read streams live here too.
 import { endpoint, factoryUrl, factoryLabel, originPattern, termUrl } from "./factory-url.js";
-import { fromBase64, toBase64 } from "./term-wire.js";
+import { termSend, toBase64 } from "./term-wire.js";
 
 const BACKOFF_MIN_MS = 1000;
 const BACKOFF_MAX_MS = 60000;
@@ -429,11 +429,15 @@ async function readPane(message, signal, tell) {
 /// carries the extension's origin, which the factory requires.
 ///
 /// The page sends `open` to connect, `input` (base64 bytes) and `resize`
-/// (the factory's own JSON text); this worker sends `open` once connected,
+/// (the factory's own JSON text), both dropped while the factory's Writes
+/// switch is off; this worker sends `open` once connected,
 /// `data` (base64 bytes) and, once, `closed` with why. Closing the port closes
 /// the socket.
 function termStream(port) {
   let socket = null;
+  /// The factory the socket is open on: its Writes switch is read on every
+  /// message, so turning it off stops typing and resizing at once.
+  let factory = null;
   const tell = (message) => {
     try {
       port.postMessage(message);
@@ -452,6 +456,7 @@ function termStream(port) {
         tell({ type: "closed", error: "this terminal names no configured factory" });
         return;
       }
+      factory = url;
       const mine = new WebSocket(termUrl(url, String(message.session ?? "")));
       socket = mine;
       mine.binaryType = "arraybuffer";
@@ -466,10 +471,9 @@ function termStream(port) {
         socket = null;
         tell({ type: "closed", code: event.code, reason: event.reason });
       };
-    } else if (message?.type === "input" && socket?.readyState === WebSocket.OPEN) {
-      socket.send(fromBase64(message.data));
-    } else if (message?.type === "resize" && socket?.readyState === WebSocket.OPEN) {
-      socket.send(String(message.data));
+    } else if (socket?.readyState === WebSocket.OPEN) {
+      const data = termSend(message, factories.get(factory)?.writes === true);
+      if (data !== null) socket.send(data);
     }
   });
 }
