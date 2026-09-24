@@ -153,9 +153,11 @@
 .ssf-writes button.ssf-writes-kill:hover:not(:disabled) {
   background: var(--bgColor-danger-muted, #ffebe9);
   border-color: var(--borderColor-danger-muted, #ffcecb); }
-/* Open and Kill share the end of the line. */
+/* Open leads the line; Kill ends it. A live row opens its terminal. */
 .ssf-writes-title .ssf-writes-kill { margin-left: auto; }
-.ssf-writes-title .ssf-pane-open + .ssf-writes-kill { margin-left: 0; }
+.ssf-writes-title .ssf-pane-open { margin-left: 0; }
+.ssf-scratch-open { cursor: pointer; border-radius: 6px; }
+.ssf-scratch-open:hover { background: var(--bgColor-muted, #f6f8fa); }
 /* New scratch: the card's Show agent, as its one neutral full-width button. */
 .ssf-writes button.ssf-writes-new { flex: 1 1 auto; font-weight: 500;
   background: var(--bgColor-muted, #f6f8fa); }
@@ -973,16 +975,25 @@
     const phase = scratchPhase(one);
     const pill = element("span", "ssf-scratch-phase", one.stateLabel || phase);
     pill.dataset.ssfBand = PHASE_BAND[phase];
+    const busy = state.rowBusy === id;
+    // Open while its terminal runs, as the row's leading icon; off, Resume
+    // starts it first.
+    const open = phase === "live" && globalThis.ssfPane?.button(state.url, id, one.pane_input === true);
+    if (open) {
+      title.append(open);
+      // The whole row opens the terminal; its own buttons (×) keep theirs.
+      row.classList.add("ssf-scratch-open");
+      row.onclick = (event) => {
+        if (event.target.closest?.("button, a, select, input, summary")) return;
+        open.click();
+      };
+    }
     title.append(element("span", "ssf-scratch-id", short));
     // Which repository, when the list spans several.
     if (state.repos?.length > 1 && one.repo) {
       title.append(element("span", "ssf-scratch-whose", String(one.repo)));
     }
     title.append(element("span", "ssf-scratch-whose", whose), pill);
-    const busy = state.rowBusy === id;
-    // Open while its terminal runs; off, Resume starts it first.
-    const open = phase === "live" && globalThis.ssfPane?.button(state.url, id, one.pane_input === true);
-    if (open) title.append(open);
     if (phase === "live" || phase === "off") {
       const kill = element("button", "ssf-writes-kill", "\u00d7", "kill");
       kill.type = "button";
@@ -999,7 +1010,6 @@
     [one.harness, one.model, one.effort].forEach((part, index) => {
       if (!part) return;
       const chip = element("span", "ssf-tag", String(part));
-      if (index === 2) chip.dataset.effort = "true";
       chips.append(chip);
     });
     if (chips.childElementCount) row.append(chips);
