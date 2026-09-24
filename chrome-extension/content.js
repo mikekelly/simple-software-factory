@@ -1314,13 +1314,24 @@
       section.append(node);
     }
     reconcile(entry.shadow, [section]);
-    const slot = document.querySelector(".Layout-sidebar");
+    const slot = repoSidebar();
     if (!slot) return false;
     if (entry.host.dataset.ssfSlot !== "sidebar") entry.host.dataset.ssfSlot = "sidebar";
     if (entry.host.parentElement !== slot || slot.firstElementChild !== entry.host) {
       slot.prepend(entry.host);
     }
     return true;
+  }
+
+  /// Where a repository page's scratch section goes: the top of the right
+  /// sidebar, wherever that page's own markup puts it. GitHub's code view
+  /// renders that column as a React pane (`CodeViewSidebar-...`); the classic
+  /// `Layout-sidebar` is what the older markup had.
+  function repoSidebar() {
+    return (
+      document.querySelector(".Layout-sidebar") ??
+      document.querySelector('[class*="CodeViewSidebar-module__borderGrid"]')
+    );
   }
 
   function sameRepo(a, b) {
