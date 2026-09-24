@@ -366,15 +366,18 @@ POST /<capability>/api/pane/input      {"session": "owner/name~id", "text": "yes
 - **scratch/resume** starts a released scratch session again in a new
   workspace.
 - **pane/input** types into a session's agent pane: `text` is sent as typed
-  (control characters included), then each of `keys` (herdr key names such as
-  `Enter` or `C-c`). The text is not logged. A scratch session always takes
-  typing. An item session's pane takes it only where `item_pane_input` is on
-  for its repository (`daemon.item_pane_input`, overridden by
-  `repo.item_pane_input`; off by default), and is otherwise refused with
-  `400`: a person speaks to an item's agent by commenting on the item, where
-  everyone working it can read the exchange (#439). Each card and scratch
-  entry in the snapshot carries `pane_input`, whether its pane takes typing,
-  so a client need not know the rule.
+  (control characters included), then `keys`, in order, as herdr's `pane
+  send-keys` presses them: key names such as `Enter`, `Space`, `Backspace` or
+  `ctrl+c`, or a single literal character (`a`, `.`, `é`), which is how the
+  extension's terminal types a keystroke at a time. A space or control
+  character is not a key; it goes by name. The text is not logged. A scratch
+  session always takes typing. An item session's pane takes it only where
+  `item_pane_input` is on for its repository (`daemon.item_pane_input`,
+  overridden by `repo.item_pane_input`; off by default), and is otherwise
+  refused with `400`: a person speaks to an item's agent by commenting on the
+  item, where everyone working it can read the exchange (#439). Each card and
+  scratch entry in the snapshot carries `pane_input`, whether its pane takes
+  typing, so a client need not know the rule.
 
 Each answers with the same JSON its command prints under `--json`:
 

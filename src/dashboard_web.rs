@@ -683,7 +683,7 @@ async fn pane_input(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'st
         return bad("text cannot carry a NUL byte");
     }
     if !request.keys.iter().all(|key| is_key(key)) {
-        return bad("keys are key names such as enter, esc or ctrl+c");
+        return bad("keys are key names such as enter, esc or ctrl+c, or single characters");
     }
     let text = request.text.filter(|text| !text.is_empty());
     if text.is_none() && request.keys.is_empty() {
@@ -731,8 +731,14 @@ fn is_login(login: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// A key name herdr presses: `enter`, `esc`, `ctrl+c`, `f5`.
+/// A key herdr presses: a name (`enter`, `esc`, `ctrl+c`, `f5`), or one
+/// literal character, which is how the pane mirror types (#477). A space
+/// or a control character is not one herdr takes: those go by name.
 fn is_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        return !c.is_control() && !c.is_whitespace();
+    }
     !key.is_empty()
         && key.len() <= 32
         && key
@@ -2482,6 +2488,31 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 "--key=ctrl+c"
             ]
         );
+        task.abort();
+    }
+
+    /// The pane mirror types a keystroke at a time (#477): each printable
+    /// character is a key of its own, as herdr's `pane send-keys` takes a
+    /// single literal character (checked against herdr 0.9: punctuation and
+    /// non-ASCII alike), with Space, Tab and Enter by name. A literal space
+    /// or control character is not a key herdr takes, so it is refused here.
+    #[tokio::test]
+    async fn pane_input_takes_literal_characters_as_keys() {
+        let client = Client::new("literal-keys", "", 0);
+        let (address, task) = served(&client).await;
+        let keys = ["h", ".", "'", "é", "日", "Space", "Enter"];
+        let body = json!({"session":"o/r~t477","keys":keys}).to_string();
+        let response = post_json(address, "/secret/api/pane/input", &body).await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let mut expected = vec!["__client", "__pane", "send", "o/r~t477"];
+        let named: Vec<String> = keys.iter().map(|key| format!("--key={key}")).collect();
+        expected.extend(named.iter().map(String::as_str));
+        assert_eq!(client.args(), expected);
+        for key in [" ", "\u{7}", "\n", "ab c"] {
+            let body = json!({"session":"o/r~t477","keys":[key]}).to_string();
+            let response = post_json(address, "/secret/api/pane/input", &body).await;
+            assert!(response.starts_with("HTTP/1.1 400"), "{key:?}: {response}");
+        }
         task.abort();
     }
 
