@@ -237,7 +237,7 @@ impl Engine {
                 prompt::fyi_prompt(issue, &mine, &ctx, owner_session.as_deref(), merged, what);
             let told = match &scratch {
                 Some(s) => self
-                    .deliver_scratch(&srepo, &s.id, &text, None)
+                    .deliver_scratch(&srepo, &s.id, Some(&text))
                     .await
                     .map(|_| ()),
                 None => self

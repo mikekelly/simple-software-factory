@@ -23,6 +23,8 @@ repository) and a terminal, and receives the item's activity as messages prefixe
 `SSF_REPO` and `SSF_ISSUE` name the session's item; `SSF_BOT` is the bot's login.{machine} \
 A scratch session (`ssf scratch create`) works on no item: `SSF_SESSION` names it \
 (`owner/repo~id`), `SSF_ISSUE` is unset, and `ssf sub`, `ssf release` and the rest act for it. \
+It is sent no first message, and none when it is started again (a resume or a restart): it \
+waits for the person at its terminal. \
 This guide is the reference behind the initial prompt, and `ssf skill sessions` the lifecycle \
 reference behind this guide.\n\n\
 ## Posts\n\n\

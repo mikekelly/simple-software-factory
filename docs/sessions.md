@@ -630,3 +630,11 @@ the reasons, while work is not on origin; `--force` is for a person at a
 shell). The record, its branch and the harness conversation are kept, and
 `ssf scratch resume owner/repo~<id>` recreates the worktree, on that branch
 when it still exists, and resumes the conversation.
+
+However a scratch session is started again -- a resume, a daemon restart, or
+a message that finds it gone -- it starts as it did when it was created: the
+harness resumes its conversation where it can (fresh where it cannot, or where
+the resumed one exits at once), ssf waits for it to settle (answering a folder
+trust prompt), and nothing is pasted to announce the start. The person at the
+terminal gives the next prompt; a message that found it gone is pasted alone,
+as it would have been into a running session.
