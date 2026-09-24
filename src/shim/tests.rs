@@ -46,3 +46,12 @@ mod attribution;
 mod bodies_and_reviews;
 mod delegation_and_install;
 mod flags;
+
+#[test]
+fn only_a_possible_post_reads_the_context() {
+    assert!(may_post(&args(&["-R", "o/r", "issue", "comment", "1"])));
+    assert!(may_post(&args(&["pr", "review", "--approve"])));
+    assert!(!may_post(&args(&["pr", "view", "1"])));
+    assert!(!may_post(&args(&["api", "repos/o/r/issues"])));
+    assert!(!may_post(&args(&["comment", "issue"])));
+}

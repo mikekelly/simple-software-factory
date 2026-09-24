@@ -165,10 +165,14 @@ pub fn run() -> ! {
     let bot = session.var("SSF_BOT");
     let gh_repo = session.var("GH_REPO");
     // The byline names how full the session's context is where its
-    // harness can tell.
+    // harness can tell. Only a command that may post asks: reading it can
+    // mean starting the harness (`omp models`), which every other gh call
+    // would wait on for nothing.
+    let posts = utf8.as_deref().is_some_and(may_post);
     let stack = session.stack().map(|mut stack| {
         stack.context = crate::harness::harness(&stack.harness)
             .and_then(|h| h.context)
+            .filter(|_| posts)
             .and_then(|context| context());
         stack
     });
@@ -459,6 +463,17 @@ pub struct Shim<'a> {
     pub stack: Option<&'a Stack>,
     pub read: &'a dyn Fn(&str) -> std::io::Result<String>,
     pub checkout: &'a dyn Fn() -> Option<String>,
+}
+
+/// Could `args` be a tagged post: do they name one of its commands and,
+/// later, one of that command's subcommands? A loose test, since flags may
+/// come anywhere; it only decides whether the byline's context is read.
+fn may_post(args: &[String]) -> bool {
+    TAGGED.iter().any(|(command, subs)| {
+        args.iter()
+            .position(|a| a == command)
+            .is_some_and(|at| args[at + 1..].iter().any(|a| subs.contains(&a.as_str())))
+    })
 }
 
 /// The commands whose posts are tagged, and the subcommands of each.

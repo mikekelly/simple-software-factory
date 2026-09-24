@@ -75,7 +75,15 @@ ssf does not know). Claude Code sessions have it from the latest turn in
 `~/.claude/projects/*/<CLAUDE_CODE_SESSION_ID>.jsonl`, and Codex sessions from
 the latest `token_count` event in
 `$CODEX_HOME/sessions/**/rollout-*-<CODEX_THREAD_ID>.jsonl` (the last turn's
-input against the window Codex reports, e.g. `12% of 258k`).
+input against the window Codex reports, e.g. `12% of 258k`). Oh My Pi
+sessions that ssf launched have it from the latest assistant turn in the
+newest transcript under `$SSF_DELIVERY_MAILBOX/session/`, against the context
+window `omp models --json` lists for that turn's model. That listing takes
+seconds, so ssf caches it in `~/.cache/ssf/omp-models.json` (under
+`$XDG_CACHE_HOME` when set) and refreshes it in the background once a day, or
+when it lacks the model; a post made before the cache has the model leaves the
+usage out. Only a command that can post (`issue`/`pr` `create`, `comment`,
+`review`) reads any of this.
 
 The three travel to the session as `SSF_HARNESS`, `SSF_MODEL` and `SSF_EFFORT`.
 `SSF_HARNESS` is the same variable the [OMP and Pi

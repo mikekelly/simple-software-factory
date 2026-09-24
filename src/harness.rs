@@ -187,7 +187,7 @@ pub static HARNESSES: &[Harness] = &[
         login_phrases: PI_LOGIN_PHRASES,
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
-        context: None,
+        context: Some(crate::sessions::omp_context),
         channel: &Mailbox,
     },
     Harness {

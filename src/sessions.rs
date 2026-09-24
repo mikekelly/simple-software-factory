@@ -272,6 +272,65 @@ fn codex_context_of(path: &Path) -> Option<String> {
     })
 }
 
+/// How full an Oh My Pi session's context is, as its byline shows it. An
+/// ssf-launched OMP session keeps its transcript in the delivery mailbox's
+/// `session/` directory (`harness/ssf-pi-launch`), and OMP's commands inherit
+/// `SSF_DELIVERY_MAILBOX`; the usage is that transcript's latest assistant
+/// turn, and the window is what omp lists for the turn's model
+/// (`models::omp_context_window`). `None` whenever any of that is missing.
+pub fn omp_context() -> Option<String> {
+    let mailbox = std::env::var_os("SSF_DELIVERY_MAILBOX")?;
+    let session = Path::new(&mailbox).join("session");
+    let (provider, model, used) = omp_turn(&newest_jsonl(&session)?)?;
+    let window = crate::models::omp_context_window(&provider, &model)?;
+    Some(format!(
+        "{}% of {}",
+        (used * 100 / window).min(100),
+        crate::models::token_size(window)
+    ))
+}
+
+/// The most recently written `*.jsonl` in `dir`: a fork or branch starts a
+/// new transcript beside the old one, and the running session writes its own.
+fn newest_jsonl(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .max()
+        .map(|(_, path)| path)
+}
+
+/// The provider, model and context tokens (input plus cache reads and
+/// writes) of the last assistant turn in the OMP transcript at `path`.
+fn omp_turn(path: &Path) -> Option<(String, String, u64)> {
+    let tail = tail_of(path)?;
+    tail.lines().rev().find_map(|line| {
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        if v.get("type")?.as_str()? != "message" {
+            return None;
+        }
+        let message = v.get("message")?;
+        if message.get("role")?.as_str()? != "assistant" {
+            return None;
+        }
+        let usage = message.get("usage")?;
+        let used: u64 = ["input", "cacheRead", "cacheWrite"]
+            .iter()
+            .filter_map(|k| usage.get(*k).and_then(serde_json::Value::as_u64))
+            .sum();
+        if used == 0 {
+            return None;
+        }
+        Some((
+            message.get("provider")?.as_str()?.to_string(),
+            message.get("model")?.as_str()?.to_string(),
+            used,
+        ))
+    })
+}
+
 fn capture_claude(cwd: &str, since: SystemTime, exclude: &[String]) -> Option<String> {
     newest_transcript(&claude_project_dir(cwd), since, exclude)
 }
@@ -443,6 +502,33 @@ mod tests {
         assert_eq!(codex_context_of(&path).as_deref(), Some("25% of 200k"));
         std::fs::write(&path, lines[0].as_str()).unwrap();
         assert_eq!(codex_context_of(&path), None);
+    }
+
+    #[test]
+    fn omp_turn_is_the_last_assistant_message() {
+        let sandbox = crate::config::test_support::sandbox();
+        let turn = |role: &str, read: u64| {
+            serde_json::json!({"type":"message","message":{"role":role,"provider":"deepseek","model":"deepseek-flash","usage":{"input":170,"output":181,"cacheRead":read,"cacheWrite":30,"totalTokens":1}}}).to_string()
+        };
+        let lines = [
+            r#"{"type":"session","version":3}"#.to_string(),
+            turn("assistant", 1_000),
+            turn("assistant", 119_800),
+            turn("toolResult", 900_000),
+            r#"{"type":"custom","customType":"x"}"#.to_string(),
+        ];
+        let old = sandbox.root().join("a.jsonl");
+        std::fs::write(&old, turn("assistant", 5)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let path = sandbox.root().join("b.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        std::fs::write(sandbox.root().join("ready.json"), "{}").unwrap();
+        assert_eq!(newest_jsonl(sandbox.root()), Some(path.clone()));
+        assert_eq!(
+            omp_turn(&path),
+            Some(("deepseek".into(), "deepseek-flash".into(), 120_000))
+        );
+        assert!(newest_jsonl(&sandbox.root().join("missing")).is_none());
     }
 
     #[test]
