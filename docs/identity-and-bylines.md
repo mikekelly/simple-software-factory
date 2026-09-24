@@ -71,8 +71,11 @@ Where its harness can tell, the byline also says how full the session's
 context was when it posted: `🤖#16 claude/opus/high (12% of 1M) says:`. The
 `gh` shim reads it from the session's own transcript at the moment of the
 post, and leaves it out when it cannot (no transcript, or a model whose window
-ssf does not know). Claude Code sessions have it so far, from the latest turn in
-`~/.claude/projects/*/<CLAUDE_CODE_SESSION_ID>.jsonl`.
+ssf does not know). Claude Code sessions have it from the latest turn in
+`~/.claude/projects/*/<CLAUDE_CODE_SESSION_ID>.jsonl`, and Codex sessions from
+the latest `token_count` event in
+`$CODEX_HOME/sessions/**/rollout-*-<CODEX_THREAD_ID>.jsonl` (the last turn's
+input against the window Codex reports, e.g. `12% of 258400`).
 
 The three travel to the session as `SSF_HARNESS`, `SSF_MODEL` and `SSF_EFFORT`.
 `SSF_HARNESS` is the same variable the [OMP and Pi
