@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Simple Software Factory overlay",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Live ssf agent state on github.com issue and pull request pages.",
   "minimum_chrome_version": "116",
   "permissions": ["storage"],
