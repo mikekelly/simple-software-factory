@@ -68,6 +68,8 @@ const scroller = document.getElementById("scroller");
 const historyBox = document.getElementById("history");
 const screenBox = document.getElementById("screen");
 document.getElementById("session").textContent = session;
+// Framed in a floating window, whose title bar already names the session.
+document.getElementById("session").hidden = window.top !== window;
 document.title = `${session} · ssf`;
 
 /// Whether what is typed goes to the pane: Type is on.
