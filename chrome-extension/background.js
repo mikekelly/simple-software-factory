@@ -84,6 +84,9 @@ function payload() {
       /// is for. A factory that has not answered yet cannot say, and publishes
       /// none, so nothing is offered on its behalf.
       repositories: entry.snapshot?.repositories ?? [],
+      /// Each watched repository's linked Projects v2, repository -> project
+      /// URLs, so a project page can serve the repositories it covers (#499).
+      repositoryProjects: entry.snapshot?.repository_projects ?? {},
       /// Every scratch session, the killed ones included, which have no card:
       /// a repository page lists them with Open, Kill and Resume (#414).
       scratch: entry.snapshot?.scratch ?? [],

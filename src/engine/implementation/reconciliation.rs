@@ -205,6 +205,7 @@ impl Engine {
     pub(in crate::engine) async fn tick_repo(&mut self, repo: &RepoConfig) -> Result<()> {
         let (owner, name) = repo.split()?;
         self.refresh_collaborators(repo, owner, name).await?;
+        self.refresh_linked_projects(repo, owner, name).await;
         // What each pane in this repository is running, once for the whole
         // pass: the login check, the harness a handover takes over from and
         // the guidance a live session is given all ask.

@@ -384,12 +384,24 @@ a session through it.
 
 ## Scratch sessions and the terminal
 
-On a repository's front page (`github.com/owner/name`) of a repository a factory
-watches, a **Scratch sessions** section lists that factory's scratch sessions
-(`ssf scratch`) for the repository, and **New scratch** offers the harness,
+On any page of a repository a factory watches, GitHub's top bar gets an
+**SSF · N scratch** button next to the repository's name, N being its scratch
+sessions (`ssf scratch`) that are not released. A click opens a popover with a
+**Scratch sessions** card per factory, and **New scratch** offers the harness,
 model and effort pickers and whose session it is: **Shared**, or **Mine**
 (the login GitHub's page names in `<meta name="user-login">`). That login only
 labels the session; it is not access control.
+
+A Projects v2 board (`github.com/users|orgs/owner/projects/N`, any view, or
+`github.com/owner/name/projects/N`) gets the same button next to the project's
+name. It serves every watched repository linked to that project, which the
+factory reads from GitHub for each repository it watches (at most every ten
+minutes); an empty board still has them. With more than one, the rows name
+their repository and **New scratch** has a **Repository** picker. A factory
+too old to publish linked projects shows no button on a board.
+
+Where GitHub's top bar cannot be found (a page without the global header), no
+button is drawn.
 
 **New scratch** opens the new session's terminal as soon as the factory has
 started it. The list reads each session's `state` from the factory:

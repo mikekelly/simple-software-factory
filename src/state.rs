@@ -74,6 +74,12 @@ pub struct RepoState {
     /// Reviewer sessions from before #115 (a second workspace per pull
     /// request, gone since): read so an old file still loads, dropped with
     /// one log line by [`State::load_from`], never written back.
+    /// URLs of the Projects v2 linked to the repository, as last read
+    /// (#499), and when they were read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projects_checked_at: Option<String>,
     #[serde(default, rename = "reviewers", skip_serializing)]
     pub legacy_reviewers: BTreeMap<u64, serde_json::Value>,
 }
