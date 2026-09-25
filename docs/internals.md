@@ -356,8 +356,10 @@ other harnesses that have the setting take it on the command line.
 ### Claude Code: the peer inbox
 
 Claude Code's default command adds
-`--settings '{"crossSessionInbound":"accept"}'` alongside bypass permissions. A
-custom command must keep both to use this channel. Later events go to the exact
+`--settings '{"crossSessionInbound":"accept","worktree":{"baseRef":"head"}}'`
+alongside bypass permissions. A custom command must keep both to use this
+channel. `worktree.baseRef: "head"` makes subagents spawned with worktree
+isolation branch from the session's committed `HEAD` instead of `origin/HEAD`. Later events go to the exact
 pane's foreground Claude PID through its authenticated NDJSON peer inbox
 socket, discovered in `~/.claude/sessions/` (or under `CLAUDE_CONFIG_DIR`).
 Numeric Linux `/proc` start ticks, and older `ps` timestamps elsewhere, guard
