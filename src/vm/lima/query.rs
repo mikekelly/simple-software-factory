@@ -393,7 +393,10 @@ impl Vm {
         copy_dir(&scripts_dir()?.join("guest"), &guest)?;
         let seed = share.join("seed");
         self.seed_tree(host, &seed)?;
-        std::fs::write(seed.join("lima.env"), lima_env(&self.cfg.name))?;
+        std::fs::write(
+            seed.join("lima.env"),
+            seed_env(&self.cfg.name, self.backend()),
+        )?;
         let herdr = share.join("herdr");
         let _ = std::fs::remove_file(&herdr);
         if let Some(src) = self.guest_herdr()? {

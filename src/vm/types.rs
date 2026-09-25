@@ -192,16 +192,21 @@ pub struct VmStatus {
     pub enabled: bool,
     pub name: String,
     pub dir: String,
-    /// `firecracker` or `lima`.
+    /// `firecracker`, `lima` or `incus`.
     pub backend: String,
-    /// The lima instance (`ssf-<name>`); null under Firecracker.
+    /// True under incus: the guest is a user-namespaced container on the
+    /// host's own kernel, not a VM, and so less isolated.
+    pub shares_host_kernel: bool,
+    /// The lima instance or Incus container (`ssf-<name>`); null under
+    /// Firecracker.
     pub instance: Option<String>,
     /// lima's own directory for the instance, once it exists.
     pub lima_dir: Option<String>,
-    /// Firecracker: the root image is built; lima: the instance exists.
+    /// Firecracker: the root image is built; lima, incus: the instance
+    /// exists.
     pub image: bool,
-    /// Whether the host knows the VM is running. Null when lima could
-    /// not answer the probe; use `probe_error` for why.
+    /// Whether the host knows the VM is running. Null when lima or Incus
+    /// could not answer the probe; use `probe_error` for why.
     pub running: Option<bool>,
     /// Firecracker's and gvproxy's PIDs; null under lima.
     pub firecracker_pid: Option<u32>,
@@ -223,7 +228,7 @@ pub struct VmStatus {
     /// The host tooling this backend needs (`limactl` and qemu, or
     /// `/dev/kvm`). Null inside the guest, whose host owns the VM.
     pub tooling: Option<Tooling>,
-    /// Why lima could not be asked about the instance, when it could not
+    /// Why lima or Incus could not be asked about the instance, when it could not
     /// be. Absent after a successful probe. On failure, `running` is
     /// null; `instance`, `lima_dir` and `image` must not be read as proof
     /// that the instance is missing.
@@ -397,6 +402,8 @@ pub fn sizing_dir(backend: BackendKind, base: &Path) -> (PathBuf, &'static str) 
 pub fn supervise_interval(backend: BackendKind) -> Duration {
     match backend {
         BackendKind::Firecracker => Duration::from_secs(5),
+        // A fork of the incus client and a round trip to its daemon.
+        BackendKind::Incus => Duration::from_secs(15),
         BackendKind::Lima => Duration::from_secs(30),
     }
 }
@@ -423,6 +430,7 @@ pub(in crate::vm) fn cannot_tell_error(
     let tool = match backend {
         BackendKind::Firecracker => "reading the VM's pid file",
         BackendKind::Lima => "`limactl list --json`",
+        BackendKind::Incus => "`incus list --format json`",
     };
     anyhow::anyhow!(
         "cannot tell whether the VM is running: {tool} has not answered for {rounds} tries in a row ({}), and supervising a VM that cannot be asked about is not supervising anything. `ssf vm status` asks the same question by hand",
@@ -434,14 +442,28 @@ pub(in crate::vm) fn cannot_tell_error(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tool {
     /// A program to find on PATH (or an absolute path from `[vm]
-    /// limactl`), or a device to open.
+    /// limactl`), a device to open or a socket to connect to.
     pub name: String,
-    /// Open it rather than look for it: `/dev/kvm` is there on every
-    /// Linux with the module loaded, and the question is whether this
-    /// user may use it.
-    pub device: bool,
+    /// How to tell whether it is usable.
+    pub kind: ToolKind,
     /// What to do when it is not usable.
     pub install: String,
+}
+
+/// How [`probe_tools`] looks at a [`Tool`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    /// A program on PATH (or a path).
+    Program,
+    /// A device to open read-write: `/dev/kvm` is there on every Linux
+    /// with the module loaded, and the question is whether this user may
+    /// use it.
+    Device,
+    /// A daemon's unix socket to connect to: the Incus daemon, which this
+    /// user reaches only as a member of `incus-admin`. A connect, not a
+    /// fork of `incus info`, so the check stays cheap enough for every
+    /// forwarded command that meets a stopped VM.
+    Socket,
 }
 
 /// Does lima drive this VM with qemu? On Linux always: qemu is lima's
@@ -485,9 +507,21 @@ pub fn backend_tools(
     match backend {
         BackendKind::Firecracker => vec![Tool {
             name: "/dev/kvm".into(),
-            device: true,
-            install: "Firecracker runs the guest through KVM: on Debian and Ubuntu `sudo usermod -aG kvm $USER` and a new login, elsewhere check that the kvm module is loaded; a machine without KVM needs [vm] backend = \"lima\"".into(),
+            kind: ToolKind::Device,
+            install: "Firecracker runs the guest through KVM: on Debian and Ubuntu `sudo usermod -aG kvm $USER` and a new login, elsewhere check that the kvm module is loaded; a Linux host without KVM (most cloud VPSes) can use [vm] backend = \"incus\" (a container sharing the host kernel; see docs/platform-specifics.md)".into(),
         }],
+        BackendKind::Incus => vec![
+            Tool {
+                name: "incus".into(),
+                kind: ToolKind::Program,
+                install: incus::INSTALL_HINT.into(),
+            },
+            Tool {
+                name: incus::socket_path().to_string_lossy().into_owned(),
+                kind: ToolKind::Socket,
+                install: incus::DAEMON_HINT.into(),
+            },
+        ],
         BackendKind::Lima => {
             let mut v = vec![Tool {
                 // `[vm] limactl` is a path, and `~/bin/limactl` is a path
@@ -499,7 +533,7 @@ pub fn backend_tools(
                     || "limactl".to_string(),
                     |p| expand_tilde(p).to_string_lossy().into_owned(),
                 ),
-                device: false,
+                kind: ToolKind::Program,
                 install: format!(
                     "install lima {} or newer (`brew install lima` on macOS, the `lima` package or lima's release tarball on Linux) or set [vm] limactl to it",
                     lima::MIN_LIMA
@@ -508,7 +542,7 @@ pub fn backend_tools(
             if lima_uses_qemu(os, vm_type) {
                 v.push(Tool {
                     name: format!("qemu-system-{arch}"),
-                    device: false,
+                    kind: ToolKind::Program,
                     install: qemu_install_hint(os, arch),
                 });
             }
@@ -522,17 +556,19 @@ pub fn probe_tools(tools: &[Tool]) -> Vec<Option<String>> {
     tools
         .iter()
         .map(|t| {
-            if t.device {
+            match t.kind {
                 // Firecracker opens it read-write; being able to do the
                 // same is the whole question.
-                std::fs::OpenOptions::new()
+                ToolKind::Device => std::fs::OpenOptions::new()
                     .read(true)
                     .write(true)
                     .open(&t.name)
                     .ok()
-                    .map(|_| t.name.clone())
-            } else {
-                which(&t.name).map(|p| p.display().to_string())
+                    .map(|_| t.name.clone()),
+                ToolKind::Socket => std::os::unix::net::UnixStream::connect(&t.name)
+                    .ok()
+                    .map(|_| t.name.clone()),
+                ToolKind::Program => which(&t.name).map(|p| p.display().to_string()),
             }
         })
         .collect()
@@ -543,11 +579,13 @@ pub fn probe_tools(tools: &[Tool]) -> Vec<Option<String>> {
 /// what to install for the ones that are missing. The backend is not
 /// named here: both callers have said it already.
 pub fn backend_tooling_line(tools: &[Tool], found: &[Option<String>]) -> (bool, String) {
-    let detail = |t: &Tool, f: &Option<String>| match (t.device, f) {
-        (true, Some(_)) => format!("{} usable", t.name),
-        (true, None) => format!("{} not usable by you", t.name),
-        (false, Some(p)) => format!("{} at {p}", t.name),
-        (false, None) => format!("{} not installed", t.name),
+    let detail = |t: &Tool, f: &Option<String>| match (t.kind, f) {
+        (ToolKind::Device, Some(_)) => format!("{} usable", t.name),
+        (ToolKind::Device, None) => format!("{} not usable by you", t.name),
+        (ToolKind::Socket, Some(_)) => format!("daemon answers at {}", t.name),
+        (ToolKind::Socket, None) => format!("daemon not reachable at {}", t.name),
+        (ToolKind::Program, Some(p)) => format!("{} at {p}", t.name),
+        (ToolKind::Program, None) => format!("{} not installed", t.name),
     };
     let pairs: Vec<(&Tool, &Option<String>)> = tools.iter().zip(found.iter()).collect();
     let missing: Vec<_> = pairs.iter().filter(|(_, f)| f.is_none()).collect();

@@ -497,8 +497,8 @@ pub(super) enum VmCommand {
     /// Grows to the size given, or to the rule for today's free space
     /// (half of it, at least 20 GiB): Firecracker runs `e2fsck -f`,
     /// lengthens the file and `resize2fs`; lima runs `limactl disk resize`
-    /// and the guest grows the filesystem at its next boot. Then `[vm]
-    /// data_gib` is updated. Never shrinks; a smaller disk means a new VM.
+    /// and the guest grows the filesystem at its next boot; incus sets the
+    /// volume's `size`. Then `[vm] data_gib` is updated. Never shrinks; a smaller disk means a new VM.
     Grow {
         /// The new size in GiB (at least the current size).
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
@@ -559,8 +559,8 @@ pub(super) enum VmCommand {
     /// An `~/.ssh/config` entry for the guest (`herdr --remote ssf-<name>`).
     SshConfig,
     /// A fresh root at the next start (Firecracker: the root disk remade
-    /// from the image; lima: the instance re-created, provisioned again
-    /// on its first boot); state, clones and worktrees on the data disk
+    /// from the image; lima and incus: the instance re-created, provisioned
+    /// again on its first boot); state, clones and worktrees on the data disk
     /// stay.
     Reset,
     /// Remove the VM and all its disks (lima: the instance and its data

@@ -188,7 +188,15 @@ pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
                         "  [vm] enabled = false"
                     }
                 );
-                println!("backend:  {}", st.backend);
+                println!(
+                    "backend:  {}{}",
+                    st.backend,
+                    if st.shares_host_kernel {
+                        " (a user-namespaced system container that shares this host's kernel, not a VM: weaker isolation than firecracker or lima)"
+                    } else {
+                        ""
+                    }
+                );
                 if let Some(t) = &st.tooling {
                     println!("tooling:  {}", t.detail);
                 }
@@ -218,7 +226,7 @@ pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
                 println!(
                     "state:    {}",
                     match (&st.probe_error, st.running, st.firecracker_pid) {
-                        (Some(_), ..) => "unknown (lima did not answer)".to_string(),
+                        (Some(_), ..) => format!("unknown ({} did not answer)", st.backend),
                         (None, Some(true), Some(p)) => format!("running (firecracker pid {p})"),
                         (None, Some(true), None) => "running".to_string(),
                         _ => "stopped".to_string(),
@@ -317,6 +325,11 @@ pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
                             ", the lima instance {} and its disk {}",
                             vm.lima_name(),
                             vm.lima_disk_name()
+                        ),
+                        factory_vm::BackendKind::Incus => format!(
+                            ", the Incus container {} and its volume {}",
+                            vm.incus_name(),
+                            vm.incus_name()
                         ),
                         factory_vm::BackendKind::Firecracker => String::new(),
                     }

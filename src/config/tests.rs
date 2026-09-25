@@ -220,6 +220,8 @@ fn vm_backend_keys_round_trip_and_stay_unset_by_default() {
         "Firecracker".parse::<BackendKind>().unwrap(),
         BackendKind::Firecracker
     );
+    assert_eq!("incus".parse::<BackendKind>().unwrap(), BackendKind::Incus);
+    assert_eq!(BackendKind::Incus.to_string(), "incus");
     assert!("qemu".parse::<BackendKind>().is_err());
     assert_eq!(BackendKind::Lima.to_string(), "lima");
     assert_eq!(BackendKind::default_for("macos"), BackendKind::Lima);

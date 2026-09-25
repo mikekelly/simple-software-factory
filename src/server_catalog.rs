@@ -153,10 +153,10 @@ impl Catalog {
                 } => {
                     validate_runtime_name(name, runtime_name)?;
                     if let Some(backend) = backend
-                        && !matches!(backend.as_str(), "firecracker" | "lima")
+                        && !matches!(backend.as_str(), "firecracker" | "lima" | "incus")
                     {
                         bail!(
-                            "server {name:?} has unknown VM backend {backend:?}; expected `firecracker` or `lima`"
+                            "server {name:?} has unknown VM backend {backend:?}; expected `firecracker`, `lima` or `incus`"
                         );
                     }
                     if let Some(config) = config {

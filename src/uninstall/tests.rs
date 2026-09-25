@@ -122,6 +122,7 @@ fn facts() -> Facts {
         vm_startable: true,
         vm_data: Some(true),
         vm_disk: Some("ssf-factory".into()),
+        vm_incus: false,
         vm_removed: "its disks in /vm/factory".into(),
         vm_base: PathBuf::from("/nonexistent/vm"),
         config_dir: PathBuf::from("/c"),
@@ -692,6 +693,20 @@ fn the_refusal_names_the_thing_that_actually_could_not_be_checked() {
         remedy.contains("limactl disk delete ssf-factory"),
         "{remedy}"
     );
+    let incus = Facts {
+        vm_incus: true,
+        ..named.clone()
+    };
+    let (_, remedy) = vm_uncheckable(&incus);
+    assert!(
+        remedy.contains("incus storage volume delete <pool> ssf-factory"),
+        "{remedy}"
+    );
+    let (_, remedy) = vm_uncheckable(&Facts {
+        vm_incus: true,
+        ..f(Some(false), false, None)
+    });
+    assert!(remedy.contains("incus storage volume list"), "{remedy}");
     // The disk question is the one that failed: nothing may be said
     // about a disk outliving anything.
     let (what, remedy) = vm_uncheckable(&f(Some(false), false, None));

@@ -177,6 +177,9 @@ pub struct Facts {
     /// where the disk is a file inside `[vm] dir` and no such refusal is
     /// reachable.
     pub vm_disk: Option<String>,
+    /// `[vm] backend = "incus"`: the hand-run commands in a refusal are
+    /// `incus`'s, not `limactl`'s.
+    pub vm_incus: bool,
     /// What `ssf vm destroy` takes with it, in words: the VM's directory
     /// under Firecracker, where its disks are; the lima instance and its
     /// data disk (both in lima's own home, not under `[vm] dir`) as well
@@ -223,8 +226,10 @@ impl Facts {
             vm_stranded_disk: vm.stranded_data_disk(),
             vm_disk: match vm.backend() {
                 vm::BackendKind::Lima => Some(vm.lima_disk_name()),
+                vm::BackendKind::Incus => Some(vm.incus_name()),
                 vm::BackendKind::Firecracker => None,
             },
+            vm_incus: vm.backend() == vm::BackendKind::Incus,
             vm_removed: match vm.backend() {
                 vm::BackendKind::Firecracker => {
                     format!("its disks in {}", vm.dir.display())
@@ -232,6 +237,11 @@ impl Facts {
                 vm::BackendKind::Lima => lima_removed(
                     &vm.lima_name(),
                     &vm.lima_disk_name(),
+                    vm.dir.exists().then_some(vm.dir.as_path()),
+                    &survey,
+                ),
+                vm::BackendKind::Incus => incus_removed(
+                    &vm.incus_name(),
                     vm.dir.exists().then_some(vm.dir.as_path()),
                     &survey,
                 ),
@@ -267,13 +277,15 @@ impl Facts {
         self.vm_running = survey.running;
         self.vm_startable = survey.startable;
         self.vm_data = survey.data;
-        if vm.backend() == vm::BackendKind::Lima {
-            self.vm_removed = lima_removed(
-                &vm.lima_name(),
-                &vm.lima_disk_name(),
-                vm.dir.exists().then_some(vm.dir.as_path()),
-                &survey,
-            );
+        let dir = vm.dir.exists().then_some(vm.dir.as_path());
+        match vm.backend() {
+            vm::BackendKind::Lima => {
+                self.vm_removed = lima_removed(&vm.lima_name(), &vm.lima_disk_name(), dir, &survey);
+            }
+            vm::BackendKind::Incus => {
+                self.vm_removed = incus_removed(&vm.incus_name(), dir, &survey);
+            }
+            vm::BackendKind::Firecracker => {}
         }
     }
 
@@ -688,17 +700,34 @@ fn unchecked_workspaces(data: Option<bool>) -> bool {
 /// a disk that outlived its instance -- and a report that promises to
 /// remove what is not there is a report to trust less.
 fn lima_removed(instance: &str, disk: &str, dir: Option<&Path>, survey: &vm::Survey) -> String {
+    removed_parts(
+        &format!("the lima instance {instance}"),
+        &format!("its data disk {disk} in lima's home"),
+        dir,
+        survey,
+    )
+}
+
+/// [`lima_removed`] under Incus: the container and its data volume.
+fn incus_removed(name: &str, dir: Option<&Path>, survey: &vm::Survey) -> String {
+    removed_parts(
+        &format!("the Incus container {name}"),
+        &format!("its data volume {name} in the Incus storage pool"),
+        dir,
+        survey,
+    )
+}
+
+fn removed_parts(instance: &str, data: &str, dir: Option<&Path>, survey: &vm::Survey) -> String {
     let mut parts = Vec::new();
     match (survey.startable, survey.running) {
-        (true, _) => parts.push(format!("the lima instance {instance}")),
-        (false, None) => parts.push(format!("the lima instance {instance} if it is there")),
+        (true, _) => parts.push(instance.to_string()),
+        (false, None) => parts.push(format!("{instance} if it is there")),
         (false, Some(_)) => {}
     }
     match survey.data {
-        Some(true) => parts.push(format!("its data disk {disk} in lima's home")),
-        None => parts.push(format!(
-            "its data disk {disk} in lima's home if it is there"
-        )),
+        Some(true) => parts.push(data.to_string()),
+        None => parts.push(format!("{data} if it is there")),
         Some(false) => {}
     }
     if let Some(d) = dir {
@@ -731,6 +760,16 @@ fn vm_uncheckable(facts: &Facts) -> (String, String) {
             "point ssf back at it (`ssf config set vm.enabled true`) and run this again, so the clones and worktrees on that disk can be looked at".to_string(),
         );
     }
+    let (disk_delete, disk_list, list) = if facts.vm_incus {
+        (
+            "incus storage volume delete <pool>",
+            "incus storage volume list",
+            "incus list",
+        )
+    } else {
+        ("limactl disk delete", "limactl disk list", "limactl list")
+    };
+    let answers = if facts.vm_incus { "Incus" } else { "lima" };
     match (facts.vm_running, facts.vm_startable, facts.vm_data) {
         (Some(true), _, _) => (
             format!("VM {name} gave no report"),
@@ -750,7 +789,7 @@ fn vm_uncheckable(facts: &Facts) -> (String, String) {
         (Some(false), false, Some(true)) => (
             format!("VM {name}'s data disk outlived its instance"),
             format!(
-                "nothing can mount it to look inside, so decide about the disk and remove it by hand (`limactl disk delete{}`)",
+                "nothing can mount it to look inside, so decide about the disk and remove it by hand (`{disk_delete}{}`)",
                 match &facts.vm_disk {
                     Some(d) => format!(" {d}"),
                     None => String::new(),
@@ -761,7 +800,7 @@ fn vm_uncheckable(facts: &Facts) -> (String, String) {
         // may be asserted about a disk here.
         (Some(false), false, None) => (
             format!("VM {name} has no guest to start, and its data disk could not be asked about"),
-            "find out why first (`limactl disk list` by hand says what lima answers)".to_string(),
+            format!("find out why first (`{disk_list}` by hand says what {answers} answers)"),
         ),
         // Written out rather than folded into the arm above so that the
         // compiler, not a comment, is what keeps the two apart. Nothing
@@ -772,7 +811,7 @@ fn vm_uncheckable(facts: &Facts) -> (String, String) {
         ),
         (None, _, _) => (
             format!("VM {name} could not be asked whether it is running"),
-            "find out why first (`limactl list` by hand says what lima answers)".to_string(),
+            format!("find out why first (`{list}` by hand says what {answers} answers)"),
         ),
     }
 }

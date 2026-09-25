@@ -57,7 +57,7 @@ pub const ROOT_GIB_FLOOR: u32 = 20;
 /// call is given as its own `--timeout` ([`start_timeout_arg`]) and what
 /// ssf's backstop around it is derived from: one allowance for
 /// provisioning, not three rival ones that could cut each other short.
-const PROVISION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub(super) const PROVISION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// How long the guest may take to answer on ssh as `ssf` once it has
 /// provisioned itself. Not a round number: `/etc/ssf-image-built` means
 /// "the image is provisioned", and it is written *before*
@@ -76,7 +76,7 @@ const PROVISION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// data disk) reads it on a boot whose seed has its own reasons to be
 /// slow. The test `the_ssh_wait_outlasts_the_seeds_own_waits` holds this
 /// against the script itself.
-const SEED_TIMEOUT: Duration = Duration::from_secs(8 * 60);
+pub(super) const SEED_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 /// Every `limactl` invocation gets an upper bound, so a `limactl` that
 /// never returns (a lost hostagent, a qemu waiting on something) cannot
 /// wedge ssf with no output and no child to look at. The bounds below are
@@ -84,9 +84,9 @@ const SEED_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 /// build should never see one.
 ///
 /// A probe or a short read over `limactl shell`, and `limactl --version`.
-const PROBE_LIMIT: Duration = Duration::from_secs(60);
+pub(super) const PROBE_LIMIT: Duration = Duration::from_secs(60);
 /// `limactl list`, `disk` and `edit`: local bookkeeping.
-const QUICK_LIMIT: Duration = Duration::from_secs(2 * 60);
+pub(super) const QUICK_LIMIT: Duration = Duration::from_secs(2 * 60);
 /// The liveness question as the forwarding gate asks it
 /// ([`Vm::running_now`]): once in front of every command the host sends
 /// into the guest, with a person waiting on the answer and a
@@ -107,14 +107,14 @@ pub(super) const LIVENESS_LIMIT: Duration = Duration::from_secs(15);
 /// nothing it cannot get another way.
 const SURVEY_LIMIT: Duration = PROBE_LIMIT;
 /// `limactl create`, which downloads the base image the first time.
-const CREATE_LIMIT: Duration = Duration::from_secs(30 * 60);
+pub(super) const CREATE_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// `limactl stop`: lima gives the guest minutes to shut down first.
-const STOP_LIMIT: Duration = Duration::from_secs(10 * 60);
+pub(super) const STOP_LIMIT: Duration = Duration::from_secs(10 * 60);
 /// What ssf adds to a limit something else enforces itself (lima's
 /// `--timeout`, the provisioning wait's own deadline), so that the inner
 /// limit fires first and a person reads its message rather than ssf's
 /// backstop: one limit, plus a margin, not two rival ones.
-const OWN_TIMEOUT_MARGIN: Duration = Duration::from_secs(2 * 60);
+pub(super) const OWN_TIMEOUT_MARGIN: Duration = Duration::from_secs(2 * 60);
 /// How often [`wait_within`] looks at the child.
 const WAIT_POLL: Duration = Duration::from_millis(100);
 /// The yq expression `limactl edit` takes to turn the data disk's
@@ -402,6 +402,17 @@ pub fn lima_env(name: &str) -> String {
     format!("SSF_VM_DATA_DISK={}\nSSF_VM_NAME={name}\n", disk_name(name))
 }
 
+/// `lima.env` for a backend: the incus backend's guest reads the same
+/// file, and `SSF_VM_BACKEND=incus` tells its seed to take the data
+/// volume Incus has already mounted instead of a lima disk.
+pub fn seed_env(name: &str, backend: crate::config::BackendKind) -> String {
+    let mut env = lima_env(name);
+    if backend == crate::config::BackendKind::Incus {
+        env.push_str("SSF_VM_BACKEND=incus\n");
+    }
+    env
+}
+
 pub fn instance_name(name: &str) -> String {
     format!("ssf-{name}")
 }
@@ -669,7 +680,7 @@ fn limactl_label(args: &[&str]) -> String {
 }
 
 /// Read a child's pipe to the end on a thread of its own.
-fn drain<R: Read + Send + 'static>(mut r: R) -> std::thread::JoinHandle<Vec<u8>> {
+pub(super) fn drain<R: Read + Send + 'static>(mut r: R) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = r.read_to_end(&mut buf);
@@ -682,7 +693,7 @@ fn drain<R: Read + Send + 'static>(mut r: R) -> std::thread::JoinHandle<Vec<u8>>
 /// show for it (an `ssf vm build` once sat for a quarter of an hour with
 /// no output and no child process); the error names the command and the
 /// limit, so what timed out is in the message rather than in a debugger.
-fn wait_within(child: &mut Child, label: &str, limit: Duration) -> Result<ExitStatus> {
+pub(super) fn wait_within(child: &mut Child, label: &str, limit: Duration) -> Result<ExitStatus> {
     let deadline = Instant::now() + limit;
     loop {
         if let Some(st) = child

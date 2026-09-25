@@ -45,23 +45,34 @@ supervisor: `ssf --server crucible ui service enable`. See the
 
 ## Backends and host prerequisites
 
-`[vm] backend` is `firecracker` or `lima`. Unset, it means Firecracker on
-Linux and lima on macOS; `ssf vm build` writes the choice next to the sizes, so
-a VM keeps its backend once built. `ssf vm status` names it on its `backend:`
-line and in `--json`, and reports host tooling on a `tooling:` line saying
-where each tool was found or what is missing. A Firecracker build on anything
-but Linux x86_64 refuses and says to set `vm.backend` to `lima`.
+`[vm] backend` is `firecracker`, `lima` or `incus`. Unset, it means
+Firecracker on Linux and lima on macOS; `ssf vm build` writes the choice next
+to the sizes, so a VM keeps its backend once built, and ssf never switches it
+by itself. `ssf vm status` names it on its `backend:` line and in `--json`, and
+reports host tooling on a `tooling:` line saying where each tool was found or
+what is missing. A Firecracker build on anything but Linux x86_64 refuses and
+says to set `vm.backend` to `lima` (or `incus` on Linux without KVM).
+
+**`incus` is not a VM.** Its guest is an unprivileged Incus system container:
+it shares the host's kernel, isolated by user namespaces, which is weaker than
+the KVM or qemu boundary of the other two. `ssf vm status` says so on its
+`backend:` line and as `"shares_host_kernel": true` in `--json`. It exists for
+Linux hosts without KVM (most cloud VPSes), where lima's qemu falls back to
+software emulation and runs agent builds about 30 times slower; under Incus they
+run at near-native speed, Docker included.
 
 | backend | where | host needs |
 |---|---|---|
 | firecracker | Linux x86_64 with `/dev/kvm` | `/dev/kvm` readable and writable by the user running ssf, `fakeroot`, `bsdtar` (libarchive), `mkfs.ext4`, `e2fsck`, `debugfs`, `resize2fs` (e2fsprogs), `curl`, `openssh`, and a `herdr` binary, which is copied into the image |
 | lima | macOS, and Linux without KVM or on aarch64 | `limactl` (lima 2.0.1 or newer), `openssh`, `gh` (to fetch the guest's Linux `ssf` on a Mac), and `qemu-system-<arch>` wherever qemu drives the VM: always on Linux, and on a Mac only with `[vm] vm_type = "qemu"` |
+| incus | Linux without KVM (a container sharing the host kernel) | `incus` with its daemon running and reachable by this user (the `incus-admin` group), a storage pool and network from `incus admin init`, a kernel with idmapped mounts (5.12 or newer), and `openssh`. ssf never sets Incus up: see [platform-specifics.md](platform-specifics.md#linux-without-kvm) |
 
 Package names per distribution and the macOS Homebrew route are in
 [platform-specifics.md](platform-specifics.md#linux-without-kvm) and
 [platform-specifics.md#macos](platform-specifics.md#macos).
 
-Nothing needs root with either backend. Firecracker runs as the user given
+Nothing needs root with Firecracker or lima; Incus needs root once, to be
+installed and set up, and then runs as your user through its daemon. Firecracker runs as the user given
 `/dev/kvm`; the jailer is not used, so isolation is KVM plus Firecracker's
 seccomp filter. Its guest network is
 [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock), a user-mode
@@ -85,7 +96,21 @@ read-only at `/mnt/ssf`. A lima instance itself lives in lima's own home
 (`~/.lima`, or `$LIMA_HOME`) as `ssf-<vm.name>`, with its data disk
 `ssf-<vm.name>` under `_disks`; because lima labels that disk's filesystem
 `lima-ssf-<name>` and an ext4 label holds 16 characters, `vm.name` is at most
-7 characters under this backend.
+7 characters under this backend. Under incus the container and its data
+volume are both `ssf-<vm.name>`, the volume in the storage pool the default
+Incus profile uses; the container is created from `images:ubuntu/24.04` (or
+`vm.image`) with `security.nesting=true` and the `mknod` and `setxattr` syscall
+intercepts, so Docker works inside it. `share/` is mounted read-only (and
+idmapped) at `/mnt/ssf`, the volume at `/var/lib/ssf`, and a proxy device
+publishes the container's sshd on `127.0.0.1:<ssh_port>`. Incus names are per host Incus
+daemon, not per user: two host users with the same `vm.name` would collide on
+`ssf-<vm.name>`. ssf marks the container and the volume it builds with
+`user.ssf.owner=<uid>`, and `build`, `start`, `reset`, `grow`, `destroy` and
+`ssf uninstall` refuse an `ssf-<vm.name>` container or volume whose owner key
+is missing or names another uid; give each user a distinct `vm.name`. Reset,
+grow and destroy find the volume in the pool the container's data device
+names (destroy without a container searches every pool), so a later change of
+the default profile's pool does not lose track of it.
 
 All `[vm]` keys (`backend`, `name`, `dir`, `vcpus`, `mem_mib`, `data_gib`,
 `root_gib`, `ssh_port`, `files`, `guest_binary`, and the binaries and images to
@@ -95,18 +120,18 @@ neither backend: both seed a Linux `ssf` into the guest.
 
 ### What the commands do
 
-| command | Firecracker | lima |
-|---|---|---|
-| `build` | downloads Firecracker, gvproxy, a kernel and a pinned Ubuntu 24.04 minimal-cloud root tarball into `vm.dir`, verifies SHA-256, makes the root image and boots it once to provision | writes `lima.yaml` and `share/`, creates the data disk if absent, `limactl create`, then a first start during which the guest provisions itself; stops the instance afterwards |
-| `start` | boots the microVM, waits for ssh and the guest daemon | writes `share/` fresh, `limactl start`, waits for the provisioning marker, ssh and the daemon |
-| `stop` | Ctrl-Alt-Del through Firecracker's API | `limactl stop`, then `limactl stop -f` if that fails |
-| `grow` | `e2fsck -f`, lengthens the file, `resize2fs` | `limactl disk resize`; the guest grows the filesystem at its next boot |
-| `reset` | the root disk remade from a rebuilt image | `limactl delete` and `limactl create`; provisioned again at the next start |
-| `destroy --yes` | the disks and `<vm.dir>/<name>/` | the instance, the data disk and `<vm.dir>/<name>/`; the confirmation names all three |
-| `console` | the serial console log | the instance's `serial.log` in lima's instance directory |
+| command | Firecracker | lima | incus |
+|---|---|---|---|
+| `build` | downloads Firecracker, gvproxy, a kernel and a pinned Ubuntu 24.04 minimal-cloud root tarball into `vm.dir`, verifies SHA-256, makes the root image and boots it once to provision | writes `lima.yaml` and `share/`, creates the data disk if absent, `limactl create`, then a first start during which the guest provisions itself; stops the instance afterwards | writes `share/`, creates the data volume if absent, `incus init` and the devices, then a first start in which `incus exec` provisions the guest with the lima guest scripts; stops the container afterwards |
+| `start` | boots the microVM, waits for ssh and the guest daemon | writes `share/` fresh, `limactl start`, waits for the provisioning marker, ssh and the daemon | writes `share/` fresh, applies `limits.cpu`/`limits.memory`, `incus start`, provisions a reset container, waits for ssh and the daemon |
+| `stop` | Ctrl-Alt-Del through Firecracker's API | `limactl stop`, then `limactl stop -f` if that fails | `incus stop`, then `incus stop --force` if that fails |
+| `grow` | `e2fsck -f`, lengthens the file, `resize2fs` | `limactl disk resize`; the guest grows the filesystem at its next boot | sets the volume's `size` (a pool that cannot cap volumes leaves them uncapped, and there is nothing to grow) |
+| `reset` | the root disk remade from a rebuilt image | `limactl delete` and `limactl create`; provisioned again at the next start | `incus delete` and a new container on the same volume; provisioned again at the next start |
+| `destroy --yes` | the disks and `<vm.dir>/<name>/` | the instance, the data disk and `<vm.dir>/<name>/`; the confirmation names all three | the container, the volume and `<vm.dir>/<name>/` |
+| `console` | the serial console log | the instance's `serial.log` in lima's instance directory | `incus console --show-log`, saved to `<vm.dir>/<name>/console.log` |
 
 `status`, `ssh`, `attach`, `login`, `logs`, `run`, `restart` and `ssh-config`
-work the same under both. A lima data disk is formatted only by the build that
+work the same under all three. A lima data disk is formatted only by the build that
 creates it; if a build fails and leaves the format flag or a blank disk behind,
 see
 [troubleshooting.md](troubleshooting.md#lima-disk-unproven-and-the-format-flag).

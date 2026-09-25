@@ -27,6 +27,7 @@ impl Vm {
         match self.backend() {
             BackendKind::Firecracker => Ok(self.console_log()),
             BackendKind::Lima => self.lima_console_log(),
+            BackendKind::Incus => self.incus_console_log(),
         }
     }
 
@@ -79,7 +80,7 @@ impl Vm {
     /// under Firecracker, where the same file is simply this VM's own
     /// disk.
     pub fn stranded_data_disk(&self) -> Option<PathBuf> {
-        (self.backend() == BackendKind::Lima && there(&self.data_disk()) != Some(false))
+        (self.backend() != BackendKind::Firecracker && there(&self.data_disk()) != Some(false))
             .then(|| self.data_disk())
     }
 
@@ -140,6 +141,7 @@ impl Vm {
                 Err(_) => self.sizes().data_gib,
             },
             BackendKind::Lima => self.lima_data_cap_gib(),
+            BackendKind::Incus => self.incus_data_cap_gib(),
         }
     }
 
@@ -150,7 +152,7 @@ impl Vm {
     /// filesystem resized to fill it. lima: `limactl disk resize`; the
     /// guest's seed script resizes the filesystem on the next boot.
     pub fn grow(&self, want: Option<u32>) -> Result<Option<u32>> {
-        if self.running() {
+        if self.running_or_refuse("grow")? {
             bail!(
                 "VM {} is running; stop it first (`{}` when the service owns it, else `ssf vm stop`), grow, then start it again",
                 self.cfg.name,
@@ -160,6 +162,7 @@ impl Vm {
         match self.backend() {
             BackendKind::Firecracker => self.fc_grow(want),
             BackendKind::Lima => self.lima_grow(want),
+            BackendKind::Incus => self.incus_grow(want),
         }
     }
 
@@ -230,6 +233,19 @@ impl Vm {
         self.running_state().unwrap_or(false)
     }
 
+    /// [`Vm::running`] for a step that deletes or resizes: under Incus a
+    /// daemon that did not answer refuses the step rather than reading
+    /// as "stopped". Firecracker and lima keep [`Vm::running`].
+    pub(in crate::vm) fn running_or_refuse(&self, step: &str) -> Result<bool> {
+        match (self.backend(), self.running_state()) {
+            (BackendKind::Incus, None) => bail!(
+                "Incus could not say whether {} is running, so `ssf vm {step}` does nothing; check `incus list` by hand",
+                self.incus_name()
+            ),
+            (_, s) => Ok(s.unwrap_or(false)),
+        }
+    }
+
     /// [`Vm::running`], with "the question could not be asked" kept apart
     /// from "no": `None` when the probe itself failed. Under Firecracker
     /// the probe is a PID file read, which answers either way; under lima
@@ -241,6 +257,7 @@ impl Vm {
         match self.backend() {
             BackendKind::Firecracker => Some(self.firecracker_pid().is_some()),
             BackendKind::Lima => self.lima_running_state(),
+            BackendKind::Incus => self.incus_running_state(),
         }
     }
 
@@ -255,6 +272,7 @@ impl Vm {
         match self.backend() {
             BackendKind::Firecracker => Ok(self.firecracker_pid().is_some()),
             BackendKind::Lima => self.lima_running_probe(lima::LIVENESS_LIMIT),
+            BackendKind::Incus => self.incus_running_probe(incus::LIVENESS_LIMIT),
         }
     }
 
@@ -278,6 +296,7 @@ impl Vm {
                 }
             }
             BackendKind::Lima => self.lima_survey(),
+            BackendKind::Incus => self.incus_survey(),
         }
     }
 
@@ -291,13 +310,14 @@ impl Vm {
         match self.backend() {
             BackendKind::Firecracker => self.fc_build(force).await,
             BackendKind::Lima => self.lima_build(host, force).await,
+            BackendKind::Incus => self.incus_build(host, force).await,
         }
     }
 
     pub(in crate::vm) async fn fc_build(&self, force: bool) -> Result<()> {
         if std::env::consts::OS != "linux" || std::env::consts::ARCH != "x86_64" {
             bail!(
-                "the Firecracker backend is Linux x86_64 only (Firecracker, gvproxy and the guest kernel are downloaded for it); this machine is {} {}; use `ssf config set vm.backend lima`",
+                "the Firecracker backend is Linux x86_64 only (Firecracker, gvproxy and the guest kernel are downloaded for it); this machine is {} {}; use `ssf config set vm.backend lima`, or `incus` on a Linux host without KVM",
                 std::env::consts::OS,
                 std::env::consts::ARCH
             );
@@ -546,6 +566,7 @@ impl Vm {
         match self.backend() {
             BackendKind::Firecracker => self.fc_start(host).await,
             BackendKind::Lima => self.lima_start(host).await,
+            BackendKind::Incus => self.incus_start(host).await,
         }?;
         self.ensure_factory_ownership(host)
     }
@@ -555,6 +576,7 @@ impl Vm {
         match self.backend() {
             BackendKind::Firecracker => self.fc_stop().await,
             BackendKind::Lima => self.lima_stop().await,
+            BackendKind::Incus => self.incus_stop().await,
         }
     }
 

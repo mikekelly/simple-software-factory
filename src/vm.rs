@@ -1,6 +1,6 @@
 //! The factory inside a VM: the daemon, herdr and every agent session run
 //! in a guest, and the host keeps only what builds, starts, stops and
-//! reaches it (`ssf vm ...`). Two backends (`[vm] backend`) run the guest:
+//! reaches it (`ssf vm ...`). Three backends (`[vm] backend`) run the guest:
 //!
 //! * Firecracker (the default on Linux; `firecracker.rs`). Nothing needs root:
 //!   Firecracker runs as the user given `/dev/kvm`, the guest's network is
@@ -20,6 +20,9 @@
 //! * lima (the default on macOS; `lima.rs`): a `limactl` instance from a
 //!   cloud image, provisioned by the same guest scripts on its first boot
 //!   and seeded from a read-only host directory at every boot.
+//! * incus (Linux without KVM; `incus.rs`): not a VM but an unprivileged
+//!   Incus system container that shares the host kernel, provisioned and
+//!   seeded by the lima guest scripts, with its data on an Incus volume.
 //!
 //! Shared types and sizing rules live in `types.rs`, guest operations
 //! (seeding, SSH, harness logins, `sync`, `attach`, and `logs`) in
@@ -106,6 +109,7 @@ pub const FORWARDED: [&str; 21] = [
 
 mod firecracker;
 mod guest;
+mod incus;
 mod oauth;
 mod support;
 mod types;

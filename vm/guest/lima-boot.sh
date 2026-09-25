@@ -7,6 +7,9 @@
 # enabled units. A failed provisioning leaves no marker: the host checks
 # for it over ssh, and the next boot tries again.
 #
+# The incus backend runs it too, through `incus exec` at every start with
+# SSF_VM_BACKEND=incus (src/vm/incus.rs); that wrapper empties the log.
+#
 # This script is itself in the share, so by the time it runs the share is
 # mounted: waiting for /mnt/ssf is not its job and cannot be (an `exec` of a
 # file that is not there leaves nothing behind to read). That wait, and the
@@ -44,7 +47,7 @@ if [ ! -f "$guest/provision.sh" ]; then
     exit 1
 fi
 say "ssf-provision: provisioning the guest, log in $log"
-if SSF_VM_BACKEND=lima bash "$guest/provision.sh" >>"$log" 2>&1; then
+if SSF_VM_BACKEND=${SSF_VM_BACKEND:-lima} bash "$guest/provision.sh" >>"$log" 2>&1; then
     date -u +%Y-%m-%dT%H:%M:%SZ > "$marker"
 else
     rc=$?

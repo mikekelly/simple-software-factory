@@ -527,22 +527,32 @@ fn default_tui_timeout() -> u64 {
     90_000
 }
 
-/// What runs the VM: Firecracker (Linux with KVM; the original) or lima
-/// (`limactl`; macOS, and Linux with qemu).
+/// What runs the VM: Firecracker (Linux with KVM; the original), lima
+/// (`limactl`; macOS, and Linux with qemu) or Incus (Linux without KVM: an
+/// unprivileged system container that shares the host kernel, not a VM).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendKind {
     Firecracker,
     Lima,
+    Incus,
 }
 
 impl BackendKind {
-    /// The config value (`firecracker`, `lima`).
+    /// The config value (`firecracker`, `lima`, `incus`).
     pub fn id(self) -> &'static str {
         match self {
             BackendKind::Firecracker => "firecracker",
             BackendKind::Lima => "lima",
+            BackendKind::Incus => "incus",
         }
+    }
+
+    /// Does the guest share the host's kernel? Only under Incus, whose
+    /// guest is a user-namespaced container rather than a VM: `ssf vm
+    /// status` says so, because the isolation is weaker than a VM's.
+    pub fn shares_host_kernel(self) -> bool {
+        self == BackendKind::Incus
     }
 
     /// What an unset `[vm] backend` means: Firecracker on Linux, lima on
@@ -572,7 +582,8 @@ impl std::str::FromStr for BackendKind {
         match s.trim().to_ascii_lowercase().as_str() {
             "firecracker" => Ok(BackendKind::Firecracker),
             "lima" => Ok(BackendKind::Lima),
-            other => bail!("unknown VM backend {other:?}; one of firecracker, lima"),
+            "incus" => Ok(BackendKind::Incus),
+            other => bail!("unknown VM backend {other:?}; one of firecracker, lima, incus"),
         }
     }
 }
@@ -594,12 +605,14 @@ pub struct VmConfig {
     /// Where the image, kernel, binaries and the VMs are kept.
     #[serde(default = "default_vm_dir")]
     pub dir: String,
-    /// `firecracker` or `lima`. Unset: Firecracker on Linux, lima on macOS;
-    /// `ssf vm build` writes the choice here.
+    /// `firecracker`, `lima` or `incus` (Linux only: a system container
+    /// sharing the host kernel, for hosts without KVM). Unset: Firecracker
+    /// on Linux, lima on macOS; `ssf vm build` writes the choice here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendKind>,
-    /// lima only: a cloud-init image (URL or path) to boot instead of the
-    /// default for the guest's architecture.
+    /// lima: a cloud-init image (URL or path) to boot instead of the
+    /// default for the guest's architecture. incus: an image to launch
+    /// instead of `images:ubuntu/24.04` (for example `images:debian/12`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     /// lima only: `vz` or `qemu`, passed through; unset is lima's default.
