@@ -40,6 +40,10 @@ other bounded tasks: for in-harness subagents, and for `ssf assign` and
 - Post when starting (the outcome you take on and when the next update
   comes), when blocked, and when delivering. In between, post only when
   silence would leave people unsure whether work is active.
+- Lead each comment with the ask or the outcome, then the evidence. Put
+  one decision per comment, with the options and your recommendation;
+  reply in the thread where a point was raised, and @mention only the
+  person who must act.
 - On the `SSF v1` board, `Ideas` is uncommitted, `Todo` is queued,
   `In Progress` means work is active and `Done` means the outcome is
   delivered. Do not mark an issue done while its pull request is unmerged.

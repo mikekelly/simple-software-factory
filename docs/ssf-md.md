@@ -46,28 +46,34 @@ about how their sessions work.
 3. **Posting.** What a start, a blocked and a delivered post must contain,
    and how often to post in between (usually: only when silence would
    mislead).
-4. **Review.** Self-review, one independent review, or a human, and for
+4. **Comments.** What a good comment looks like to the people on the
+   item, beyond the formatting the prelude already asks for: lead with the
+   ask or the outcome, one decision per comment with the options and a
+   recommendation, reply in the thread where it was raised, @mention only
+   the person who must act, and edit a status comment rather than stack
+   new ones. This is where the owner's collaboration taste lives.
+5. **Review.** Self-review, one independent review, or a human, and for
    which classes of change; how many rounds before simplifying instead.
    [SSF.example.md](../SSF.example.md) carries a review policy that works
    for most repositories; adapt it rather than writing one from scratch.
-5. **Merging and closing.** Who merges, and whether the session closes its
+6. **Merging and closing.** Who merges, and whether the session closes its
    own issue. Where the session merges, say how: a merge commit
    (`gh pr merge --merge`), not `--squash` or `--rebase`, because only a
    merge commit leaves the session's own commits reachable from a
    remote-tracking ref, which is the check `ssf release` makes before it
    gives the workspace back ([sessions.md](sessions.md#workspaces-after-close-release-and-purge)).
-6. **Boards.** The board and what each column means, if there is one.
-7. **Orchestration.** Recommended in every `SSF.md`: what the main session
+7. **Boards.** The board and what each column means, if there is one.
+8. **Orchestration.** Recommended in every `SSF.md`: what the main session
    keeps for itself (deliberation with collaborators, planning, integration,
    review of what comes back) and what it pushes to subagents, delegated
    issues (`--assignee`) or a handover to another stack, and how much
    context a delegated task gets. Only the main agent reads this, so it can
    be direct.
-8. **Demos.** How feedback on a running system is given: screenshots, a URL
+9. **Demos.** How feedback on a running system is given: screenshots, a URL
    the collaborators can reach, a recording.
-9. **Delivered.** What "done" means here: merged, deployed, documented,
-   workspace released.
-10. **Models.** A register of the harnesses the repository allows, each
+10. **Delivered.** What "done" means here: merged, deployed, documented,
+    workspace released.
+11. **Models.** A register of the harnesses the repository allows, each
     with a model and effort for two capability levels: *deliberation*
     (orchestration, planning, architecture, design, review, copywriting)
     and *execution* (implementation and other bounded tasks). The session
@@ -96,6 +102,8 @@ A solo maintainer, with no board:
 
 - Post when you start (what you will deliver, when the next update is),
   when you are blocked, and when you deliver.
+- Lead each comment with what you need from me or what changed; one
+  decision per comment, with options and your recommendation.
 - Ask me before changing scope or anything that costs money; settle the
   rest yourself and say what you chose.
 - Documentation and test-only changes: self-review. Behaviour changes: one
