@@ -329,7 +329,7 @@ Besides the fields the TUI and the server's page render, each card carries:
 | `worktree_path` | the workspace the session runs in; `null` when the item has none |
 | `handover` | the hand-over waiting on the daemon for the item (`harness`, `model`, `effort`, `summary_chars`, `by`, `requested_at`), or `null` |
 | `pane_input` | whether `api/pane/input` accepts typing for this session: always for a scratch session, for an item's as `item_pane_input` says for its repository |
-| `activity_note` | why `last_activity_at` is null: the harness keeps no local transcript ssf can read (`omp`), the session's conversation is not identified yet, or ssf has not found its transcript yet. Clients show that sentence where the time would be |
+| `activity_note` | why `last_activity_at` is null: the harness keeps no local transcript ssf can read (`omp`; ssf reads Claude Code, Codex and Grok), the session's conversation is not identified yet, or ssf has not found its transcript yet. Clients show that sentence where the time would be |
 
 A client holding several factories can label a card without asking which stream
 it came from.

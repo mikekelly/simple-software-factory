@@ -476,7 +476,9 @@ links to the running ssf, and reports untagged bot posts.
   tells agents to act only as the bot and to report missing permissions
   instead; the isolation is the [microVM](vm.md).
 - Session resume, and therefore memory across relaunches, is implemented for
-  Claude Code and Codex; other harnesses are restarted with the full issue
+  Claude Code, Codex and Grok (`grok --resume <id>`, the session found under
+  `~/.grok/sessions/<URL-encoded cwd>/`, or `$GROK_HOME`); other harnesses are
+  restarted with the full issue
   context instead.
 - One agent per issue; a second assignee is not coordinated with. A session
   owns what it opens only within its own repository.

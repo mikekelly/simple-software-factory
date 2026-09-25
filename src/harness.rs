@@ -317,7 +317,7 @@ pub static HARNESSES: &[Harness] = &[
             "waiting for approval",
         ],
         api_key_vars: &["XAI_API_KEY"],
-        reads_transcript: false,
+        reads_transcript: true,
         context: None,
         channel: &Terminal,
     },
@@ -359,7 +359,8 @@ mod tests {
 
     /// The membership the separate tables had before they were one: the
     /// agents and sign-in lists named all nine, the model table all but
-    /// crush, compaction three and transcripts two.
+    /// crush, compaction three and transcripts two; grok has since gained a
+    /// transcript reader.
     #[test]
     fn membership_matches_the_tables_it_replaced() {
         let all = [
@@ -379,7 +380,7 @@ mod tests {
             ids(|h| h.auto_compaction.is_some()),
             ["claude", "codex", "omp"]
         );
-        assert_eq!(ids(|h| h.reads_transcript), ["claude", "codex"]);
+        assert_eq!(ids(|h| h.reads_transcript), ["claude", "codex", "grok"]);
         assert_eq!(
             ids(|h| h.context.is_some()),
             ["claude", "codex", "omp", "pi"]

@@ -4,7 +4,9 @@
 //! Claude Code writes `~/.claude/projects/<cwd with / as ->/<session>.jsonl`
 //! and resumes any of them from any directory with `--resume <id>`. Codex
 //! writes `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` whose first line
-//! names the cwd and session id, resumable with `codex resume <id>`.
+//! names the cwd and session id, resumable with `codex resume <id>`. Grok
+//! writes `~/.grok/sessions/<URL-encoded cwd>/<session>/updates.jsonl`
+//! (`$GROK_HOME` for `~/.grok`), resumable with `grok --resume <id>`.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -34,6 +36,7 @@ pub fn last_activity(harness: &str, cwd: &str, id: &str) -> Option<String> {
         "codex" => std::env::var_os("CODEX_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home().join(".codex")),
+        "grok" => grok_root(),
         _ => return None,
     };
     transcript_modified(&root, harness, cwd, id).map(|time| {
@@ -84,6 +87,7 @@ fn transcript_modified(root: &Path, harness: &str, cwd: &str, id: &str) -> Optio
             .ok()?
             .modified()
             .ok(),
+        "grok" => grok_modified(&grok_group(root, cwd)?.join(id)),
         _ => None,
     }
 }
@@ -108,6 +112,7 @@ pub fn resume_command(harness: &str, base: &str, session_id: &str) -> Option<Str
             };
             Some(format!("{command} resume {session_id}"))
         }
+        "grok" => Some(format!("{base} --resume {session_id}")),
         _ => None,
     }
 }
@@ -121,6 +126,8 @@ pub fn resume_failed(screen: &[String]) -> bool {
         "no session found",
         "could not find session",
         "not found: session",
+        // grok, after trying the id locally and then remotely.
+        "failed to restore session",
     ]
     .iter()
     .any(|m| text.contains(m))
@@ -135,6 +142,7 @@ pub fn capture(harness: &str, cwd: &str, since: SystemTime, exclude: &[String]) 
     match harness {
         "claude" => capture_claude(cwd, since, exclude),
         "codex" => capture_codex(cwd, since, exclude),
+        "grok" => capture_grok(&grok_root(), cwd, since, exclude),
         _ => None,
     }
 }
@@ -423,6 +431,130 @@ fn capture_codex(cwd: &str, since: SystemTime, exclude: &[String]) -> Option<Str
     best.map(|(_, id)| id)
 }
 
+/// Grok's home: `$GROK_HOME`, else `~/.grok`.
+fn grok_root() -> PathBuf {
+    std::env::var_os("GROK_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".grok"))
+}
+
+/// The directory under `<root>/sessions` that groups the sessions started in
+/// `cwd`. Grok names it by URL-encoding the cwd, or, when that would be too
+/// long, by a slug with the path in a `.cwd` file inside; decoding the name
+/// rather than encoding the cwd leaves the exact escaped set Grok's to choose.
+fn grok_group(root: &Path, cwd: &str) -> Option<PathBuf> {
+    std::fs::read_dir(root.join("sessions"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|dir| {
+            dir.is_dir()
+                && (dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(percent_decode)
+                    .is_some_and(|name| name == cwd)
+                    || std::fs::read_to_string(dir.join(".cwd"))
+                        .is_ok_and(|path| path.trim_end_matches('\n') == cwd))
+        })
+}
+
+/// `%2Fa%2Fb` as `/a/b`; `None` for a name that is not valid escaping.
+fn percent_decode(name: &str) -> Option<String> {
+    let bytes = name.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// When a Grok session last changed: its `updates.jsonl`, the conversation
+/// log, or the session directory before that is written.
+fn grok_modified(session: &Path) -> Option<SystemTime> {
+    std::fs::metadata(session.join("updates.jsonl"))
+        .or_else(|_| std::fs::metadata(session))
+        .ok()?
+        .modified()
+        .ok()
+}
+
+/// The ids of the subagent sessions the sessions in `group` spawned.
+///
+/// Grok keeps a subagent's child session in the normal sessions tree, beside
+/// its parent, and records it in the parent's `subagents/<id>/meta.json` as
+/// `child_session_id` (seen with grok 1.0.41, next to a `parent_session_id`
+/// naming the parent, which must not count). The child's own `summary.json`
+/// also says `"session_kind": "subagent"`; that is checked per session, and
+/// this covers a child whose summary is not written yet.
+fn grok_children(group: &Path) -> std::collections::HashSet<String> {
+    let mut children = std::collections::HashSet::new();
+    let Ok(sessions) = std::fs::read_dir(group) else {
+        return children;
+    };
+    for session in sessions.flatten() {
+        let Ok(subagents) = std::fs::read_dir(session.path().join("subagents")) else {
+            continue;
+        };
+        for sub in subagents.flatten() {
+            if let Some(child) = std::fs::read_to_string(sub.path().join("meta.json"))
+                .ok()
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
+                .and_then(|m| m["child_session_id"].as_str().map(str::to_string))
+            {
+                children.insert(child);
+            }
+        }
+    }
+    children
+}
+
+/// Whether the session at `path` is a subagent's, by its own `summary.json`.
+fn grok_subagent(path: &Path) -> bool {
+    std::fs::read_to_string(path.join("summary.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .is_some_and(|s| s["session_kind"] == "subagent")
+}
+
+/// The newest top-level Grok session started in `cwd` and changed at or
+/// after `since`; a subagent's child session is never the conversation.
+fn capture_grok(root: &Path, cwd: &str, since: SystemTime, exclude: &[String]) -> Option<String> {
+    let group = grok_group(root, cwd)?;
+    let children = grok_children(&group);
+    let mut best: Option<(SystemTime, String)> = None;
+    for entry in std::fs::read_dir(&group).ok()?.flatten() {
+        let path = entry.path();
+        let Some(id) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !path.is_dir()
+            || id.len() < 8
+            || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            || excluded(id, exclude)
+            || children.contains(id)
+            || grok_subagent(&path)
+        {
+            continue;
+        }
+        let Some(modified) = grok_modified(&path).filter(|m| *m >= since) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(t, _)| modified > *t) {
+            best = Some((modified, id.to_string()));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
 fn walk(dir: &Path, depth: usize, f: &mut dyn FnMut(&Path)) {
     if depth > 4 {
         return;
@@ -650,6 +782,77 @@ mod tests {
     }
 
     #[test]
+    fn grok_sessions_are_found_by_their_working_directory() {
+        let sandbox = crate::config::test_support::sandbox();
+        let root = sandbox.root();
+        let cwd = "/work/my-repo.worktrees/issue_1";
+        let group = root.join("sessions/%2Fwork%2Fmy-repo.worktrees%2Fissue_1");
+        let other = root.join("sessions/%2Fwork%2Felsewhere");
+        let long = root.join("sessions/work-long-abc123");
+        let older = "019a0000-0000-7000-8000-000000000001";
+        let newer = "019a0000-0000-7000-8000-000000000002";
+        for dir in [
+            group.join(older),
+            group.join(newer),
+            other.join("019a0000-0000-7000-8000-000000000003"),
+        ] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("updates.jsonl"), "{}\n").unwrap();
+        }
+        let aged = |dir: &Path, secs: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(dir.join("updates.jsonl"))
+                .unwrap()
+                .set_modified(SystemTime::now() - std::time::Duration::from_secs(secs))
+                .unwrap();
+        };
+        aged(&group.join(older), 30);
+        aged(&group.join(newer), 10);
+        let since = SystemTime::now() - std::time::Duration::from_secs(60);
+        assert_eq!(capture_grok(root, cwd, since, &[]).as_deref(), Some(newer));
+        assert_eq!(
+            capture_grok(root, cwd, since, &[newer.to_string()]).as_deref(),
+            Some(older)
+        );
+        assert_eq!(capture_grok(root, cwd, SystemTime::now(), &[]), None);
+        assert_eq!(capture_grok(root, "/work/none", since, &[]), None);
+        assert!(transcript_modified(root, "grok", cwd, newer).is_some());
+        assert!(transcript_modified(root, "grok", cwd, "../x").is_none());
+        // A subagent's child session, newer than its parent, is not captured:
+        // named by the parent's `subagents/<id>/meta.json` (which also names
+        // the parent), or marked in its own `summary.json`.
+        let child = "019a0000-0000-7000-8000-00000000000c";
+        let marked = "019a0000-0000-7000-8000-00000000000d";
+        for id in [child, marked] {
+            std::fs::create_dir_all(group.join(id)).unwrap();
+            std::fs::write(group.join(id).join("updates.jsonl"), "{}\n").unwrap();
+        }
+        std::fs::write(
+            group.join(marked).join("summary.json"),
+            r#"{"session_kind":"subagent"}"#,
+        )
+        .unwrap();
+        let meta = group.join(newer).join("subagents").join(child);
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(
+            meta.join("meta.json"),
+            format!(r#"{{"subagent_id":"{child}","parent_session_id":"{newer}","child_session_id":"{child}"}}"#),
+        )
+        .unwrap();
+        assert_eq!(capture_grok(root, cwd, since, &[]).as_deref(), Some(newer));
+        // A path too long to encode is named by a `.cwd` file instead.
+        std::fs::create_dir_all(long.join(older)).unwrap();
+        std::fs::write(long.join(".cwd"), "/very/long/path\n").unwrap();
+        assert_eq!(
+            capture_grok(root, "/very/long/path", SystemTime::UNIX_EPOCH, &[]).as_deref(),
+            Some(older)
+        );
+        assert_eq!(percent_decode("%2Fa%2fb-c"), Some("/a/b-c".into()));
+        assert_eq!(percent_decode("bad%2"), None);
+    }
+
+    #[test]
     fn resume_commands() {
         assert_eq!(resume_command("codex", "codex --remote unix:///tmp/app.sock --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust", "abc").unwrap(), "codex --remote unix:///tmp/app.sock --dangerously-bypass-hook-trust resume abc");
         assert_eq!(
@@ -669,9 +872,20 @@ mod tests {
             resume_command("codex", "codex", "abc").unwrap(),
             "codex resume abc"
         );
+        assert_eq!(
+            resume_command("grok", "grok --always-approve", "abc").unwrap(),
+            "grok --always-approve --resume abc"
+        );
         assert!(resume_command("pi", "pi", "abc").is_none());
         assert!(resume_failed(&[
             "Error: No conversation found with session ID abc".into()
+        ]));
+        assert!(resume_failed(&[
+            "Error: Failed to restore session from remote: fetching session record: session get failed: 404 Not Found".into()
+        ]));
+        // Grok says this on its way to trying the id remotely, which may work.
+        assert!(!resume_failed(&[
+            "Session \"x\" not found locally, restoring conversation from remote...".into()
         ]));
         assert!(!resume_failed(&["❯".into()]));
     }
