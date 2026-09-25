@@ -407,7 +407,9 @@ in order:
 - **Recently released**: items and scratch sessions released and still in the
   factory's record, newest first. Left out when there is none.
 - **Harnesses**: the factory's installed harnesses (`ssf agents`), those with
-  a session not signed in marked so.
+  a session not signed in marked so, each with what is left of its provider
+  allowance (`ssf usage`): `claude · 5h 42% (resets 16:10) · week 18%`
+  (the share of each window used), `omp · $12.40`, or `no usage data`.
 
 In the Scratch sessions card, **New scratch** offers the harness,
 model and effort pickers and whose session it is: **Shared**, or **Mine**

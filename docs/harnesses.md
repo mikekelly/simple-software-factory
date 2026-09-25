@@ -28,6 +28,36 @@ Herdr must also recognise the harness to launch it (`herdr agent start
 --help` lists what it can start). `ssf repo add` warns about a harness
 herdr does not know.
 
+## Provider usage
+
+```sh
+ssf usage
+ssf usage --json
+```
+
+`ssf usage` prints what is left of each harness's provider allowance, one
+line a harness: `claude · 5h 42% (resets 16:10) · week 18%` (the share of
+each window used, and when it resets) or `omp · $12.40` (a balance). It asks
+each provider with the credential the harness itself stored, opened
+read-only; ssf never refreshes a token or writes a harness's files, so when
+a token has expired or is refused the last numbers are shown marked stale
+until the harness runs again. Answers are kept for five minutes.
+
+| Harness | Credential read | Asked |
+| --- | --- | --- |
+| `claude` | `~/.claude/.credentials.json` (`claudeAiOauth`) | Anthropic plan windows |
+| `codex` | `~/.codex/auth.json` (`tokens`) | ChatGPT plan windows and credits |
+| `omp` | `~/.omp/agent/agent.db` (enabled `auth_credentials` rows) | per provider, below |
+| `pi` | `~/.pi/agent/auth.json` | per provider, below |
+| `opencode` | `~/.local/share/opencode/auth.json` | per provider, below |
+| `grok` | | nothing: xAI offers no usage request its sign-in can make |
+
+For `omp`, `pi` and `opencode`, an Anthropic or ChatGPT (`openai-codex`,
+`openai`) sign-in gives that plan's windows, and a DeepSeek or OpenRouter key
+the account balance. API keys for Anthropic or OpenAI and every other
+provider show nothing. The HUD's Harnesses card in the [Chrome
+extension](dashboard.md#chrome-extension) shows the same words.
+
 ## Models and effort
 
 ```sh

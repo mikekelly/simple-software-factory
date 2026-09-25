@@ -878,6 +878,17 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             }
             Ok(())
         }
+        Command::Usage { json } => {
+            let report = crate::usage::report().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                for line in crate::usage::lines(&report) {
+                    println!("{line}");
+                }
+            }
+            Ok(())
+        }
         Command::Config { command } => {
             config_cmd(command.unwrap_or(ConfigCommand::Show { json: false }))
         }
