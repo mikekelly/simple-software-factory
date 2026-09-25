@@ -497,13 +497,17 @@ mod tests {
 
     #[tokio::test]
     async fn exited_saved_pane_never_routes_to_a_neighbor() {
-        use std::os::unix::fs::PermissionsExt;
         let sandbox = crate::config::test_support::sandbox();
         let mailbox = sandbox.root().join("mailbox");
         let calls = sandbox.root().join("calls");
         let fake = sandbox.root().join("herdr");
-        std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1 $2\" = 'agent list' ]; then\nprintf '%s\\n' '{{\"result\":{{\"agents\":[{{\"pane_id\":\"w7:p2\",\"workspace_id\":\"w7\",\"agent\":\"claude\",\"agent_status\":\"idle\"}}]}}}}'\nelse\nexit 1\nfi\n", calls.display())).unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_executable(
+            &fake,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1 $2\" = 'agent list' ]; then\nprintf '%s\\n' '{{\"result\":{{\"agents\":[{{\"pane_id\":\"w7:p2\",\"workspace_id\":\"w7\",\"agent\":\"claude\",\"agent_status\":\"idle\"}}]}}}}'\nelse\nexit 1\nfi\n",
+                calls.display()
+            ),
+        );
         let herdr = crate::herdr::Herdr::new(crate::config::HerdrConfig {
             command: fake.to_string_lossy().into_owned(),
             ..Default::default()

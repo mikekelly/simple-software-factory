@@ -601,17 +601,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn omarchy_commands_get_the_supported_root_without_a_shell_profile() {
-        use std::os::unix::fs::PermissionsExt;
-
         let root = std::env::temp_dir().join(format!("ssf-omarchy-command-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let command = root.join("disable");
-        std::fs::write(
+        crate::test_support::write_executable(
             &command,
             "#!/bin/bash\n[[ ${1:-} == fail ]] && { echo failed >&2; exit 42; }\n[[ ${OMARCHY_PATH:-} == /usr/share/omarchy ]] || { echo wrong-root >&2; exit 43; }\nprintf disabled\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
 
         assert_eq!(
             run_quiet_path(

@@ -43,6 +43,8 @@ mod uninstall;
 mod vm;
 
 mod cli;
+#[cfg(test)]
+mod test_support;
 
 pub use cli::{
     assign_recorded_text, auth_logout, client_main, handover_cancelled_text,

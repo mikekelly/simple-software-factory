@@ -2084,8 +2084,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 exit = exit,
             );
             let program = root.join("ssf");
-            std::fs::write(&program, script).unwrap();
-            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::test_support::write_executable(&program, script);
             Self { root }
         }
 
