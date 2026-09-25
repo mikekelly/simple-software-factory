@@ -27,18 +27,13 @@ wherever risk allows.
   subagents bounded execution tasks, on cost-efficient models where the
   task allows.
 - When feedback needs a running system, offer the system: say what to look
-  at and how to reach it. For a factory in the VM, `ssf vm tailscale`
-  enrols it so collaborators can reach a local service (see [Optional
-  Tailscale enrolment](docs/vm.md#optional-tailscale-enrolment)).
+  at and how to reach it.
 
 ## Models
 
-Two capability levels, one row per harness this repository allows. Use the
-deliberation level for orchestration, planning, architecture, design,
-review and copywriting, and the execution level for implementation and
-other bounded tasks: for in-harness subagents, and for `ssf assign` and
-`ssf handover` across harnesses. `ssf models <harness>` lists the ids and
-`ssf agents --json` the effort levels.
+Deliberation for planning, design, review and copywriting; execution for
+implementation and other bounded tasks, in subagents, `ssf assign` and
+`ssf handover`.
 
 | Harness | Deliberation | Execution |
 | --- | --- | --- |
@@ -71,17 +66,12 @@ other bounded tasks: for in-harness subagents, and for `ssf assign` and
   defect.
 - Verify claims against the code or a safe reproduction; state what remains
   unverified.
-- Open your pull request without `--assignee`. It belongs to this session
-  by its branch; `--assignee` hands it to a second session on the same
-  branch and the same checkout, which redoes the verification and review
-  this session has already done. A second pair of eyes is a reviewer
-  subagent here.
+- Open your pull request without `--assignee`; a second pair of eyes is a
+  reviewer subagent.
 - The owning session merges once validation and review are satisfied.
   Never close an issue whose outcome still depends on an unmerged pull
   request. Merge with `gh pr merge --merge`, never `--squash` or
-  `--rebase`: only a merge commit leaves this workspace's own commits
-  reachable in the base branch, which is what `ssf release` asks before it
-  gives the workspace back.
+  `--rebase`, so `ssf release` can see the work landed.
 - Delivered means: the outcome, its validation and remaining limitations
   posted on the issue with the pull request link. When the next action is
   outside your authority, @mention @mikekelly and name the action; "ready

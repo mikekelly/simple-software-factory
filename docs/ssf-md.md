@@ -86,8 +86,11 @@ this one are listed in [What the agent is told](prompts.md#how-to-work-on-this).
 
 ## Keep it short
 
-- Aim for well under 300 words. Every line is read by every session on
-  every start, and a session that has read it once does not read it again.
+- Aim for about 300 words of prose, plus the Models table where there is
+  one; a factory where agents review and merge needs more rules than one
+  where a person does. Every line is read by every session on every start.
+- Give a rule its reason in a clause, not a paragraph: enough that the
+  session can apply it where the rule is silent.
 - Do not restate the prelude or `ssf guide` (formatting of posts, the
   byline, `--assignee`, `ssf release`, what the `[ssf]` messages mean).
 - Write rules, not narration. One outcome per bullet.

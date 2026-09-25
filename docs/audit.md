@@ -5,6 +5,8 @@ an extra gate on every change. Audit the requested scope in one pass, using
 its `SSF.md`, `AGENTS.md`, relevant templates/setup guidance and one recent workflow
 example. Cite file sections or issue/PR links; read more only to resolve a
 specific uncertainty. Do not build a score, audit engine or recurring process.
+If only the files are in scope, say so and skip the questions about whether
+the workflow follows them.
 
 Ask these qualitative questions:
 
