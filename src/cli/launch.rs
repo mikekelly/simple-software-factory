@@ -142,10 +142,12 @@ pub(super) fn launch(
     cmd.env_remove("GROK_AUTO_COMPACT_THRESHOLD_PERCENT");
     if harness == Some("grok") {
         let tokens = tokens();
-        let model = stack
-            .as_ref()
-            .and_then(|s| s.model.as_deref())
-            .or_else(|| repo_cfg.and_then(|r| r.model.as_deref()));
+        // A stack names the session's model (None on a harness switch means
+        // grok's default); only without one is the repository's model grok's.
+        let model = match &stack {
+            Some(s) => s.model.as_deref(),
+            None => repo_cfg.and_then(|r| r.model.as_deref()),
+        };
         if tokens > 0 {
             match crate::models::grok_compaction_percent(tokens, model) {
                 Some(percent) => {
