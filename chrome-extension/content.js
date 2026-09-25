@@ -1578,6 +1578,31 @@
     return entry;
   }
 
+  /// Each factory's provider usage by harness (#514), from `api/usage`. The
+  /// factory keeps each provider's answer for five minutes, so asking once a
+  /// minute costs little; a failed ask leaves the rows without usage.
+  const usageLists = new Map();
+
+  function usageOf(factory) {
+    let entry = usageLists.get(factory.url);
+    const age = entry ? Date.now() - entry.at : Infinity;
+    if (!entry || (!entry.pending && age > 60000)) {
+      entry = { byHarness: entry?.byHarness ?? null, at: Date.now(), pending: true };
+      usageLists.set(factory.url, entry);
+      Promise.resolve(chrome.runtime.sendMessage({ type: "ssf:usage", url: factory.url }))
+        .then((reply) => {
+          if (!reply?.ok || !Array.isArray(reply.body)) return;
+          entry.byHarness = new Map(reply.body.map((one) => [String(one?.harness ?? ""), one]));
+        })
+        .catch(() => {})
+        .finally(() => {
+          entry.pending = false;
+          if (popover?.scratch) renderPopover();
+        });
+    }
+    return entry.byHarness;
+  }
+
   /// A factory's scratch rows for some repositories.
   function scratchRows(factory, repos) {
     return (factory.scratch ?? []).filter((one) => repos.some((repo) => sameRepo(one?.repo, repo)));
@@ -1656,6 +1681,7 @@
       } else if (!listed.agents) {
         harnesses.push(element("div", "ssf-also", "loading\u2026"));
       } else {
+        const usage = usageOf(factory);
         for (const agent of listed.agents) {
           const row = element("div", "ssf-also", `${agent.id} \u00b7 ${agent.name}`);
           if (blocked.has(agent.id)) {
@@ -1663,6 +1689,9 @@
               element("span", "ssf-sep", " \u00b7 "),
               element("span", undefined, "not signed in"),
             );
+          }
+          for (const word of globalThis.ssfWrites?.usageWords(usage?.get(agent.id)) ?? []) {
+            row.append(element("span", "ssf-sep", " \u00b7 "), element("span", undefined, word));
           }
           if (label) row.append(element("span", "ssf-when", ` (${factory.label})`));
           harnesses.push(row);

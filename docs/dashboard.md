@@ -224,6 +224,7 @@ server's own browser page and its CSS and JavaScript.
 | `GET /<capability>/api/events` | a server-sent events stream of the same snapshots |
 | `GET /<capability>/api/agents` | what `ssf agents --json` prints |
 | `GET /<capability>/api/models/<harness>` | what `ssf models <harness> --json` prints |
+| `GET /<capability>/api/usage` | what `ssf usage --json` prints: each harness's remaining provider allowance |
 | `GET /<capability>/api/pane/<session>` | a server-sent events mirror of a session's agent pane (below) |
 | `GET /<capability>/api/term/<session>` | a WebSocket terminal attached to a scratch session's tmux session ([Terminal](#terminal)) |
 | `GET /<capability>/chrome-extension.zip` | this build's [Chrome extension](#chrome-extension) as a zip download (`ssf-chrome-extension.zip`), which the browser page links to |
@@ -251,6 +252,20 @@ catalogue that is missing or past its own `staleAt` stamp, so a request for
 `claude` can take a second or two and needs the login the harness itself has
 (see [Models and effort](harnesses.md#models-and-effort)); every other
 harness answers from files and commands alone.
+
+`api/usage` returns one object per harness ssf can ask about (`claude`,
+`codex`, `omp`, `pi`, `opencode`, `grok`), each with `accounts`: one per
+provider credential the harness has stored, with its `provider`
+(`anthropic`, `chatgpt`, `deepseek`, `openrouter`), `state`, `windows`
+(`label` `5h` or `week`, `used_percent` 0 to 100, `resets_at`) and
+`balances` (`currency`, `amount`). `state` is `ok`, `stale` (the last numbers
+ssf had, kept because the harness's token has expired or was refused; `note`
+says it refreshes on the harness's next run) or `unavailable`. A harness with
+nothing to show has a `note` instead (`unavailable`, or `no usage data` for
+`grok`, since xAI offers no usage request its sign-in can make). The factory
+reads each harness's stored credential read-only and never refreshes it, and
+keeps each provider's answer for five minutes in `usage.json` under its state
+directory; see [Provider usage](harnesses.md#provider-usage).
 
 `api/pane/<session>` names the session percent-encoded (`owner%2Fname%2342`
 for an item, `owner%2Fname~id` for a scratch session). It sends an

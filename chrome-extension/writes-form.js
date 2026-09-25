@@ -1369,10 +1369,53 @@
       .map(([repo]) => repo);
   }
 
+  /// What `api/usage` says of one harness (#514), as the words its HUD row
+  /// shows: `5h 42% (resets 16:10)`, `week 18%`, `$12.40`, with the last
+  /// known numbers marked stale when the harness's token has lapsed.
+  /// `harness` is one entry of the factory's list; missing fields read
+  /// "unavailable", never as an error.
+  function usageWords(harness, when = clock) {
+    if (!harness) return [];
+    const accounts = Array.isArray(harness.accounts) ? harness.accounts : [];
+    const words = [];
+    for (const account of accounts) {
+      const mine = [];
+      for (const w of account?.windows ?? []) {
+        const used = Number.isFinite(w?.used_percent) ? `${Math.round(w.used_percent)}%` : "unavailable";
+        const reset = w?.resets_at ? when(w.resets_at) : null;
+        mine.push(`${w?.label ?? "window"} ${used}${reset ? ` (resets ${reset})` : ""}`);
+      }
+      for (const b of account?.balances ?? []) {
+        mine.push(b?.currency === "USD" ? `$${b.amount}` : `${b?.amount} ${b?.currency ?? ""}`.trim());
+      }
+      if (!mine.length) mine.push("unavailable");
+      if (accounts.length > 1) mine[0] = `${account?.provider ?? ""} ${mine[0]}`.trim();
+      if (account?.state === "stale") {
+        mine.push(`stale, ${account.note || "refreshes on the harness's next run"}`);
+      } else if (account?.state === "unavailable" && account.note) {
+        mine.push(account.note);
+      }
+      words.push(...mine);
+    }
+    if (harness.note) words.push(String(harness.note));
+    return words;
+  }
+
+  /// A reset time as the viewer's local hours and minutes.
+  function clock(iso) {
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return null;
+    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    // A weekly reset days away needs its day, not just its time.
+    if (at.getTime() - Date.now() <= 24 * 3600 * 1000) return time;
+    return `${at.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  }
+
   globalThis.ssfWrites = {
     STYLE,
     scratchPhase,
     agentList,
+    usageWords,
     projectKey,
     projectRepos,
     render,

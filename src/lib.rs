@@ -40,6 +40,7 @@ mod status;
 mod tmux;
 mod ui;
 mod uninstall;
+mod usage;
 mod vm;
 
 mod cli;

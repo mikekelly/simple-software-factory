@@ -386,6 +386,10 @@ async fn read(relative: &str, latest: &mut Latest, client: &Path) -> (u16, &'sta
         "dashboard.css" => (200, "text/css; charset=utf-8", CSS.to_owned()),
         "dashboard.js" => (200, "text/javascript; charset=utf-8", JS.to_owned()),
         "api/agents" => agents(client).await,
+        "api/usage" => match ask(client, &["usage", "--json"], LISTING_TIMEOUT).await {
+            Ok(output) => listed(output, "provider usage"),
+            Err(error) => failure_of(&error),
+        },
         _ => match relative.strip_prefix("api/models/") {
             Some(harness) => models(harness, client).await,
             None => not_found(),
@@ -2235,9 +2239,18 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             response.contains("the agent list could not be read"),
             "{response}"
         );
+        // Provider usage is `ssf usage --json`, asked of the factory where
+        // the harnesses' credentials are.
+        let usage = json!([{"harness":"grok","accounts":[],"note":"no usage data"}]);
+        let client = Client::new("usage", &usage.to_string(), 0);
+        let (address, task4) = served(&client).await;
+        let response = fetch(address, "/secret/api/usage").await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(client.args(), ["__client", "usage", "--json"]);
         task.abort();
         task2.abort();
         task3.abort();
+        task4.abort();
     }
 
     /// The write itself: the factory is asked with exactly the request `ssf

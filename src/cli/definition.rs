@@ -97,6 +97,12 @@ pub(super) enum Command {
         #[arg(long)]
         installed: bool,
     },
+    /// Show what is left of each harness's provider allowance (plan windows
+    /// or balance), read with the harness's own stored credentials.
+    Usage {
+        #[arg(long)]
+        json: bool,
+    },
     /// Read or change settings (dotted keys, e.g. daemon.poll_interval_secs, daemon.startup_driver_wait_secs, vm.enabled, driver).
     Config {
         #[command(subcommand)]

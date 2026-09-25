@@ -510,6 +510,7 @@ const HANDLERS = {
   "ssf:scratch-resume": scratchResume,
   "ssf:pane-input": paneInput,
   "ssf:agents": (message) => listing(message, "agents"),
+  "ssf:usage": (message) => listing(message, "usage"),
   "ssf:models": (message) =>
     listing(message, `models/${encodeURIComponent(message.harness)}`),
 };
