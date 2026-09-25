@@ -86,9 +86,9 @@ this one are listed in [What the agent is told](prompts.md#how-to-work-on-this).
 
 ## Keep it short
 
-- Aim for about 300 words of prose, plus the Models table where there is
-  one; a factory where agents review and merge needs more rules than one
-  where a person does. Every line is read by every session on every start.
+- As short as possible, but no shorter. Every line is read by every
+  session on every start; keep a rule only if the session would act
+  differently without it.
 - Give a rule its reason in a clause, not a paragraph: enough that the
   session can apply it where the rule is silent.
 - Do not restate the prelude or `ssf guide` (formatting of posts, the
