@@ -305,7 +305,7 @@ pub static HARNESSES: &[Harness] = &[
             effort_levels: &["low", "medium", "high", "xhigh"],
             effort_args: models::grok_effort,
             catalogue: None,
-            list_models: None,
+            list_models: Some(("grok models", models::grok_models)),
             refresh: None,
         }),
         auto_compaction: None,
