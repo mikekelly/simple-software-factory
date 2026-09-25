@@ -57,6 +57,9 @@ struct Credential {
     account: Option<String>,
     /// When the token expires, in epoch milliseconds, where the file says.
     expires_ms: Option<i64>,
+    /// omp's row id, which tells apart two enabled credentials for one
+    /// provider; not a secret.
+    row: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -85,6 +88,10 @@ pub struct Usage {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Account {
     pub provider: &'static str,
+    /// omp's credential row, given when the harness has more than one
+    /// credential for this provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row: Option<i64>,
     /// `ok`, `stale` (the last known numbers; see `note`) or `unavailable`.
     pub state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,7 +178,14 @@ pub async fn report() -> Result<Vec<HarnessUsage>> {
             cache.insert(key, Cached { fetched_at, usage });
             changed = true;
         }
-        let account = resolve(credential.provider, cached.as_ref(), outcome, now);
+        let mut account = resolve(credential.provider, cached.as_ref(), outcome, now);
+        let shared = wanted
+            .iter()
+            .filter(|(h, c)| h == harness && c.provider == credential.provider)
+            .count();
+        if shared > 1 {
+            account.row = credential.row;
+        }
         if let Some(entry) = out.iter_mut().find(|h| h.harness == *harness) {
             entry.accounts.push(account);
         }
@@ -194,7 +208,10 @@ pub async fn report() -> Result<Vec<HarnessUsage>> {
 }
 
 fn key(harness: &str, credential: &Credential) -> String {
-    format!("{harness}:{}", credential.provider.id())
+    match credential.row {
+        Some(row) => format!("{harness}:{}:{row}", credential.provider.id()),
+        None => format!("{harness}:{}", credential.provider.id()),
+    }
 }
 
 /// One account's answer from its cache entry and what was just asked, if
@@ -230,6 +247,7 @@ fn resolve(
     };
     Account {
         provider: provider.id(),
+        row: None,
         state,
         note,
         fetched_at,
@@ -419,19 +437,31 @@ fn credentials(harness: &str) -> Vec<Credential> {
             .and_then(|v| codex_credential(&v))
             .into_iter()
             .collect(),
-        "omp" => omp_rows(&path)
+        // Once omp has migrated to agent.db it is authoritative, as in
+        // `login::probe_omp_at`; before that, its auth.json is pi's shape.
+        "omp" if path.exists() => omp_rows(&path)
             .unwrap_or_default()
-            .iter()
-            .filter_map(|(provider, data)| keyed_credential(provider, data))
-            .collect(),
-        "pi" | "opencode" => read_json(&path)
-            .and_then(|v| v.as_object().cloned())
             .into_iter()
-            .flatten()
-            .filter_map(|(provider, data)| keyed_credential(&provider, &data))
+            .filter_map(|(row, provider, data)| {
+                let mut credential = keyed_credential(&provider, &data)?;
+                credential.row = Some(row);
+                Some(credential)
+            })
             .collect(),
+        "omp" => keyed_file(&path.with_file_name("auth.json")),
+        "pi" | "opencode" => keyed_file(&path),
         _ => Vec::new(),
     }
+}
+
+/// pi's, opencode's and omp's legacy `auth.json`: entries by provider id.
+fn keyed_file(path: &PathBuf) -> Vec<Credential> {
+    read_json(path)
+        .and_then(|v| v.as_object().cloned())
+        .into_iter()
+        .flatten()
+        .filter_map(|(provider, data)| keyed_credential(&provider, &data))
+        .collect()
 }
 
 fn read_json(path: &PathBuf) -> Option<Value> {
@@ -455,6 +485,7 @@ fn claude_credential(file: &Value) -> Option<Credential> {
         secret: text(oauth, "accessToken")?,
         account: None,
         expires_ms: oauth.get("expiresAt").and_then(Value::as_i64),
+        row: None,
     })
 }
 
@@ -466,6 +497,7 @@ fn codex_credential(file: &Value) -> Option<Credential> {
         secret: text(tokens, "access_token")?,
         account: text(tokens, "account_id"),
         expires_ms: None,
+        row: None,
     })
 }
 
@@ -491,27 +523,32 @@ fn keyed_credential(provider: &str, data: &Value) -> Option<Credential> {
         secret: text(data, if oauth { "access" } else { "key" })?,
         account: text(data, "accountId"),
         expires_ms: data.get("expires").and_then(Value::as_i64),
+        row: None,
     })
 }
 
-/// omp's enabled credentials, as `(provider, data)`, read from `agent.db`
+/// omp's enabled credentials, as `(row id, provider, data)`, read from `agent.db`
 /// opened read-only.
-fn omp_rows(path: &Path) -> rusqlite::Result<Vec<(String, Value)>> {
+fn omp_rows(path: &Path) -> rusqlite::Result<Vec<(i64, String, Value)>> {
     let db = rusqlite::Connection::open_with_flags(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     db.busy_timeout(Duration::from_millis(250))?;
     let mut query = db.prepare(
-        "SELECT provider, data FROM auth_credentials
+        "SELECT id, provider, data FROM auth_credentials
          WHERE disabled_cause IS NULL AND json_valid(data)",
     )?;
     let rows = query
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?
         .filter_map(|row| row.ok())
-        .filter_map(|(provider, data)| Some((provider, serde_json::from_str(&data).ok()?)))
+        .filter_map(|(id, provider, data)| Some((id, provider, serde_json::from_str(&data).ok()?)))
         .collect();
     Ok(rows)
 }
@@ -570,7 +607,11 @@ fn account_words(account: &Account, named: bool) -> Vec<String> {
         words.push("unavailable".into());
     }
     if named {
-        words[0] = format!("{} {}", account.provider, words[0]);
+        let name = match account.row {
+            Some(row) => format!("{} #{row}", account.provider),
+            None => account.provider.to_string(),
+        };
+        words[0] = format!("{name} {}", words[0]);
     }
     if account.state == "stale" {
         let why = account.note.as_deref().unwrap_or(STALE_NOTE);
@@ -699,6 +740,7 @@ mod tests {
                 harness: "claude",
                 accounts: vec![Account {
                     provider: "anthropic",
+                    row: None,
                     state: "ok",
                     note: None,
                     fetched_at: None,
@@ -733,6 +775,46 @@ mod tests {
                 "grok \u{b7} no usage data"
             ]
         );
+    }
+
+    /// Before omp moved to agent.db its credentials were in auth.json, in
+    /// pi's shape; two enabled rows for one provider are told apart.
+    #[test]
+    fn reads_omp_from_the_database_or_its_legacy_file() {
+        let dir = std::env::temp_dir().join(format!("ssf-usage-omp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("agent.db");
+        std::fs::write(
+            dir.join("auth.json"),
+            json!({"deepseek": {"type": "api_key", "key": "k"}}).to_string(),
+        )
+        .unwrap();
+        let legacy = keyed_file(&db.with_file_name("auth.json"));
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].provider, Provider::DeepSeek);
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT,
+             credential_type TEXT, data TEXT, disabled_cause TEXT);
+             INSERT INTO auth_credentials (provider, credential_type, data) VALUES
+             ('deepseek', 'api_key', '{\"key\":\"a\"}'),
+             ('deepseek', 'api_key', '{\"key\":\"b\"}');",
+        )
+        .unwrap();
+        drop(conn);
+        let rows = omp_rows(&db).unwrap();
+        assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2]);
+        let keys: Vec<_> = rows
+            .iter()
+            .map(|(id, provider, data)| {
+                let mut c = keyed_credential(provider, data).unwrap();
+                c.row = Some(*id);
+                key("omp", &c)
+            })
+            .collect();
+        assert_eq!(keys, ["omp:deepseek:1", "omp:deepseek:2"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
