@@ -1457,8 +1457,8 @@
       if (slot.after.nextElementSibling !== entry.host) {
         slot.after.insertAdjacentElement("afterend", entry.host);
       }
-    } else if (entry.host.parentElement !== slot || slot.lastElementChild !== entry.host) {
-      slot.append(entry.host);
+    } else if (entry.host.parentElement !== slot.into || slot.into.lastElementChild !== entry.host) {
+      slot.into.append(entry.host);
     }
     return true;
   }
@@ -1725,7 +1725,7 @@
       ".AppHeader-context",
     ]) {
       for (const node of document.querySelectorAll(selector)) {
-        if (node.getClientRects().length) return node;
+        if (node.getClientRects().length) return { into: node };
       }
     }
     return null;
