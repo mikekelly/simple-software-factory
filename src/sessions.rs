@@ -279,10 +279,23 @@ fn codex_context_of(path: &Path) -> Option<String> {
 /// turn, and the window is what omp lists for the turn's model
 /// (`models::omp_context_window`). `None` whenever any of that is missing.
 pub fn omp_context() -> Option<String> {
+    mailbox_context(crate::models::omp_context_window)
+}
+
+/// How full a Pi session's context is: as for [`omp_context`], Pi writing the
+/// same transcript entries, with the window `pi --list-models` gives
+/// (`models::pi_context_window`).
+pub fn pi_context() -> Option<String> {
+    mailbox_context(crate::models::pi_context_window)
+}
+
+/// The latest assistant turn of the transcript in the delivery mailbox's
+/// `session/` directory against the window `window` gives for its model.
+fn mailbox_context(window: fn(&str, &str) -> Option<u64>) -> Option<String> {
     let mailbox = std::env::var_os("SSF_DELIVERY_MAILBOX")?;
     let session = Path::new(&mailbox).join("session");
     let (provider, model, used) = omp_turn(&newest_jsonl(&session)?)?;
-    let window = crate::models::omp_context_window(&provider, &model)?;
+    let window = window(&provider, &model)?;
     Some(format!(
         "{}% of {}",
         (used * 100 / window).min(100),
@@ -303,7 +316,7 @@ fn newest_jsonl(dir: &Path) -> Option<PathBuf> {
 }
 
 /// The provider, model and context tokens (input plus cache reads and
-/// writes) of the last assistant turn in the OMP transcript at `path`.
+/// writes) of the last assistant turn in the OMP or Pi transcript at `path`.
 fn omp_turn(path: &Path) -> Option<(String, String, u64)> {
     let tail = tail_of(path)?;
     tail.lines().rev().find_map(|line| {

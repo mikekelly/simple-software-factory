@@ -255,27 +255,67 @@ pub(crate) fn omp_models() -> Result<Vec<String>> {
         .unwrap_or_default())
 }
 
+/// How a harness lists its models' context windows: the listing command,
+/// the file its output is cached in under `$XDG_CACHE_HOME/ssf`, and how a
+/// window is read out of that output.
+struct WindowListing {
+    name: &'static str,
+    command: &'static str,
+    cache: &'static str,
+    window_in: fn(&str, &str, &str) -> Option<u64>,
+}
+
+const OMP_LISTING: WindowListing = WindowListing {
+    name: "omp",
+    command: "omp models --json",
+    cache: "omp-models.json",
+    window_in: omp_window_in,
+};
+
+const PI_LISTING: WindowListing = WindowListing {
+    name: "pi",
+    command: "pi --list-models",
+    cache: "pi-models.txt",
+    window_in: pi_window_in,
+};
+
 /// The context window `omp models --json` lists for `provider`'s `model`.
+pub(crate) fn omp_context_window(provider: &str, model: &str) -> Option<u64> {
+    listed_context_window(&OMP_LISTING, provider, model)
+}
+
+/// The context window `pi --list-models` lists for `provider`'s `model`.
+pub(crate) fn pi_context_window(provider: &str, model: &str) -> Option<u64> {
+    listed_context_window(&PI_LISTING, provider, model)
+}
+
+/// The context window `listing` gives for `provider`'s `model`.
 ///
-/// Asking omp takes seconds, which a post must not wait on, so the listing is
-/// cached in `$XDG_CACHE_HOME/ssf/omp-models.json` (`~/.cache` by default)
-/// and answered from there, stale or not. A listing older than a day, or one
+/// Asking the harness can take seconds, which a post must not wait on, so the
+/// listing is cached in `$XDG_CACHE_HOME/ssf/` (`~/.cache` by default) and
+/// answered from there, stale or not. A listing older than a day, or one
 /// without this model and more than a few minutes old, is refreshed in the
 /// background for the next post; until then this post goes without.
-pub(crate) fn omp_context_window(provider: &str, model: &str) -> Option<u64> {
+fn listed_context_window(listing: &WindowListing, provider: &str, model: &str) -> Option<u64> {
     let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))?
-        .join("ssf/omp-models.json");
-    let (window, refresh) = omp_cached_window(&cache, provider, model);
+        .join("ssf")
+        .join(listing.cache);
+    let (window, refresh) = cached_window(&cache, listing, provider, model);
     if refresh {
-        refresh_omp_models(&cache);
+        refresh_listing(&cache, listing);
     }
     window
 }
 
 /// The window the cached listing at `path` gives, and whether to refresh it.
-fn omp_cached_window(path: &Path, provider: &str, model: &str) -> (Option<u64>, bool) {
+fn cached_window(
+    path: &Path,
+    listing: &WindowListing,
+    provider: &str,
+    model: &str,
+) -> (Option<u64>, bool) {
     const DAY: u64 = 24 * 60 * 60;
     const RETRY: u64 = 5 * 60;
     let age = std::fs::metadata(path)
@@ -284,7 +324,7 @@ fn omp_cached_window(path: &Path, provider: &str, model: &str) -> (Option<u64>, 
         .map(|t| t.elapsed().map_or(0, |d| d.as_secs()));
     let window = std::fs::read_to_string(path)
         .ok()
-        .and_then(|listing| omp_window_in(&listing, provider, model));
+        .and_then(|text| (listing.window_in)(&text, provider, model));
     let refresh = match age {
         None => true,
         Some(age) => age >= DAY || (window.is_none() && age >= RETRY),
@@ -292,24 +332,28 @@ fn omp_cached_window(path: &Path, provider: &str, model: &str) -> (Option<u64>, 
     (window, refresh)
 }
 
-/// Rewrite the cached omp listing at `cache` in a detached process that
-/// outlives this one; a failed listing leaves the old file in place.
-fn refresh_omp_models(cache: &Path) {
+/// Rewrite the cached listing at `cache` in a detached process that outlives
+/// this one; a failed listing leaves the old file in place.
+fn refresh_listing(cache: &Path, listing: &WindowListing) {
     #[cfg(test)]
     {
-        let _ = cache;
-        STARTED.with(|started| started.borrow_mut().asked.push("omp".into()));
+        let _ = (cache, listing.command);
+        STARTED.with(|started| started.borrow_mut().asked.push(listing.name.into()));
     }
     #[cfg(not(test))]
     {
         use std::os::unix::process::CommandExt;
+        let _ = listing.name;
         let Some(dir) = cache.parent() else { return };
         if std::fs::create_dir_all(dir).is_err() {
             return;
         }
         let _ = Command::new("sh")
             .arg("-c")
-            .arg(r#"t="$1.$$.tmp"; omp models --json > "$t" && mv -f "$t" "$1" || rm -f "$t""#)
+            .arg(format!(
+                r#"t="$1.$$.tmp"; {} > "$t" && mv -f "$t" "$1" || rm -f "$t""#,
+                listing.command
+            ))
             .arg("sh")
             .arg(cache)
             .stdin(std::process::Stdio::null())
@@ -319,6 +363,7 @@ fn refresh_omp_models(cache: &Path) {
             .spawn();
     }
 }
+
 fn omp_window_in(listing: &str, provider: &str, model: &str) -> Option<u64> {
     let v: serde_json::Value = serde_json::from_str(listing).ok()?;
     v.get("models")?
@@ -328,6 +373,27 @@ fn omp_window_in(listing: &str, provider: &str, model: &str) -> Option<u64> {
         .get("contextWindow")?
         .as_u64()
         .filter(|w| *w > 0)
+}
+
+/// The `context` column of the `pi --list-models` row for `provider`'s
+/// `model`. Pi rounds it for display (`200K`, `262.1K`, `1.0M`), so the window
+/// read back is within a tenth of a unit of the real one.
+fn pi_window_in(table: &str, provider: &str, model: &str) -> Option<u64> {
+    let size = table.lines().skip(1).find_map(|l| {
+        let mut cols = l.split_whitespace();
+        if cols.next()? == provider && cols.next()? == model {
+            cols.next()
+        } else {
+            None
+        }
+    })?;
+    let (number, unit) = match size.as_bytes().last()? {
+        b'K' | b'k' => (&size[..size.len() - 1], 1_000.0),
+        b'M' | b'm' => (&size[..size.len() - 1], 1_000_000.0),
+        _ => (size, 1.0),
+    };
+    let window = (number.parse::<f64>().ok()? * unit).round();
+    (window >= 1.0).then_some(window as u64)
 }
 
 /// `opencode models`: one `provider/model` per line.
@@ -1033,16 +1099,16 @@ mod tests {
         let sandbox = crate::config::test_support::sandbox();
         let path = sandbox.root().join("omp-models.json");
         assert_eq!(
-            omp_cached_window(&path, "deepseek", "deepseek-flash"),
+            cached_window(&path, &OMP_LISTING, "deepseek", "deepseek-flash"),
             (None, true)
         );
         std::fs::write(&path, listing).unwrap();
         assert_eq!(
-            omp_cached_window(&path, "deepseek", "deepseek-flash"),
+            cached_window(&path, &OMP_LISTING, "deepseek", "deepseek-flash"),
             (Some(1_000_000), false)
         );
         assert_eq!(
-            omp_cached_window(&path, "deepseek", "missing"),
+            cached_window(&path, &OMP_LISTING, "deepseek", "missing"),
             (None, false)
         );
         // A day-old listing still answers, and is refreshed.
@@ -1054,12 +1120,41 @@ mod tests {
             .set_modified(old)
             .unwrap();
         assert_eq!(
-            omp_cached_window(&path, "deepseek", "deepseek-flash"),
+            cached_window(&path, &OMP_LISTING, "deepseek", "deepseek-flash"),
             (Some(1_000_000), true)
         );
         assert_eq!(
-            omp_cached_window(&path, "deepseek", "missing"),
+            cached_window(&path, &OMP_LISTING, "deepseek", "missing"),
             (None, true)
+        );
+    }
+
+    #[test]
+    fn pi_context_window_is_the_listed_models() {
+        let table = "provider    model          context  max-out\nopenrouter  ~anthropic/claude-opus-latest  1M  128K\nopenrouter  moonshotai/kimi-k2.6  262.1K  32K\nanthropic   claude-sonnet-4  200K  64K\nx  bad  ?  1K\n";
+        assert_eq!(
+            pi_window_in(table, "openrouter", "~anthropic/claude-opus-latest"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            pi_window_in(table, "openrouter", "moonshotai/kimi-k2.6"),
+            Some(262_100)
+        );
+        assert_eq!(
+            pi_window_in(table, "anthropic", "claude-sonnet-4"),
+            Some(200_000)
+        );
+        assert_eq!(pi_window_in(table, "openrouter", "claude-sonnet-4"), None);
+        assert_eq!(pi_window_in(table, "x", "bad"), None);
+        // The header row is not a model.
+        assert_eq!(pi_window_in(table, "provider", "model"), None);
+
+        let sandbox = crate::config::test_support::sandbox();
+        let path = sandbox.root().join("pi-models.txt");
+        std::fs::write(&path, table).unwrap();
+        assert_eq!(
+            cached_window(&path, &PI_LISTING, "anthropic", "claude-sonnet-4"),
+            (Some(200_000), false)
         );
     }
 
