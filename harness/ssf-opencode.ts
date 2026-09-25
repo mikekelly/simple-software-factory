@@ -28,6 +28,11 @@
  * will be taken: the daemon reads the pid out of it and asks whether that
  * process is still running.  It is rewritten on any tick that does not find
  * it naming this process (#395), and removed when the plugin is disposed.
+ *
+ * After each assistant message in the bound session the plugin writes
+ * `session/opencode-context.json` -- the message's context tokens, counted as
+ * OpenCode's own compaction check counts them, its model and that model's
+ * context window -- which is what the `gh` shim's byline reads (#508).
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -39,8 +44,29 @@ interface Info {
 	model?: { providerID: string; modelID: string };
 }
 
+/** An assistant message's usage, as `message.updated` carries it. */
+interface Assistant {
+	role?: string;
+	sessionID?: string;
+	providerID?: string;
+	modelID?: string;
+	time?: { completed?: number };
+	tokens?: {
+		total?: number;
+		input?: number;
+		output?: number;
+		reasoning?: number;
+		cache?: { read?: number; write?: number };
+	};
+}
+
 /** The slice of OpenCode's SDK client the bridge uses. */
 interface Client {
+	config: {
+		providers(): Promise<{
+			data?: { providers?: Array<{ id: string; models?: Record<string, { limit?: { context?: number } }> }> };
+		}>;
+	};
 	session: {
 		get(options: { path: { id: string } }): Promise<{ data?: { id: string; parentID?: string } }>;
 		messages(options: {
@@ -85,6 +111,9 @@ export const SsfDelivery = async ({ client }: { client: Client }) => {
 	if (!mailbox || process.env.SSF_OPENCODE_PID !== String(process.pid)) return {};
 	const ready = path.join(mailbox, "ready.json");
 	const pinned = path.join(mailbox, "session", "opencode-session");
+	const usage = path.join(mailbox, "session", "opencode-context.json");
+	// Each model's context window, asked for once per model.
+	const windows = new Map<string, number | undefined>();
 	// Files submitted and not yet stored, each with the session it went to.
 	// One is never submitted again, even after a rebind: the conversation it
 	// went to may still store it, and is the one that acknowledges it (#390).
@@ -111,6 +140,49 @@ export const SsfDelivery = async ({ client }: { client: Client }) => {
 			fs.renameSync(`${pinned}.tmp`, pinned);
 		} catch {
 			// The binding still holds for this process; only a relaunch loses it.
+		}
+	}
+
+	/** The context window of `provider/model`, as OpenCode lists it. */
+	async function windowOf(provider: string, model: string): Promise<number | undefined> {
+		const key = `${provider}/${model}`;
+		if (windows.has(key)) return windows.get(key);
+		try {
+			const listed = await client.config.providers();
+			const found = listed.data?.providers?.find((p) => p.id === provider)?.models?.[model];
+			const window = found?.limit?.context;
+			const known = typeof window === "number" && window > 0 ? window : undefined;
+			windows.set(key, known);
+			return known;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Record how full the bound session's context is after `message`. */
+	async function record(message: Assistant) {
+		if (message.role !== "assistant" || !message.time?.completed) return;
+		if (!session || message.sessionID !== session) return;
+		const t = message.tokens;
+		if (!t || !message.providerID || !message.modelID) return;
+		// OpenCode's own compaction check: the total, else the parts summed.
+		const tokens =
+			t.total ||
+			(t.input ?? 0) + (t.output ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0);
+		if (!tokens) return;
+		const context = await windowOf(message.providerID, message.modelID);
+		if (!context) return;
+		try {
+			fs.mkdirSync(path.dirname(usage), { recursive: true, mode: 0o700 });
+			const tmp = `${usage}.${process.pid}.tmp`;
+			fs.writeFileSync(
+				tmp,
+				JSON.stringify({ tokens, context, model: `${message.providerID}/${message.modelID}` }),
+				{ mode: 0o600 },
+			);
+			fs.renameSync(tmp, usage);
+		} catch {
+			// The byline goes without a context figure until the next message.
 		}
 	}
 
@@ -212,6 +284,11 @@ export const SsfDelivery = async ({ client }: { client: Client }) => {
 	return {
 		"chat.message": async (input: { sessionID: string }) => {
 			if (input.sessionID !== session && (await root(input.sessionID))) bind(input.sessionID);
+		},
+		event: async ({ event }: { event: { type: string; properties?: { info?: Assistant } } }) => {
+			if (event.type === "message.updated" && event.properties?.info) {
+				await record(event.properties.info);
+			}
 		},
 		dispose: async () => release(),
 	};

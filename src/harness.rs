@@ -233,11 +233,14 @@ pub static HARNESSES: &[Harness] = &[
             list_models: Some(("opencode models", models::opencode_models)),
             refresh: None,
         }),
-        auto_compaction: None,
+        // OpenCode compacts at the model's `limit.input` less
+        // `compaction.reserved`; `ssf launch` sets both for the launch model
+        // in `OPENCODE_CONFIG_CONTENT` (#508).
+        auto_compaction: Some(Compaction::OpenCodeConfig),
         login_phrases: &["run /connect to add an ai provider"],
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
-        context: None,
+        context: Some(crate::sessions::opencode_context),
         channel: &Mailbox,
     },
     Harness {
@@ -378,12 +381,12 @@ mod tests {
         );
         assert_eq!(
             ids(|h| h.auto_compaction.is_some()),
-            ["claude", "codex", "omp", "grok"]
+            ["claude", "codex", "omp", "opencode", "grok"]
         );
         assert_eq!(ids(|h| h.reads_transcript), ["claude", "codex", "grok"]);
         assert_eq!(
             ids(|h| h.context.is_some()),
-            ["claude", "codex", "omp", "pi", "grok"]
+            ["claude", "codex", "omp", "pi", "opencode", "grok"]
         );
         // The delivery if-chain `Herdr::deliver` had before its channels
         // were a field: Claude and Codex by id, OMP and Pi by
