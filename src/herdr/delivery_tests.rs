@@ -48,6 +48,7 @@ case "$1 $2" in
   "pane list") echo '{"panes":[{"pane_id":"w7:p9","workspace_id":"w7"}]}' ;;
   "pane run") touch "$d/ran" ;;
   "agent wait") echo '{"agent_status":"idle"}' ;;
+  "pane read") echo '> ready' ;;
   "pane process-info") cat "$d/process-info" ;;
 esac
 "#,
