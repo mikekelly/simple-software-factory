@@ -830,6 +830,9 @@ fn join(
         effort: eff.effort.clone(),
     });
     let agent_state = match (ws, agent) {
+        // herdr's `done` means the agent ended its turn, not that the work
+        // is finished: it waits on the item like `idle` does (#510).
+        (Some(_), Some(a)) if a.state == "done" => "idle".into(),
         (Some(_), Some(a)) => a.state.clone(),
         (Some(_), None) => "no-agent".into(),
         (None, _) if !driver_available => "unknown".into(),

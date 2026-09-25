@@ -57,7 +57,7 @@ The `sessions` array has one entry per tracked item.
 | `released_at` | when a released workspace was removed |
 | `origin`, `posts_by_session`, `untagged_posts` | attribution (see [Identity and bylines](identity-and-bylines.md)): the session that opened the item, how many posts each session made on it, and how many bot posts carry no tag. The daemon's own `🤖 ssf` event posts count in neither |
 | `blocked` | set while the session cannot take prompts: `reason` is `login` (its harness is at a sign-in prompt) or `start` (it could not be started at all, as after a handover to a harness that will not run), with `harness`, `harness_name`, `detail` (what the screen or the driver said), `since` and `fix`. See [A harness that is not signed in](sessions.md#a-harness-that-is-not-signed-in) |
-| `agent_state` | herdr's `idle`, `working`, `blocked`, `done`, or SSF's `no-agent`, `no-workspace`, `unbound`, `unknown` (herdr not running) |
+| `agent_state` | herdr's `idle`, `working` or `blocked` (herdr's `done`, an agent that ended its turn, is reported as `idle`), or SSF's `no-agent`, `no-workspace`, `unbound`, `unknown` (herdr not running) |
 | `agent_live` | whether a live agent answers for the session |
 | `last_assistant_message`, `tool`, `last_activity_at`, `column` | herdr's view of the pane; `last_activity_at` is the last write to the harness's local transcript, and when it is null the dashboard model's `activity_note` says why (see [dashboard.md](dashboard.md)) |
 | `branch`, `worktree_id`, `worktree_path`, `workspace` | the workspace; `workspace` is the normalized workspace row |

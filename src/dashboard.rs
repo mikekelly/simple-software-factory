@@ -357,7 +357,7 @@ fn state_color(state: &str) -> Color {
     match state {
         "working" => Color::LightGreen,
         "blocked" => Color::LightRed,
-        "waiting" | "idle" | "done" => Color::Yellow,
+        "waiting" | "idle" => Color::Yellow,
         _ => Color::Gray,
     }
 }
