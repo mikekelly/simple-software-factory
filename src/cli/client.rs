@@ -841,7 +841,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             println!("{}", cfg.github_token()?);
             Ok(())
         }
-        Command::Repo { command } => repo(command),
+        Command::Repo { command } => repo(command).await,
         Command::Models { harness, json } => {
             let available = models::available(&harness)?;
             if json {

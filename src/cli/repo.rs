@@ -1,8 +1,57 @@
 use super::prelude::*;
 use super::*;
 
-pub(super) fn repo(command: RepoCommand) -> Result<()> {
-    repo_at(&config::config_path(), command)
+pub(super) async fn repo(command: RepoCommand) -> Result<()> {
+    let added = match &command {
+        RepoCommand::Add { name, .. } => Some(name.clone()),
+        _ => None,
+    };
+    let config_file = config::config_path();
+    repo_at(&config_file, command)?;
+    if let Some(name) = added {
+        warn_without_guidance(&config_file, &name).await;
+    }
+    Ok(())
+}
+
+/// After `ssf repo add`, say so when the repository has no SSF agent
+/// guidance. Best effort: a lookup that fails is left to `ssf doctor`.
+async fn warn_without_guidance(config_file: &Path, name: &str) {
+    let Ok(cfg) = Config::load_from(config_file) else {
+        return;
+    };
+    let Some(r) = cfg.repos.iter().find(|r| {
+        split_repo_name(name).is_ok_and(|(o, n)| r.name.eq_ignore_ascii_case(&format!("{o}/{n}")))
+    }) else {
+        return;
+    };
+    let notes = r.prompt_file();
+    let notes_path = config::expand_tilde(notes);
+    let missing = if notes_path.is_absolute() {
+        !notes_path.exists()
+    } else {
+        let Some(gh) = cfg
+            .github_token()
+            .ok()
+            .and_then(|t| github::GitHub::new(&cfg.github.api_url, &t).ok())
+        else {
+            return;
+        };
+        let Ok((owner, repo)) = r.split() else {
+            return;
+        };
+        matches!(
+            gh.has_file(owner, repo, notes, r.base_branch.as_deref())
+                .await,
+            Ok(false)
+        )
+    };
+    if missing {
+        eprintln!(
+            "Warning: {} has no SSF agent guidance ({notes}); agents will work without it. See `ssf skill ssf-md` for how to write one.",
+            r.name
+        );
+    }
 }
 
 /// `ssf repo ...` against the config file at `path`.

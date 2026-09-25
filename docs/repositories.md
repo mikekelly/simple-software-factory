@@ -127,7 +127,8 @@ Enrollment is picked up on the daemon's next poll (`daemon.poll_interval_secs`,
 `ssf doctor` checks that the repository has the file named by `prompt_file`
 (`SSF.md` by default) on its base branch, because that file is the only
 repository-owned guidance the main session gets. It reaches the main session
-only, never its subagents.
+only, never its subagents. `ssf repo add` warns when the file is missing and
+points to `ssf skill ssf-md`.
 
 A minimal working `SSF.md`, committed at the repository root:
 
