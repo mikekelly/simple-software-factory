@@ -392,9 +392,24 @@ a session through it.
 ## Scratch sessions and the terminal
 
 On any page of a repository a factory watches, GitHub's top bar gets an
-**SSF · N scratch** button next to the repository's name, N being its scratch
-sessions (`ssf scratch`) that are not released. A click opens a popover with a
-**Scratch sessions** card per factory, and **New scratch** offers the harness,
+**SSF · N active** button next to the repository's name, N being its live
+scratch sessions (`ssf scratch`) and its item sessions with an agent, with a
+⚠ mark while any warning applies. A click opens the SSF HUD, a popover with,
+in order:
+
+- **Warnings**: the factory's own warning (unreachable, driver down, stale),
+  the daemon's last error, a factory the extension cannot reach, and each item
+  in the repository whose harness is not signed in. Left out when there is
+  none.
+- **Active sessions**: each issue or pull request with an agent, linked, with
+  its GitHub state, agent state and harness.
+- **Scratch sessions**: a card per factory, described below.
+- **Recently released**: items and scratch sessions released and still in the
+  factory's record, newest first. Left out when there is none.
+- **Harnesses**: the factory's installed harnesses (`ssf agents`), those with
+  a session not signed in marked so.
+
+In the Scratch sessions card, **New scratch** offers the harness,
 model and effort pickers and whose session it is: **Shared**, or **Mine**
 (the login GitHub's page names in `<meta name="user-login">`). That login only
 labels the session; it is not access control.

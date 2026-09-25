@@ -90,6 +90,12 @@ function payload() {
       /// Every scratch session, the killed ones included, which have no card:
       /// a repository page lists them with Open, Kill and Resume (#414).
       scratch: entry.snapshot?.scratch ?? [],
+      /// The top bar's HUD (#509): the daemon's last error, the items whose
+      /// harness is not signed in, and the items released and no longer
+      /// active.
+      lastError: entry.snapshot?.last_error ?? null,
+      blocked: entry.snapshot?.blocked ?? [],
+      released: entry.snapshot?.released ?? [],
     })),
   };
 }
