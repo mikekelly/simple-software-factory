@@ -36,6 +36,7 @@ seed_from() {
     install -Dm644 "$seed/ssf-delivery.ts" /usr/local/share/ssf/harness/ssf-delivery.ts
     install -Dm755 "$seed/ssf-pi-launch" /usr/local/share/ssf/harness/ssf-pi-launch
     install -Dm644 "$seed/ssf-opencode.ts" /usr/local/share/ssf/harness/ssf-opencode.ts
+    install -Dm644 "$seed/ssf-grok.mjs" /usr/local/share/ssf/harness/ssf-grok.mjs
     install -d -m700 -o ssf -g ssf /home/ssf/.config/ssf
     # Keep SSH usable for recovery when migration finds a conflict. The daemon
     # may only start after guest ownership was successfully established.

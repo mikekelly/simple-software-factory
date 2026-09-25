@@ -238,7 +238,7 @@ doctor` says which installed copy it refused. The pairing is not cosmetic: the
 bridge repairs the mailbox's ready marker, so a session running one from another
 build takes no events at all and its agent never hears that its item closed.
 Restarting the session loads the bridge this daemon serves; after upgrading SSF,
-restart any already-running OMP, Pi or OpenCode session for that reason.
+restart any already-running OMP, Pi, OpenCode or Grok session for that reason.
 
 The poller writes `ready.json` as the running extension's own attestation that
 events left in the mailbox will be taken, and rewrites it on any poll that does
@@ -290,6 +290,42 @@ than submitting it again. OpenCode loads plugins a moment after its TUI draws,
 so a relaunch waits up to 20 seconds for the ready marker before holding the
 event. An event stored while the agent was at work and then killed is in the
 resumed conversation but is answered only on its next turn.
+
+### Grok: the ACP bridge
+
+Grok sessions keep the same mailbox contract through a sidecar,
+`ssf-grok.mjs`, run with `node` (which Grok's npm install already needs).
+The launcher (`"$SSF_PI_LAUNCHER" grok ...`) starts the TUI with
+`--leader --leader-socket <socket> --no-auto-update`, on a socket of the
+mailbox's own (`$GROK_HOME/leader-ssf-<checksum>.sock`: short enough for a
+Unix socket path, and where `grok leader list` looks), and the bridge beside
+it, told the TUI's pid. The bridge waits for the TUI's leader and for its
+conversation in `$GROK_HOME/active_sessions.json`, then runs
+`grok agent --leader --leader-socket <socket> stdio` and speaks ACP to it:
+`initialize`, `session/load`, and one `session/prompt` per event file. A
+prompt sent while the agent is at work is queued by Grok and runs after the
+current turn; the bridge never uses `_x.ai/queue/interject`, which cancels the
+running turn. Each prompt's text block carries the mailbox id in
+`_meta.ssfDeliveryId`, which Grok keeps in the conversation's
+`updates.jsonl`, and the file is acknowledged once that record exists. Nothing
+is typed into the pane. The bridge keeps one connection for the TUI's
+lifetime, since each attach replays the conversation, and follows the TUI to
+another conversation (a `/new`, a resume) for events not yet submitted.
+
+The handshake and the load are the startup probe: only once both work does
+the bridge write `ready.json`. A Grok that no longer speaks what the bridge
+was verified against (grok 1.0.41), a sandbox profile (Grok refuses leader
+mode under one), or no `node` leaves no marker, and the channel then prompts
+the pane as it did before the bridge; `session/grok-bridge.log` in the mailbox
+says why. An event already published and not acknowledged is held rather than
+pasted beside, and a relaunch whose bridge does not attest within 20 seconds
+settles it and submits it through the terminal.
+
+The launcher continues the conversation the bridge pinned in
+`session/grok-session` with `--resume` unless the command already names one
+(ssf's own `--resume <id>`). Grok leaves a leader running after its last
+client goes, so when the TUI exits the bridge stops it and removes its socket;
+a relaunch starts a fresh leader with the session's current environment.
 
 The same state directory holds the [context
 compaction](harnesses.md#context-compaction) overlay an OMP session is started
@@ -354,7 +390,7 @@ endpoint, keep the terminal path.
 
 ### The terminal path
 
-Gemini CLI, Copilot CLI, Grok CLI and Crush have no proven channel
+Gemini CLI, Copilot CLI and Crush have no proven channel
 wired into SSF's attached interactive session, so their later activity uses
 `herdr agent prompt`; if herdr refuses because the agent is at a question, the
 raw bracketed-paste fallback is used. First prompts in every harness, and a
@@ -368,7 +404,8 @@ and Codex keep transcripts on disk). If the agent's terminal is gone, ssf
 starts it again with `--resume <id>` (Codex: `codex resume <id>`) and sends
 only the new events. OMP, Pi and OpenCode are resumed by their launcher from
 the item's delivery mailbox instead (a transcript there, or OpenCode's session
-id). If resuming fails, or the harness has no resume support,
+id); so is Grok when ssf has no id of its own to resume (the one its bridge
+pinned). If resuming fails, or the harness has no resume support,
 it starts fresh and resends the whole issue context, the session's own item,
 even when what triggered the relaunch was activity on an item it owns. If the
 workspace itself is gone, ssf re-creates it from the old branch (local or

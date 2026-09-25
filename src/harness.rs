@@ -14,7 +14,7 @@
 
 use crate::claude_delivery::Claude;
 use crate::codex_delivery::Codex;
-use crate::delivery_channel::Mailbox;
+use crate::delivery_channel::{Grok, Mailbox};
 use crate::herdr::{Channel, Terminal};
 use crate::models::{self, Catalogue, Compaction};
 
@@ -322,7 +322,7 @@ pub static HARNESSES: &[Harness] = &[
         api_key_vars: &["XAI_API_KEY"],
         reads_transcript: true,
         context: Some(crate::sessions::grok_context),
-        channel: &Terminal,
+        channel: &Grok,
     },
     Harness {
         id: "crush",
@@ -391,12 +391,16 @@ mod tests {
         // The delivery if-chain `Herdr::deliver` had before its channels
         // were a field: Claude and Codex by id, OMP and Pi by
         // `delivery_channel::supports`, the terminal for everyone else.
-        // OpenCode joined the mailbox with its plugin bridge (#508).
+        // OpenCode joined the mailbox with its plugin bridge, and Grok with
+        // its ACP sidecar, which falls back to the terminal (#508).
         assert_eq!(ids(|h| h.channel.session_bound()), ["claude", "codex"]);
-        assert_eq!(ids(|h| h.channel.bridged()), ["omp", "pi", "opencode"]);
+        assert_eq!(
+            ids(|h| h.channel.bridged()),
+            ["omp", "pi", "opencode", "grok"]
+        );
         assert_eq!(
             ids(|h| h.channel.journaled()),
-            ["claude", "codex", "omp", "pi", "opencode"]
+            ["claude", "codex", "omp", "pi", "opencode", "grok"]
         );
         assert!(!channel("nope").journaled());
     }

@@ -237,12 +237,15 @@ a capability ssf assumes:
 | `claude` | the bypass-permissions flag and the inline `--settings '{"crossSessionInbound":"accept"}'` | without them the session cannot take later item activity natively and falls back to the terminal |
 | `pi`, `omp` | `"$SSF_PI_LAUNCHER" pi\|omp ... -e "$SSF_PI_BRIDGE"` | the launcher isolates and resumes the session, the extension is the item-activity channel; without it `ssf doctor` asks for the session to be restarted after the command is fixed |
 | `opencode` | `"$SSF_PI_LAUNCHER" opencode ...` | the launcher loads the delivery plugin named by `SSF_OPENCODE_BRIDGE` and continues the mailbox's conversation (`--session`); without it later activity is held rather than pasted |
+| `grok` | `"$SSF_PI_LAUNCHER" grok ...` | the launcher starts the TUI in leader mode with the ACP delivery bridge named by `SSF_GROK_BRIDGE` beside it and continues the mailbox's conversation (`--resume`); without it later activity is pasted into the terminal |
 | `omp` | `PI_STREAM_IDLE_TIMEOUT_MS=900000` | the longer stream-idle window suits long agentic turns; the default sets it and a custom command replaces the whole default |
 | any | no `--model` or effort flag of its own | ssf appends those from `repo.model` and `repo.effort` |
 
 `ssf launch` sets `SSF_PI_BRIDGE` to the packaged extension,
-`SSF_OPENCODE_BRIDGE` to the packaged OpenCode plugin and `SSF_PI_LAUNCHER`
-to an exec wrapper, not a process that stays beside the harness. For
+`SSF_OPENCODE_BRIDGE` to the packaged OpenCode plugin, `SSF_GROK_BRIDGE` to
+the packaged Grok bridge and `SSF_PI_LAUNCHER` to an exec wrapper, not a
+process that stays beside the harness (for Grok it starts the bridge, which
+does, before it execs the TUI). For
 OpenCode the wrapper adds the plugin to the `plugin` list of any
 `OPENCODE_CONFIG_CONTENT` already set and keeps the rest of it. It uses
 `perl` for that (a dependency of git), and refuses to start, saying why,
@@ -306,6 +309,7 @@ that is already running, and how well that works depends on the harness:
 | `claude` | a native channel into the running agent, with the default command's settings kept |
 | `codex` | a native channel, experimental and opt-in, and only when an operator provides the launcher and the server it attaches to (below) |
 | `omp`, `pi`, `opencode` | a native channel through the bridge the default command loads (an extension for Pi and Oh My Pi, a plugin for OpenCode) |
+| `grok` | a native channel through the ACP bridge the default command starts beside the TUI (verified with grok 1.0.41; it needs `node` and no sandbox profile); a session whose bridge did not start, or whose Grok no longer speaks the protocol it was verified with, is prompted in the pane as before |
 | everything else | the driver prompts the pane; if the agent is sitting at a question, a raw paste into the terminal |
 
 Where a native channel is unavailable or an explicit native launch fails,

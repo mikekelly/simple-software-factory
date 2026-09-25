@@ -144,10 +144,14 @@ const LAUNCHER: &[u8] = include_bytes!("../harness/ssf-pi-launch");
 /// OpenCode's bridge: the same mailbox contract as an OpenCode plugin, which
 /// the launcher loads from `SSF_OPENCODE_BRIDGE`.
 const OPENCODE_BRIDGE: &[u8] = include_bytes!("../harness/ssf-opencode.ts");
+/// Grok's bridge: the same mailbox contract as a sidecar the launcher runs
+/// with node beside the TUI, from `SSF_GROK_BRIDGE`.
+const GROK_BRIDGE: &[u8] = include_bytes!("../harness/ssf-grok.mjs");
 
 const BRIDGE_NAME: &str = "harness/ssf-delivery.ts";
 const LAUNCHER_NAME: &str = "harness/ssf-pi-launch";
 const OPENCODE_BRIDGE_NAME: &str = "harness/ssf-opencode.ts";
+const GROK_BRIDGE_NAME: &str = "harness/ssf-grok.mjs";
 
 /// Where a session is pointed for one of those files, and whether that path
 /// holds this build's copy.
@@ -203,13 +207,27 @@ pub(crate) fn opencode_bridge_serving() -> Serving {
     )
 }
 
-/// The bridge `harness`'s sessions load: OpenCode's plugin, or the Pi/OMP
-/// extension.
+/// The Grok sidecar a session is started with.
+pub(crate) fn grok_bridge() -> PathBuf {
+    grok_bridge_serving().path
+}
+
+pub(crate) fn grok_bridge_serving() -> Serving {
+    served(
+        GROK_BRIDGE_NAME,
+        GROK_BRIDGE,
+        &installed_candidates(GROK_BRIDGE_NAME),
+        &crate::config::state_dir(),
+    )
+}
+
+/// The bridge `harness`'s sessions load: OpenCode's plugin, Grok's sidecar,
+/// or the Pi/OMP extension.
 pub(crate) fn bridge_serving_for(harness: &str) -> Serving {
-    if harness == "opencode" {
-        opencode_bridge_serving()
-    } else {
-        bridge_serving()
+    match harness {
+        "opencode" => opencode_bridge_serving(),
+        "grok" => grok_bridge_serving(),
+        _ => bridge_serving(),
     }
 }
 
@@ -541,6 +559,95 @@ impl Channel for Mailbox {
             let receipt = deliver(mailbox, sequence, text).await?;
             report_receipt(receipt, pane, mailbox);
             Ok(true)
+        })
+    }
+}
+
+/// Any event the mailbox holds that its bridge has not acknowledged.
+fn any_pending(path: &Path) -> bool {
+    std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.ends_with(".json") && name != "ready.json" && !name.starts_with('.')
+        })
+}
+
+/// Grok's channel: the mailbox while its sidecar bridge attests to it, the
+/// terminal otherwise.  The bridge attests only once its ACP handshake and
+/// session load have worked, so a Grok it cannot drive -- a protocol that
+/// changed, a sandbox profile that refuses leader mode, no node -- keeps the
+/// paste delivery it had before the bridge.  An event already published and
+/// not acknowledged is the exception: pasting beside it could put it in the
+/// conversation twice, so the mailbox holds it for the relaunch to settle, as
+/// it does for OMP and Pi.
+pub(crate) struct Grok;
+
+impl Channel for Grok {
+    fn bridged(&self) -> bool {
+        true
+    }
+
+    fn deliver<'a>(
+        &'a self,
+        herdr: &'a Herdr,
+        pane: &'a str,
+        journal: Journal<'a>,
+        text: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            match journal {
+                Some((mailbox, _)) if available(mailbox) || any_pending(mailbox) => {
+                    Mailbox.deliver(herdr, pane, journal, text).await
+                }
+                _ => {
+                    crate::herdr::Terminal
+                        .deliver(herdr, pane, None, text)
+                        .await
+                }
+            }
+        })
+    }
+
+    fn has_record(&self, mailbox: &Path, sequence: u64, text: &str) -> bool {
+        has_record(mailbox, sequence, text)
+    }
+
+    /// [`Mailbox`]'s relaunch while the relaunched session's bridge comes up.
+    /// One that does not attest leaves the event to the terminal, and its file
+    /// is settled first, so that no later attempt waits on a bridge that is
+    /// not coming.
+    fn relaunched<'a>(
+        &'a self,
+        herdr: &'a Herdr,
+        pane: &'a str,
+        journal: Journal<'a>,
+        recorded: bool,
+        resumed: bool,
+        text: &'a str,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            let Some((mailbox, sequence)) = journal.filter(|_| recorded) else {
+                return Ok(false);
+            };
+            let started = Instant::now();
+            while !available(mailbox) && started.elapsed() < BRIDGE_START_TIMEOUT {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if available(mailbox) {
+                return Mailbox
+                    .relaunched(herdr, pane, journal, recorded, resumed, text)
+                    .await;
+            }
+            let (pending, ack) = event_paths(mailbox, sequence, text);
+            if pending.exists() {
+                std::fs::rename(&pending, &ack)
+                    .with_context(|| format!("settling {}", pending.display()))?;
+            }
+            Ok(false)
         })
     }
 }

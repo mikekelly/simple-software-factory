@@ -4,7 +4,8 @@
 //! harness id: a harness with a native channel is its implementation plus one
 //! table field. The implementations live beside their protocols --
 //! `claude_delivery::Claude`, `codex_delivery::Codex`,
-//! `delivery_channel::Mailbox` (OMP and Pi) -- and [`Terminal`] here, the
+//! `delivery_channel::Mailbox` (OMP, Pi and OpenCode), `delivery_channel::Grok`
+//! (the mailbox, or the terminal without its bridge) -- and [`Terminal`] here, the
 //! herdr paste every other harness takes.
 
 use anyhow::Result;
