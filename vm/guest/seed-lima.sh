@@ -1,5 +1,5 @@
 #!/bin/bash
-# At every boot (lima; installed as /usr/local/lib/ssf/seed.sh): wait for
+# At every boot (lima and incus; installed as /usr/local/lib/ssf/seed.sh): wait for
 # the host's share (`/mnt/ssf`, the seed tree under it) and for the data
 # disk lima formats and mounts at `/mnt/lima-<disk>`, grow the data disk's
 # filesystem if `ssf vm grow` lengthened it, bind it on /var/lib/ssf, then
@@ -10,16 +10,23 @@ set -euo pipefail
 . /usr/local/lib/ssf/seed-common.sh
 share=/mnt/ssf
 wait_for 120 "the host share at $share/seed (is $share mounted?)" test -f "$share/seed/ssf"
-# lima.env: SSF_VM_DATA_DISK (the lima disk name) and SSF_VM_NAME, written by the host.
+# lima.env: SSF_VM_DATA_DISK (the lima disk name) and SSF_VM_NAME, written by
+# the host; SSF_VM_BACKEND=incus under Incus.
 . "$share/seed/lima.env"
-: "${SSF_VM_DATA_DISK:?seed: $share/seed/lima.env does not set SSF_VM_DATA_DISK}"
-data=/mnt/lima-$SSF_VM_DATA_DISK
-wait_for 120 "the data disk $SSF_VM_DATA_DISK at $data (lima mounts it; is the disk attached?)" findmnt -n "$data"
-# `ssf vm grow` resizes the disk with the VM stopped; the filesystem follows here.
-dev=$(findmnt -no SOURCE "$data")
-resize2fs "$dev" >/dev/null 2>&1 || echo "seed: resize2fs $dev failed; the data disk keeps its old size" >&2
-mkdir -p /var/lib/ssf
-findmnt -n /var/lib/ssf >/dev/null || mount --bind "$data" /var/lib/ssf
+if [ "${SSF_VM_BACKEND:-lima}" = incus ]; then
+    # Incus mounts the data volume on /var/lib/ssf itself (a disk device)
+    # and grows it after `ssf vm grow`.
+    wait_for 120 "the data volume at /var/lib/ssf (an Incus disk device; is it attached?)" findmnt -n /var/lib/ssf
+else
+    : "${SSF_VM_DATA_DISK:?seed: $share/seed/lima.env does not set SSF_VM_DATA_DISK}"
+    data=/mnt/lima-$SSF_VM_DATA_DISK
+    wait_for 120 "the data disk $SSF_VM_DATA_DISK at $data (lima mounts it; is the disk attached?)" findmnt -n "$data"
+    # `ssf vm grow` resizes the disk with the VM stopped; the filesystem follows here.
+    dev=$(findmnt -no SOURCE "$data")
+    resize2fs "$dev" >/dev/null 2>&1 || echo "seed: resize2fs $dev failed; the data disk keeps its old size" >&2
+    mkdir -p /var/lib/ssf
+    findmnt -n /var/lib/ssf >/dev/null || mount --bind "$data" /var/lib/ssf
+fi
 seed_from "$share/seed"
 # A herdr the host supplies ([vm] herdr, or its own on a Linux host) is
 # refreshed here like the ssf binary, before herdr-server starts; a guest

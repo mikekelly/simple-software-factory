@@ -6,7 +6,9 @@
 # SSF_VM_BACKEND: `firecracker` (default) provisions the Ubuntu 24.04 image
 # `ssf vm build` made (the guest files are already in it); `lima` provisions
 # a stock cloud image (Arch or Debian/Ubuntu) on its first boot, from the
-# host's share mounted at /mnt/ssf, and installs the guest files itself.
+# host's share mounted at /mnt/ssf, and installs the guest files itself;
+# `incus` does the same in an Incus system container (no cloud-init there,
+# and Incus mounts the data volume itself).
 set -euxo pipefail
 export HOME=/root
 export TERM=dumb
@@ -14,7 +16,7 @@ backend=${SSF_VM_BACKEND:-firecracker}
 share=/mnt/ssf
 case "$backend" in
     firecracker) pkg=apt ;;
-    lima)
+    lima|incus)
         if command -v pacman >/dev/null 2>&1; then
             pkg=pacman
         elif command -v apt-get >/dev/null 2>&1; then
@@ -24,7 +26,7 @@ case "$backend" in
             exit 1
         fi
         ;;
-    *) echo "provision: SSF_VM_BACKEND=$backend is not firecracker or lima" >&2; exit 1 ;;
+    *) echo "provision: SSF_VM_BACKEND=$backend is not firecracker, lima or incus" >&2; exit 1 ;;
 esac
 machine=$(uname -m)
 case "$pkg" in
@@ -130,10 +132,12 @@ if [ "$backend" = firecracker ]; then
         install -Dm644 "$f" "/etc/systemd/system/$u.d/firecracker.conf"
     done
 fi
-# Under lima there is no image-build step: the guest files come from the
-# share (what make-base.sh puts into the Firecracker image), and herdr from
-# the share when the host could supply a Linux binary, else from its release.
-if [ "$backend" = lima ]; then
+# Under lima (and incus) there is no image-build step: the guest files come
+# from the share (what make-base.sh puts into the Firecracker image), and
+# herdr from the share when the host could supply a Linux binary, else from
+# its release. Incus takes lima's unit drop-ins as they are: their ordering
+# after cloud-final.service is a no-op where there is no cloud-init.
+if [ "$backend" != firecracker ]; then
     install -Dm755 "$share/guest/seed-lima.sh" /usr/local/lib/ssf/seed.sh
     install -Dm644 "$share/guest/seed-common.sh" /usr/local/lib/ssf/seed-common.sh
     install -Dm440 "$share/guest/sudoers" /etc/sudoers.d/ssf

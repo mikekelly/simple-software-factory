@@ -723,13 +723,24 @@ impl Vm {
                 Ok(i) => (i, None),
                 Err(e) => (None, Some(format!("{e:#}"))),
             },
-            BackendKind::Firecracker => (None, None),
+            BackendKind::Firecracker | BackendKind::Incus => (None, None),
+        };
+        // Incus: one `incus list` for the same two answers.
+        let (incus, probe_error) = match backend {
+            BackendKind::Incus => match self.incus_instance() {
+                Ok(i) => (i, None),
+                Err(e) => (None, Some(format!("{e:#}"))),
+            },
+            _ => (None, probe_error),
         };
         let running = match backend {
             BackendKind::Firecracker => Some(self.running()),
             BackendKind::Lima => probe_error
                 .is_none()
                 .then(|| inst.as_ref().is_some_and(|i| i.is_running())),
+            BackendKind::Incus => probe_error
+                .is_none()
+                .then(|| incus.as_ref().is_some_and(|i| i.is_running())),
         };
         let ssh = running == Some(true) && self.ssh_ok();
         let sizes = self.sizes();
@@ -748,21 +759,24 @@ impl Vm {
             backend: backend.to_string(),
             instance: match backend {
                 BackendKind::Lima => Some(self.lima_name()),
+                BackendKind::Incus => Some(self.incus_name()),
                 BackendKind::Firecracker => None,
             },
+            shares_host_kernel: backend.shares_host_kernel(),
             lima_dir: inst.as_ref().map(|i| i.dir.clone()),
             image: match backend {
                 BackendKind::Firecracker => self.rootfs().exists(),
                 BackendKind::Lima => inst.is_some(),
+                BackendKind::Incus => incus.is_some(),
             },
             running,
             firecracker_pid: match backend {
                 BackendKind::Firecracker => self.firecracker_pid(),
-                BackendKind::Lima => None,
+                BackendKind::Lima | BackendKind::Incus => None,
             },
             gvproxy_pid: match backend {
                 BackendKind::Firecracker => self.gvproxy_pid(),
-                BackendKind::Lima => None,
+                BackendKind::Lima | BackendKind::Incus => None,
             },
             ssh_port: self.cfg.ssh_port,
             ssh,
@@ -910,6 +924,7 @@ impl Vm {
                 Ok(())
             }
             BackendKind::Lima => self.lima_reset(),
+            BackendKind::Incus => self.incus_reset(),
         }
     }
 
@@ -928,7 +943,7 @@ impl Vm {
         match (self.backend(), self.running_state()) {
             (_, Some(false)) => {}
             (BackendKind::Firecracker, _) => self.stop().await?,
-            (BackendKind::Lima, Some(true)) => {
+            (BackendKind::Lima | BackendKind::Incus, Some(true)) => {
                 if let Err(e) = self.stop().await {
                     warn!(
                         "could not stop {} before destroying it: {e:#}; deleting it anyway",
@@ -944,10 +959,12 @@ impl Vm {
             // graceful shutdown is worth its wait where the guest is
             // known to be up; where it is not, `limactl delete -f` stops
             // whatever is there.
-            (BackendKind::Lima, None) => {}
+            // `incus delete -f` likewise stops whatever is there.
+            (BackendKind::Lima | BackendKind::Incus, None) => {}
         }
         let lima = match self.backend() {
             BackendKind::Lima => self.lima_destroy(),
+            BackendKind::Incus => self.incus_destroy(),
             BackendKind::Firecracker => Ok(false),
         };
         let mut removed = lima.as_ref().copied().unwrap_or(false);

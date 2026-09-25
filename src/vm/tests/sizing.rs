@@ -135,7 +135,11 @@ fn a_probe_that_can_never_be_made_ends_the_supervision() {
     // warned left `ssf-server` "supervising" a VM it had not heard about
     // for hours, with the service reading active the whole time.
     const { assert!(MAX_UNANSWERED_PROBES > 1) };
-    for backend in [BackendKind::Lima, BackendKind::Firecracker] {
+    for backend in [
+        BackendKind::Lima,
+        BackendKind::Firecracker,
+        BackendKind::Incus,
+    ] {
         let every = supervise_interval(backend);
         // Long enough to sit out a busy laptop, short enough that the
         // daemon does not pretend all day.
@@ -152,6 +156,7 @@ fn a_probe_that_can_never_be_made_ends_the_supervision() {
         let tool = match backend {
             BackendKind::Lima => "limactl",
             BackendKind::Firecracker => "pid file",
+            BackendKind::Incus => "incus list",
         };
         assert!(err.contains(tool), "{err}");
     }
@@ -256,7 +261,21 @@ fn the_doctor_line_names_the_backend_tooling_and_what_to_install() {
     // Firecracker asks one question: may this user use KVM?
     let fc = backend_tools(BackendKind::Firecracker, "linux", "x86_64", None, None);
     assert_eq!(fc.len(), 1);
-    assert!(fc[0].device);
+    assert_eq!(fc[0].kind, ToolKind::Device);
+    // ... and says what a host without KVM can use instead.
+    assert!(fc[0].install.contains("backend = \"incus\""), "{:?}", fc[0]);
+    // Incus: the client, and a daemon this user can reach.
+    let inc = backend_tools(BackendKind::Incus, "linux", "x86_64", None, None);
+    assert_eq!(inc.len(), 2);
+    assert_eq!(
+        (inc[0].name.as_str(), inc[0].kind),
+        ("incus", ToolKind::Program)
+    );
+    assert_eq!(inc[1].kind, ToolKind::Socket);
+    assert!(inc[1].install.contains("incus-admin"), "{:?}", inc[1]);
+    let (ok, msg) = backend_tooling_line(&inc, &[Some("/usr/bin/incus".into()), None]);
+    assert!(!ok);
+    assert!(msg.contains("daemon not reachable at"), "{msg}");
     assert_eq!(fc[0].name, "/dev/kvm");
     assert!(fc[0].install.contains("usermod -aG kvm"), "{:?}", fc[0]);
 

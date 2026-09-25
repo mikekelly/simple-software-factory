@@ -125,7 +125,56 @@ older ssf](#upgrading-from-an-older-ssf)).
 ## Linux without KVM
 
 Applies on a Linux machine with no usable `/dev/kvm`, or on aarch64, that
-should still run the VM.
+should still run the VM. Most cloud VPSes (Hetzner Cloud among them) have no
+KVM.
+
+There are two choices, and ssf never picks one for you:
+
+- **Incus** (`ssf config set vm.backend incus`): the guest runs as an
+  unprivileged system container at near-native speed, with Docker working
+  inside. It is **not a VM**: it shares the host kernel, isolated by user
+  namespaces, which is weaker than a VM but keeps agents away from the host's
+  users and files.
+- **lima** (below): a real VM under qemu, but without KVM qemu emulates the
+  CPU in software, and agent builds run about 30 times slower.
+
+### Incus
+
+Setting Incus up needs root once; ssf does not do it, and `ssf vm build`,
+`ssf vm status` and `ssf doctor` say what is missing.
+
+| Distribution | Install |
+|---|---|
+| Debian 13, Ubuntu 24.04 or newer | `sudo apt install incus` |
+| Arch | `sudo pacman -S incus`, then `sudo systemctl enable --now incus.socket` |
+| Fedora | `sudo dnf install incus`, then `sudo systemctl enable --now incus.socket` |
+
+Older Debian and Ubuntu releases can use the Zabbly packages
+(<https://github.com/zabbly/incus>). Then:
+
+```sh
+sudo usermod -aG incus-admin "$USER"   # then log in again
+sudo incus admin init --minimal        # a storage pool and the incusbr0 network
+ssf config set vm.backend incus
+ssf vm build
+```
+
+The kernel needs idmapped mounts (5.12 or newer; any current distribution
+kernel), which ssf uses to share `share/` with the container read-only. Incus's
+default bridge uses nftables with `inet` tables and masquerading; on a kernel
+built without them (`NF_TABLES_INET`, `NFT_MASQ`; stock distribution kernels
+have both), `incus admin init` or the container's network fails with
+`Operation not supported`. Create the bridge by hand then, without Incus's
+firewall, and add the NAT rule yourself, for example (the last line only
+when the default profile has no `eth0` yet):
+
+```sh
+sudo incus network create incusbr0 ipv4.address=10.77.0.1/24 ipv4.nat=false ipv4.firewall=false ipv6.address=none
+sudo iptables -t nat -A POSTROUTING -s 10.77.0.0/24 ! -d 10.77.0.0/24 -j MASQUERADE
+sudo incus profile device add default eth0 nic network=incusbr0 name=eth0
+```
+
+### lima
 
 Set the lima backend (`[vm] backend`), which runs the guest under qemu as
 your own user. It is slower than Firecracker and needs no root. Install

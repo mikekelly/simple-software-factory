@@ -223,6 +223,7 @@ impl Facts {
             vm_stranded_disk: vm.stranded_data_disk(),
             vm_disk: match vm.backend() {
                 vm::BackendKind::Lima => Some(vm.lima_disk_name()),
+                vm::BackendKind::Incus => Some(vm.incus_name()),
                 vm::BackendKind::Firecracker => None,
             },
             vm_removed: match vm.backend() {
@@ -232,6 +233,11 @@ impl Facts {
                 vm::BackendKind::Lima => lima_removed(
                     &vm.lima_name(),
                     &vm.lima_disk_name(),
+                    vm.dir.exists().then_some(vm.dir.as_path()),
+                    &survey,
+                ),
+                vm::BackendKind::Incus => incus_removed(
+                    &vm.incus_name(),
                     vm.dir.exists().then_some(vm.dir.as_path()),
                     &survey,
                 ),
@@ -267,13 +273,15 @@ impl Facts {
         self.vm_running = survey.running;
         self.vm_startable = survey.startable;
         self.vm_data = survey.data;
-        if vm.backend() == vm::BackendKind::Lima {
-            self.vm_removed = lima_removed(
-                &vm.lima_name(),
-                &vm.lima_disk_name(),
-                vm.dir.exists().then_some(vm.dir.as_path()),
-                &survey,
-            );
+        let dir = vm.dir.exists().then_some(vm.dir.as_path());
+        match vm.backend() {
+            vm::BackendKind::Lima => {
+                self.vm_removed = lima_removed(&vm.lima_name(), &vm.lima_disk_name(), dir, &survey);
+            }
+            vm::BackendKind::Incus => {
+                self.vm_removed = incus_removed(&vm.incus_name(), dir, &survey);
+            }
+            vm::BackendKind::Firecracker => {}
         }
     }
 
@@ -688,17 +696,34 @@ fn unchecked_workspaces(data: Option<bool>) -> bool {
 /// a disk that outlived its instance -- and a report that promises to
 /// remove what is not there is a report to trust less.
 fn lima_removed(instance: &str, disk: &str, dir: Option<&Path>, survey: &vm::Survey) -> String {
+    removed_parts(
+        &format!("the lima instance {instance}"),
+        &format!("its data disk {disk} in lima's home"),
+        dir,
+        survey,
+    )
+}
+
+/// [`lima_removed`] under Incus: the container and its data volume.
+fn incus_removed(name: &str, dir: Option<&Path>, survey: &vm::Survey) -> String {
+    removed_parts(
+        &format!("the Incus container {name}"),
+        &format!("its data volume {name} in the Incus storage pool"),
+        dir,
+        survey,
+    )
+}
+
+fn removed_parts(instance: &str, data: &str, dir: Option<&Path>, survey: &vm::Survey) -> String {
     let mut parts = Vec::new();
     match (survey.startable, survey.running) {
-        (true, _) => parts.push(format!("the lima instance {instance}")),
-        (false, None) => parts.push(format!("the lima instance {instance} if it is there")),
+        (true, _) => parts.push(instance.to_string()),
+        (false, None) => parts.push(format!("{instance} if it is there")),
         (false, Some(_)) => {}
     }
     match survey.data {
-        Some(true) => parts.push(format!("its data disk {disk} in lima's home")),
-        None => parts.push(format!(
-            "its data disk {disk} in lima's home if it is there"
-        )),
+        Some(true) => parts.push(data.to_string()),
+        None => parts.push(format!("{data} if it is there")),
         Some(false) => {}
     }
     if let Some(d) = dir {
