@@ -6,6 +6,7 @@
 
 mod agents;
 mod allow;
+mod chrome_extension;
 mod claude_delivery;
 mod codex_delivery;
 mod config;

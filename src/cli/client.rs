@@ -23,6 +23,9 @@ pub async fn client_main() -> Result<()> {
     if let Command::Skill { topic } = cli.command {
         return super::skill::print(topic);
     }
+    if let Command::ChromeExtension { output, force } = &cli.command {
+        return crate::chrome_extension::write(output, *force);
+    }
     let catalog = server_catalog::Catalog::load()?;
     // The factory this process belongs to, when the daemon named one in the
     // environment: a session's pane inherits it. `SSF_CONFIG_DIR` there is the
@@ -949,6 +952,9 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         } => purge(dry_run, older_than, force, json).await,
         Command::Scratch { command } => scratch(command).await,
         Command::Skill { topic } => super::skill::print(topic),
+        Command::ChromeExtension { output, force } => {
+            crate::chrome_extension::write(&output, force)
+        }
         Command::Guide => {
             let state_bot = state::State::load().ok().and_then(|state| state.bot_login);
             let config_bot = Config::load().ok().and_then(|cfg| cfg.github.login);
