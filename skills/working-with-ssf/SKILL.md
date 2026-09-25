@@ -1,6 +1,6 @@
 ---
 name: working-with-ssf
-description: Work with Simple Software Factory (ssf) on a person's behalf: install a factory and watch its first repository, add a repository, operate and troubleshoot a running factory, write or audit a project's SSF.md, act as a liaison. Use when asked to set up, configure, manage or fix ssf.
+description: "Work with Simple Software Factory (ssf) on a person's behalf: install a factory, setup a factory, configure ssf to watch a repository, operate and troubleshoot a running factory, write or audit a project's SSF.md, act as a liaison between the user and the factory. Use when asked to set up, configure, manage or fix ssf."
 ---
 
 # Working with Simple Software Factory (ssf)
@@ -25,10 +25,8 @@ locally, in a VM, or over SSH. Linux and macOS are supported.
    local VM, host mode and a rented host, then runs to the first issue. Once
    `ssf` is installed, continue from `ssf skill setup`, which is the same
    document at the installed version.
-3. Inside a session that ssf itself started on an issue, or a scratch
-   session (`SSF_SESSION` set, started with `ssf scratch create` or the
-   Chrome extension's New scratch), read `ssf guide` instead; an item's
-   first prompt already carries what that session needs.
+3. If you're an ssf agent session that ssf itself started on an issue (`SSF_SESSION` will be set)
+   read `ssf guide` instead.
 
 | The person wants | Topic |
 | --- | --- |
