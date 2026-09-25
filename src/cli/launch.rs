@@ -115,9 +115,9 @@ pub(super) fn launch(
         }
     }
     // What the harness may fill its context to before it compacts its own
-    // history. Two of the three harnesses that take a threshold take it on the
-    // command line, so the value is already in `command`; omp takes it only
-    // through its settings, so it is handed down as an overlay the session is
+    // history. claude and codex take it on the command line, so the value is
+    // already in `command`; grok takes it as an environment variable (below);
+    // omp takes it only through its settings, so it is handed down as an overlay the session is
     // pointed at. `PI_CONFIG_FILES` is the way that reaches a real session:
     // omp reads it at startup, while `omp --config <file>` is honoured by its
     // model listing and not by a session. A session started by hand, with no
@@ -130,11 +130,38 @@ pub(super) fn launch(
         .as_ref()
         .map(|s| s.harness.as_str())
         .or_else(|| repo_cfg.map(|r| r.harness.as_str()));
-    if harness == Some("omp") {
-        let tokens = auto_compaction_tokens.unwrap_or_else(|| match repo_cfg {
+    let tokens = || {
+        auto_compaction_tokens.unwrap_or_else(|| match repo_cfg {
             Some(r) => cfg.auto_compaction_tokens_for(r),
             None => cfg.auto_compaction_tokens_default(),
-        });
+        })
+    };
+    // grok takes a percentage of the model's window, not a count, through
+    // `GROK_AUTO_COMPACT_THRESHOLD_PERCENT` (seen working with grok 1.0.41);
+    // the window is what grok's model cache lists for the session's model.
+    cmd.env_remove("GROK_AUTO_COMPACT_THRESHOLD_PERCENT");
+    if harness == Some("grok") {
+        let tokens = tokens();
+        // A stack names the session's model (None on a harness switch means
+        // grok's default); only without one is the repository's model grok's.
+        let model = match &stack {
+            Some(s) => s.model.as_deref(),
+            None => repo_cfg.and_then(|r| r.model.as_deref()),
+        };
+        if tokens > 0 {
+            match crate::models::grok_compaction_percent(tokens, model) {
+                Some(percent) => {
+                    cmd.env("GROK_AUTO_COMPACT_THRESHOLD_PERCENT", percent.to_string());
+                }
+                None => eprintln!(
+                    "ssf launch: grok lists no context window for this model; this session \
+compacts at grok's own threshold"
+                ),
+            }
+        }
+    }
+    if harness == Some("omp") {
+        let tokens = tokens();
         if tokens > 0 {
             match crate::models::write_omp_compaction_overlay(tokens) {
                 Ok(path) => {
