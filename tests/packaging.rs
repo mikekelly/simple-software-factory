@@ -51,10 +51,15 @@ fn harness_delivery_bridge_ships_on_each_host_and_into_the_guest() {
             "{manifest} does not ship the OMP/Pi delivery bridge"
         );
     }
+    assert!(repo().join("harness/ssf-opencode.ts").is_file());
     for manifest in [PKGBUILD, NFPM, "vm/guest/seed-common.sh"] {
         assert!(
             read(manifest).contains("ssf-pi-launch"),
             "{manifest} does not ship the OMP/Pi session launcher"
+        );
+        assert!(
+            read(manifest).contains("harness/ssf-opencode.ts"),
+            "{manifest} does not ship the OpenCode delivery plugin"
         );
     }
 }

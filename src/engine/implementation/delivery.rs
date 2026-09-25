@@ -934,7 +934,10 @@ deliveries resume"
             // A session keeps the bridge it started with, so a held mailbox is
             // also how a package and a binary from different builds show up.
             // Said once with the incident, because the same restart fixes both.
-            let bridge = crate::delivery_channel::bridge_serving();
+            let harness = self
+                .overrides_of(repo, number)
+                .map_or_else(|| repo.harness.clone(), |overrides| overrides.harness);
+            let bridge = crate::delivery_channel::bridge_serving_for(&harness);
             if bridge.skewed {
                 warn!(
                     repo = repo.name,

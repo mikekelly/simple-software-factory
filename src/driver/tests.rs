@@ -432,7 +432,10 @@ fn a_journal_goes_to_the_harnesses_with_a_native_channel() {
             .collect()
     };
     let herdr = Driver::Herdr(Herdr::new(crate::config::HerdrConfig::default()));
-    assert_eq!(with_journal(&herdr), ["claude", "codex", "omp", "pi"]);
+    assert_eq!(
+        with_journal(&herdr),
+        ["claude", "codex", "omp", "pi", "opencode"]
+    );
     let stub = Driver::Stub(StubDriver::new(DriverKind::Herdr));
-    assert_eq!(with_journal(&stub), ["omp", "pi"]);
+    assert_eq!(with_journal(&stub), ["omp", "pi", "opencode"]);
 }

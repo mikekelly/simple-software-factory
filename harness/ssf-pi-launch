@@ -4,7 +4,7 @@ set -eu
 harness=$1
 shift
 case "$harness" in
-  omp|pi) ;;
+  omp|pi|opencode) ;;
   *) echo "ssf-pi-launch: unsupported harness: $harness" >&2; exit 2 ;;
 esac
 
@@ -18,6 +18,30 @@ export SSF_HARNESS
 
 session_dir=${SSF_DELIVERY_MAILBOX:?SSF_DELIVERY_MAILBOX is not set}/session
 mkdir -p "$session_dir"
+
+if [ "$harness" = opencode ]; then
+  # OpenCode keeps its sessions in its own database; the bridge plugin names
+  # the one this mailbox's conversation is in.
+  bridge=${SSF_OPENCODE_BRIDGE:?SSF_OPENCODE_BRIDGE is not set}
+  id=$(cat "$session_dir/opencode-session" 2>/dev/null || true)
+  case "$id" in
+    ses_*[!A-Za-z0-9_]*|'') ;;
+    ses_*)
+      # A session deleted since is started afresh rather than refused.
+      known=$(opencode session list --pure --format json </dev/null 2>/dev/null || true)
+      case "$known" in
+        *"\"$id\""*) set -- "$@" --session "$id" ;;
+      esac
+      ;;
+  esac
+  # The plugin serves the mailbox only in this process (exec keeps the pid):
+  # an `opencode` the agent runs inherits the config but not the mailbox.
+  OPENCODE_CONFIG_CONTENT=$(printf '{"plugin":["file://%s"]}' "$bridge")
+  SSF_OPENCODE_PID=$$
+  export OPENCODE_CONFIG_CONTENT SSF_OPENCODE_PID
+  exec opencode "$@"
+fi
+
 latest=$(find "$session_dir" -maxdepth 1 -type f -name '*.jsonl' -print | sort | tail -n 1)
 
 if [ -n "$latest" ]; then
