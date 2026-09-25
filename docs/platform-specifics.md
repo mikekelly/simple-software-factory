@@ -165,12 +165,15 @@ default bridge uses nftables with `inet` tables and masquerading; on a kernel
 built without them (`NF_TABLES_INET`, `NFT_MASQ`; stock distribution kernels
 have both), `incus admin init` or the container's network fails with
 `Operation not supported`. Create the bridge by hand then, without Incus's
-firewall, and add the NAT rule yourself, for example (the last line only
-when the default profile has no `eth0` yet):
+firewall, and add the NAT rule yourself, for example. A failed `incus admin init
+--minimal` leaves the default profile without its `root` disk and `eth0`, so
+add both (skip a line whose pool, network or device already exists):
 
 ```sh
+sudo incus storage create default dir
 sudo incus network create incusbr0 ipv4.address=10.77.0.1/24 ipv4.nat=false ipv4.firewall=false ipv6.address=none
 sudo iptables -t nat -A POSTROUTING -s 10.77.0.0/24 ! -d 10.77.0.0/24 -j MASQUERADE
+sudo incus profile device add default root disk path=/ pool=default
 sudo incus profile device add default eth0 nic network=incusbr0 name=eth0
 ```
 
