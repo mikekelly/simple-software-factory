@@ -129,7 +129,7 @@ impl Fake {
             ),
             Edit::Ignored => ":".to_string(),
         };
-        std::fs::write(
+        crate::test_support::write_executable(
             &limactl,
             // `shell` fails the way limactl fails against an instance
             // that is not running, so a wait that got that far ends
@@ -149,9 +149,7 @@ exit 0
 "#,
                 log = log.display(),
             ),
-        )
-        .unwrap();
-        make_executable(&limactl).unwrap();
+        );
         let mut cfg = Config::default();
         cfg.vm.dir = dir.join("vm").to_string_lossy().into_owned();
         cfg.vm.name = "one".into();

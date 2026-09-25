@@ -311,7 +311,7 @@ mod tests {
         );
         drop(private);
         let program = root.join("gh");
-        std::fs::write(
+        crate::test_support::write_executable(
             &program,
             r#"#!/bin/sh
 set -eu
@@ -325,9 +325,7 @@ else
     cat "$GH_CONFIG_DIR/token"
 fi
 "#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        );
         assert_eq!(
             login_device_using("github.com", REQUIRED_SCOPES, &root, &program).unwrap(),
             "device-token"

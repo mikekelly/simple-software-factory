@@ -486,18 +486,15 @@ mod tests {
     /// an origin that wants credentials, #495.)
     #[tokio::test]
     async fn the_credential_helpers_git_runs_are_told_not_to_ask() {
-        use std::os::unix::fs::PermissionsExt;
         use tokio::io::AsyncWriteExt;
 
         let dir = std::env::temp_dir().join(format!("ssf-helper-env-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let helper = dir.join("helper.sh");
-        std::fs::write(
+        crate::test_support::write_executable(
             &helper,
             "#!/bin/sh\nprintf '%s\\n' \"$GIT_TERMINAL_PROMPT $GCM_INTERACTIVE\" >&2\nexit 0\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
 
         let mut child = unattended(tokio::process::Command::new("git").args([
             "-c",

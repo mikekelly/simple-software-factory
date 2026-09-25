@@ -119,7 +119,7 @@ fn grow_resizes_the_image_and_refuses_a_running_vm() {
     assert!(blocks * 512 < 1 << 30, "{blocks} blocks");
     // Running (a process whose name says firecracker): refused.
     let fake = dir.join("firecracker");
-    std::fs::copy("/bin/sleep", &fake).unwrap();
+    crate::test_support::write_executable(&fake, std::fs::read("/bin/sleep").unwrap());
     let mut child = Command::new(&fake).arg("60").spawn().unwrap();
     std::fs::write(vm.fc_pid(), child.id().to_string()).unwrap();
     // spawn may return before the child has exec'd its new name.

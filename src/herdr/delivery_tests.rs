@@ -32,12 +32,11 @@ fn agents(rows: &[(&str, &str)]) -> String {
 
 impl Fake {
     fn new(before: &[(&str, &str)], after: &[(&str, &str)]) -> Self {
-        use std::os::unix::fs::PermissionsExt;
         let sandbox = sandbox();
         let dir = sandbox.root().join("herdr-fake");
         std::fs::create_dir_all(&dir).unwrap();
         let fake = dir.join("herdr");
-        std::fs::write(
+        crate::test_support::write_executable(
             &fake,
             r#"#!/bin/sh
 d="$(dirname "$0")"
@@ -52,9 +51,7 @@ case "$1 $2" in
   "pane process-info") cat "$d/process-info" ;;
 esac
 "#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        );
         std::fs::write(dir.join("agents"), agents(before)).unwrap();
         std::fs::write(dir.join("agents-after"), agents(after)).unwrap();
         let herdr = Herdr::new(HerdrConfig {

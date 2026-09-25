@@ -25,13 +25,11 @@ async fn wait_for_pending(mailbox: &std::path::Path, sequence: u64) -> std::path
 
 #[tokio::test]
 async fn omp_delivery_uses_the_mailbox_not_terminal_input() {
-    use std::os::unix::fs::PermissionsExt;
-
     let base =
         std::env::temp_dir().join(format!("ssf-herdr-native-delivery-{}", std::process::id()));
     std::fs::create_dir_all(&base).unwrap();
     let fake = base.join("herdr");
-    std::fs::write(
+    crate::test_support::write_executable(
         &fake,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$(dirname "$0")/calls"
@@ -45,9 +43,7 @@ case "$1 $2" in
     ;;
 esac
 "#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
     let mailbox = base.join("mailbox");
     std::fs::create_dir(&mailbox).unwrap();
     std::fs::write(
@@ -849,15 +845,13 @@ Opened by @MikeKellyBot on 2026-09-13.\n\
 /// must not turn the original assignment into a steering interjection.
 #[tokio::test]
 async fn ambiguous_first_prompt_recovery_does_not_resend() {
-    use std::os::unix::fs::PermissionsExt;
-
     let base = std::env::temp_dir().join(format!(
         "ssf-herdr-first-prompt-recovery-ambiguous-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&base).unwrap();
     let fake = base.join("herdr");
-    std::fs::write(
+    crate::test_support::write_executable(
         &fake,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$(dirname "$0")/calls"
@@ -874,9 +868,7 @@ case "$1 $2" in
     ;;
 esac
 "#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
     let h = Herdr::new(HerdrConfig {
         command: fake.to_string_lossy().into_owned(),
         ..HerdrConfig::default()
@@ -900,15 +892,13 @@ esac
 /// next pass needs to retry once the pane can be inspected safely.
 #[tokio::test]
 async fn unreadable_first_prompt_recovery_is_not_accepted_or_resent() {
-    use std::os::unix::fs::PermissionsExt;
-
     let base = std::env::temp_dir().join(format!(
         "ssf-herdr-first-prompt-recovery-unreadable-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&base).unwrap();
     let fake = base.join("herdr");
-    std::fs::write(
+    crate::test_support::write_executable(
         &fake,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$(dirname "$0")/calls"
@@ -926,9 +916,7 @@ case "$1 $2" in
     ;;
 esac
 "#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
     let h = Herdr::new(HerdrConfig {
         command: fake.to_string_lossy().into_owned(),
         ..HerdrConfig::default()
@@ -958,15 +946,13 @@ esac
 /// accepted so the next onboarding pass cannot submit the assignment again.
 #[tokio::test]
 async fn submitted_first_prompt_is_accepted_when_working_cannot_be_observed() {
-    use std::os::unix::fs::PermissionsExt;
-
     let base = std::env::temp_dir().join(format!(
         "ssf-herdr-first-prompt-recovery-unobserved-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&base).unwrap();
     let fake = base.join("herdr");
-    std::fs::write(
+    crate::test_support::write_executable(
         &fake,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$(dirname "$0")/calls"
@@ -989,9 +975,7 @@ case "$1 $2" in
     ;;
 esac
 "#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
     let h = Herdr::new(HerdrConfig {
         command: fake.to_string_lossy().into_owned(),
         ..HerdrConfig::default()
@@ -1017,15 +1001,13 @@ esac
 
 #[tokio::test]
 async fn submitted_first_prompt_propagates_operational_wait_failure() {
-    use std::os::unix::fs::PermissionsExt;
-
     let base = std::env::temp_dir().join(format!(
         "ssf-herdr-first-prompt-recovery-failed-wait-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&base).unwrap();
     let fake = base.join("herdr");
-    std::fs::write(
+    crate::test_support::write_executable(
         &fake,
         r#"#!/bin/sh
 case "$1 $2" in
@@ -1037,9 +1019,7 @@ case "$1 $2" in
     ;;
 esac
 "#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
     let h = Herdr::new(HerdrConfig {
         command: fake.to_string_lossy().into_owned(),
         ..HerdrConfig::default()
@@ -1298,8 +1278,6 @@ fn joins_workspaces_panes_and_agents() {
 /// Exercise creation and recovery without connecting to a herdr server.
 #[tokio::test]
 async fn workspace_labels_use_github_repo_and_number_on_create_and_reopen() {
-    use std::os::unix::fs::PermissionsExt;
-
     let base = std::env::temp_dir().join(format!("ssf-herdr-labels-{}", std::process::id()));
     std::fs::create_dir_all(&base).unwrap();
     let root = base.join("custom-checkout");
@@ -1329,7 +1307,7 @@ async fn workspace_labels_use_github_repo_and_number_on_create_and_reopen() {
         );
     }
     let fake = base.join("herdr");
-    std::fs::write(
+    crate::test_support::write_executable(
         &fake,
         r#"#!/bin/sh
 case "$1 $2" in
@@ -1339,9 +1317,7 @@ case "$1 $2" in
     echo '{"workspace":{"workspace_id":"w7"}}' ;;
 esac
 "#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
     let h = Herdr::new(HerdrConfig {
         command: fake.to_string_lossy().into_owned(),
         ..HerdrConfig::default()
@@ -1394,15 +1370,13 @@ esac
 /// this path.
 #[tokio::test]
 async fn a_first_prompt_too_long_for_one_argument_reaches_the_pane_whole() {
-    use std::os::unix::fs::PermissionsExt;
-
     let base = std::env::temp_dir().join(format!(
         "ssf-herdr-long-first-prompt-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&base).unwrap();
     let fake = base.join("herdr");
-    std::fs::write(
+    crate::test_support::write_executable(
         &fake,
         r#"#!/bin/sh
 d="$(dirname "$0")"
@@ -1416,9 +1390,7 @@ case "$1 $2" in
     ;;
 esac
 "#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
     let h = Herdr::new(HerdrConfig {
         command: fake.to_string_lossy().into_owned(),
         ..HerdrConfig::default()
@@ -1465,12 +1437,10 @@ esac
 /// so the paste is submitted again -- and only ever pasted once.
 #[tokio::test]
 async fn a_delivery_too_long_for_one_argument_reaches_the_pane_whole() {
-    use std::os::unix::fs::PermissionsExt;
-
     let base = std::env::temp_dir().join(format!("ssf-herdr-long-delivery-{}", std::process::id()));
     std::fs::create_dir_all(&base).unwrap();
     let fake = base.join("herdr");
-    std::fs::write(
+    crate::test_support::write_executable(
         &fake,
         r#"#!/bin/sh
 d="$(dirname "$0")"
@@ -1485,9 +1455,7 @@ case "$1 $2" in
 esac
 printf '%s\n' "$*" >> "$d/calls"
 "#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
     let h = Herdr::new(HerdrConfig {
         command: fake.to_string_lossy().into_owned(),
         ..HerdrConfig::default()

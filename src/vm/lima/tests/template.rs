@@ -70,8 +70,10 @@ fn preflight_against(line: &str) -> Result<()> {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let limactl = dir.join("limactl");
-    std::fs::write(&limactl, format!("#!/bin/sh\nprintf '%s\\n' '{line}'\n")).unwrap();
-    make_executable(&limactl).unwrap();
+    crate::test_support::write_executable(
+        &limactl,
+        format!("#!/bin/sh\nprintf '%s\\n' '{line}'\n"),
+    );
     let mut cfg = Config::default();
     cfg.vm.dir = dir.join("vm").to_string_lossy().into_owned();
     cfg.vm.name = "one".into();
