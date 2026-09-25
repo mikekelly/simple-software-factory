@@ -34,7 +34,7 @@ locally, in a VM, or over SSH. Linux and macOS are supported.
 | a repository added to a running factory | `ssf skill repo` |
 | to inspect, change, upgrade or stop a factory | `ssf skill operate`, `ssf skill config`, `ssf skill harnesses` |
 | a factory repaired | `ssf skill troubleshoot` |
-| an `SSF.md` written or reviewed | `ssf skill ssf-md`, `ssf skill audit` |
+| an `SSF.md` written or reviewed (a conversation about how their factory should work, not a template fill) | `ssf skill ssf-md`, `ssf skill audit` |
 | an assistant that drives the factory for them | `ssf skill liaison` |
 | their distro, macOS, a rented host, a harness's quirks, an old install | `ssf skill specifics` |
 

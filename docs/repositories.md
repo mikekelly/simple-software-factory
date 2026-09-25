@@ -130,45 +130,30 @@ repository-owned guidance the main session gets. It reaches the main session
 only, never its subagents. `ssf repo add` warns when the file is missing and
 points to `ssf skill ssf-md`.
 
-A minimal working `SSF.md`, committed at the repository root:
+Write it with the owner, not from a template: [ssf-md.md](ssf-md.md)
+(`ssf skill ssf-md`) is the conversation to have, covering the factory's
+goals, what agents may decide alone, and who reviews and merges. The
+smallest useful file states the goals and makes the session clarify each
+item before building:
 
 ```markdown
 # SSF agent guidance
 
-## Role
+<Two or three sentences: what this factory is for and how involved people
+want to be in each item.>
 
-- Own the outcome on the assigned issue from clarification through delivery.
-- Plan on the issue until the outcome is unambiguous; do not start
-  substantial implementation before that.
-- Bring the big decisions and matters of taste to people, one at a time;
-  settle the small details yourself.
-
-## Models
-
-| Harness | Deliberation | Execution |
-| --- | --- | --- |
-| `<harness>` | `<model>`, effort `<level>` | `<model>`, effort `<level>` |
-
-## Communication
-
-- Post when starting, when blocked, and when delivering.
-
-## Review and delivery
-
-- Review in proportion to risk; fix confirmed defects and violations of the
-  acceptance criteria.
-- Delivered means the outcome, its validation and remaining limitations are
-  posted on the issue with the pull request link.
+- Before building, clarify on the issue why it matters, the intended
+  outcomes and the acceptance criteria, beyond reasonable doubt.
+- Ask <person> before <decisions reserved for people>; settle the rest
+  and say what you chose.
+- Post when starting, when blocked and when delivering, and @mention
+  <person> to review.
 ```
-
-Fill the placeholders with ids from `ssf models <harness>` and effort levels
-from `ssf agents --json`. Do not invent model ids.
 
 What goes elsewhere: build, test and implementation policy that applies to
 every agent and every subagent belongs in `AGENTS.md`, not here. `SSF.md` is
 read once per session, so keep it short. `SSF.example.md` at the repository
-root is a fuller starting point, and [ssf-md.md](ssf-md.md)
-(`ssf skill ssf-md`) explains each choice.
+root is a fuller example for a factory where agents review and merge.
 
 Project boards: if an item sits on GitHub project (v2) boards, the initial
 prompt lists each board's name and URL, the card's current Status, the Status

@@ -8,6 +8,12 @@ specific uncertainty. Do not build a score, audit engine or recurring process.
 
 Ask these qualitative questions:
 
+- **Thesis and latitude:** Does `SSF.md` state the factory's operational
+  goals, and do its rules (review, merging, what agents may decide alone)
+  follow from them? Does it make the session responsible for clarifying
+  the why, intended outcomes and acceptance criteria before building, and
+  name the decisions reserved for people? If not, have the conversation in
+  [Writing SSF.md](ssf-md.md) with the owner rather than guessing.
 - **Completion ownership:** Do instructions say what agents may complete,
   close and merge, with the owning issue agent normally responsible rather
   than relying on a separate project-manager issue? When authority ends,
