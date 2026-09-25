@@ -913,7 +913,7 @@ impl Vm {
     /// from the image; lima: the instance re-created from its template);
     /// the data disk (state, clones, worktrees) stays.
     pub async fn reset(&self) -> Result<()> {
-        if self.running() {
+        if self.running_or_refuse("reset")? {
             self.stop().await?;
         }
         let _ = std::fs::remove_file(self.known_hosts());

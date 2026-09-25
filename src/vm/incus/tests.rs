@@ -11,6 +11,7 @@ fn spec() -> Spec<'static> {
         ssh_port: 2222,
         vcpus: 3,
         mem_mib: 8192,
+        owner: "1000",
     }
 }
 
@@ -29,6 +30,7 @@ fn the_container_is_unprivileged_nested_and_sized_from_vm() {
             "security.nesting=true",
             "security.syscalls.intercept.mknod=true",
             "security.syscalls.intercept.setxattr=true",
+            "user.ssf.owner=1000",
             "limits.cpu=3",
             "limits.memory=8192MiB",
         ]
@@ -167,4 +169,36 @@ fn the_seed_env_tells_the_seed_to_take_the_incus_volume() {
     assert!(read("vm/guest/seed-lima.sh").contains(r#"[ "${SSF_VM_BACKEND:-lima}" = incus ]"#));
     assert!(read("vm/guest/lima-boot.sh").contains("SSF_VM_BACKEND=${SSF_VM_BACKEND:-lima}"));
     assert!(read("vm/guest/provision.sh").contains("lima|incus)"));
+}
+
+#[test]
+fn only_this_users_container_or_volume_is_touched() {
+    assert!(check_owner("container", "ssf-one", Some("1000"), "1000").is_ok());
+    let e = check_owner("container", "ssf-one", Some("1001"), "1000")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("uid 1001") && e.contains("ssf-one"), "{e}");
+    let e = check_owner("volume", "ssf-one", None, "1000")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains(OWNER_KEY) && e.contains("ssf-one"), "{e}");
+}
+
+#[test]
+fn the_owner_and_the_data_pool_come_from_the_listing() {
+    let list = r#"[{"name":"ssf-one","status":"Stopped",
+        "config":{"user.ssf.owner":"1000"},
+        "devices":{"ssf-data":{"type":"disk","pool":"fast","source":"ssf-one"}}},
+        {"name":"ssf-two","status":"Running"}]"#;
+    let i = parse_instances(list).unwrap();
+    assert_eq!(i[0].owner(), Some("1000"));
+    assert_eq!(i[0].data_pool(), Some("fast"));
+    assert_eq!(i[1].owner(), None);
+    assert_eq!(i[1].data_pool(), None);
+    let v =
+        parse_volumes(r#"[{"name":"ssf-one","type":"custom","config":{"user.ssf.owner":"7"}}]"#)
+            .unwrap();
+    assert_eq!(v[0].owner(), Some("7"));
+    let p = parse_pools(r#"[{"name":"default","driver":"dir"},{"name":"fast"}]"#).unwrap();
+    assert_eq!(p.len(), 2);
 }

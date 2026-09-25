@@ -152,7 +152,7 @@ impl Vm {
     /// filesystem resized to fill it. lima: `limactl disk resize`; the
     /// guest's seed script resizes the filesystem on the next boot.
     pub fn grow(&self, want: Option<u32>) -> Result<Option<u32>> {
-        if self.running() {
+        if self.running_or_refuse("grow")? {
             bail!(
                 "VM {} is running; stop it first (`{}` when the service owns it, else `ssf vm stop`), grow, then start it again",
                 self.cfg.name,
@@ -231,6 +231,19 @@ impl Vm {
     /// [`Vm::running_state`] where that difference matters.
     pub fn running(&self) -> bool {
         self.running_state().unwrap_or(false)
+    }
+
+    /// [`Vm::running`] for a step that deletes or resizes: under Incus a
+    /// daemon that did not answer refuses the step rather than reading
+    /// as "stopped". Firecracker and lima keep [`Vm::running`].
+    pub(in crate::vm) fn running_or_refuse(&self, step: &str) -> Result<bool> {
+        match (self.backend(), self.running_state()) {
+            (BackendKind::Incus, None) => bail!(
+                "Incus could not say whether {} is running, so `ssf vm {step}` does nothing; check `incus list` by hand",
+                self.incus_name()
+            ),
+            (_, s) => Ok(s.unwrap_or(false)),
+        }
     }
 
     /// [`Vm::running`], with "the question could not be asked" kept apart

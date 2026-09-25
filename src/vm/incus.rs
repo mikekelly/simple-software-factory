@@ -54,6 +54,10 @@ pub const DEFAULT_IMAGE: &str = "images:ubuntu/24.04";
 pub const SHARE_DEVICE: &str = "ssf-share";
 pub const DATA_DEVICE: &str = "ssf-data";
 pub const SSH_DEVICE: &str = "ssf-ssh";
+/// The key ssf sets on the container and the volume at build: the uid of
+/// the host user who built them. Incus names are per daemon, not per
+/// user, so another user's `ssf-<name>` must never be adopted or deleted.
+pub const OWNER_KEY: &str = "user.ssf.owner";
 /// The liveness question in front of a forwarded command (see
 /// `lima::LIVENESS_LIMIT`).
 pub(super) const LIVENESS_LIMIT: Duration = Duration::from_secs(15);
@@ -94,6 +98,28 @@ pub struct Spec<'a> {
     pub ssh_port: u16,
     pub vcpus: u32,
     pub mem_mib: u32,
+    /// [`OWNER_KEY`]'s value: this user's uid.
+    pub owner: &'a str,
+}
+
+/// This host user's uid, as [`OWNER_KEY`] holds it.
+pub fn owner_uid() -> String {
+    // SAFETY: getuid cannot fail.
+    unsafe { libc::getuid() }.to_string()
+}
+
+/// Refuse to touch an Incus `what` (`container` or `volume`) `name` whose
+/// [`OWNER_KEY`] is missing or is not `uid`.
+pub fn check_owner(what: &str, name: &str, got: Option<&str>, uid: &str) -> Result<()> {
+    match got.map(str::trim) {
+        Some(o) if o == uid => Ok(()),
+        Some(o) => bail!(
+            "the Incus {what} {name} belongs to uid {o}, not this user (uid {uid}); Incus names are shared by every user of this Incus daemon, so ssf leaves it alone: set another `[vm] name`"
+        ),
+        None => bail!(
+            "the Incus {what} {name} has no {OWNER_KEY} key, so ssf did not build it for this user (uid {uid}) and leaves it alone: set another `[vm] name`, or remove it by hand if it is yours"
+        ),
+    }
 }
 
 /// The `limits.*` keys for a size, as `incus init -c` and `incus config
@@ -116,6 +142,7 @@ pub fn init_args(s: &Spec) -> Vec<String> {
         "security.nesting=true".to_string(),
         "security.syscalls.intercept.mknod=true".to_string(),
         "security.syscalls.intercept.setxattr=true".to_string(),
+        format!("{OWNER_KEY}={}", s.owner),
     ];
     keys.extend(limit_keys(s.vcpus, s.mem_mib));
     for k in keys {
@@ -191,11 +218,28 @@ pub struct Instance {
     /// `Running`, `Stopped`, `Frozen`, `Error`, ...
     #[serde(default)]
     pub status: String,
+    #[serde(default)]
+    pub config: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub devices: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
 }
 
 impl Instance {
     pub fn is_running(&self) -> bool {
         self.status == "Running"
+    }
+
+    pub fn owner(&self) -> Option<&str> {
+        self.config.get(OWNER_KEY).map(String::as_str)
+    }
+
+    /// The pool of the data device: where this container's volume is.
+    pub fn data_pool(&self) -> Option<&str> {
+        self.devices
+            .get(DATA_DEVICE)
+            .and_then(|d| d.get("pool"))
+            .map(String::as_str)
+            .filter(|p| !p.is_empty())
     }
 }
 
@@ -219,6 +263,20 @@ impl Volume {
     pub fn size_bytes(&self) -> Option<u64> {
         self.config.get("size").and_then(|s| parse_size(s))
     }
+
+    pub fn owner(&self) -> Option<&str> {
+        self.config.get(OWNER_KEY).map(String::as_str)
+    }
+}
+
+/// One entry of `incus storage list --format json`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Pool {
+    pub name: String,
+}
+
+pub fn parse_pools(text: &str) -> Result<Vec<Pool>> {
+    serde_json::from_str(text.trim()).context("reading `incus storage list --format json`")
 }
 
 pub fn parse_volumes(text: &str) -> Result<Vec<Volume>> {
@@ -367,6 +425,48 @@ impl Vm {
         Ok(pool)
     }
 
+    /// The pool this VM's volume is in: the existing container's data
+    /// device says, so a later change of the default profile's pool
+    /// cannot send a reset or a destroy to the wrong one; without a
+    /// container, the default profile's.
+    pub(in crate::vm) fn incus_data_pool(&self, inst: Option<&Instance>) -> Result<String> {
+        match inst {
+            Some(i) => i.data_pool().map(str::to_string).with_context(|| {
+                format!(
+                    "the Incus container {} has no {DATA_DEVICE} device naming a pool, so ssf cannot tell where its volume is; `ssf vm build --force` re-creates it",
+                    i.name
+                )
+            }),
+            None => self.incus_pool(),
+        }
+    }
+
+    /// Every pool holding a custom volume `ssf-<name>`, with it.
+    fn incus_volumes_anywhere(&self) -> Result<Vec<(String, Volume)>> {
+        let out =
+            self.incus_output_within(&["storage", "list", "--format", "json"], QUICK_LIMIT)?;
+        let mut found = Vec::new();
+        for p in parse_pools(&out)? {
+            if let Some(v) = self.incus_volume(&p.name)? {
+                found.push((p.name, v));
+            }
+        }
+        Ok(found)
+    }
+
+    fn incus_check_instance(&self, inst: &Instance) -> Result<()> {
+        check_owner("container", &inst.name, inst.owner(), &owner_uid())
+    }
+
+    fn incus_check_volume(&self, pool: &str, vol: &Volume) -> Result<()> {
+        check_owner(
+            "volume",
+            &format!("{} (pool {pool})", vol.name),
+            vol.owner(),
+            &owner_uid(),
+        )
+    }
+
     /// The data volume, when the pool has it.
     pub(in crate::vm) fn incus_volume(&self, pool: &str) -> Result<Option<Volume>> {
         let name = self.incus_name();
@@ -422,9 +522,13 @@ impl Vm {
     // ---- build / start / stop ----
 
     pub(in crate::vm) async fn incus_build(&self, host: &Config, force: bool) -> Result<()> {
-        let pool = self.incus_preflight()?;
+        let mut pool = self.incus_preflight()?;
         let name = self.incus_name();
         if let Some(inst) = self.incus_instance()? {
+            self.incus_check_instance(&inst)?;
+            if let Some(p) = inst.data_pool() {
+                pool = p.to_string();
+            }
             if !force {
                 println!("Incus container {name} exists; `ssf vm build --force` makes a new one");
                 return Ok(());
@@ -438,11 +542,24 @@ impl Vm {
         self.ensure_key()?;
         let _ = std::fs::remove_file(self.known_hosts());
         self.write_share(host)?;
-        if self.incus_volume(&pool)?.is_none() {
-            let gib = self.sizes().data_gib;
-            info!("creating Incus volume {name} in pool {pool} ({gib} GiB)");
-            self.incus_run_within(&["storage", "volume", "create", &pool, &name], QUICK_LIMIT)?;
-            self.set_volume_size(&pool, gib);
+        match self.incus_volume(&pool)? {
+            Some(v) => self.incus_check_volume(&pool, &v)?,
+            None => {
+                let gib = self.sizes().data_gib;
+                info!("creating Incus volume {name} in pool {pool} ({gib} GiB)");
+                self.incus_run_within(
+                    &[
+                        "storage",
+                        "volume",
+                        "create",
+                        &pool,
+                        &name,
+                        &format!("{OWNER_KEY}={}", owner_uid()),
+                    ],
+                    QUICK_LIMIT,
+                )?;
+                self.set_volume_size(&pool, gib);
+            }
         }
         self.incus_create(&pool)?;
         if let Err(e) = self.incus_first_boot().await {
@@ -484,6 +601,7 @@ impl Vm {
         let name = self.incus_name();
         let share = self.share_dir().to_string_lossy().to_string();
         let sizes = self.sizes();
+        let owner = owner_uid();
         let spec = Spec {
             instance: &name,
             image: self.incus_image(),
@@ -493,16 +611,31 @@ impl Vm {
             ssh_port: self.cfg.ssh_port,
             vcpus: sizes.vcpus,
             mem_mib: sizes.mem_mib,
+            owner: &owner,
         };
         info!("creating Incus container {name} from {}", spec.image);
         self.incus_run(&init_args(&spec), CREATE_LIMIT)?;
+        // A container without its devices would pass for a built one
+        // ("exists") at the next build: remove it rather than leave it.
+        if let Err(e) = self.incus_configure(&spec) {
+            if let Err(d) = self.incus_run_within(&["delete", "-f", &name], QUICK_LIMIT) {
+                warn!("could not remove the half-made container {name}: {d:#}");
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// The root size and the devices of a container `incus init` made.
+    fn incus_configure(&self, spec: &Spec) -> Result<()> {
+        let name = spec.instance;
         let root = self.cfg.root_gib.max(ROOT_GIB_FLOOR);
         if let Err(e) = self.incus_output_within(
             &[
                 "config",
                 "device",
                 "override",
-                &name,
+                name,
                 "root",
                 &format!("size={root}GiB"),
             ],
@@ -510,7 +643,7 @@ impl Vm {
         ) {
             warn!("could not cap {name}'s root disk at {root} GiB ({e:#}); it stays uncapped");
         }
-        for args in device_args(&spec) {
+        for args in device_args(spec) {
             self.incus_run(&args, QUICK_LIMIT)?;
         }
         Ok(())
@@ -573,8 +706,9 @@ impl Vm {
     pub(in crate::vm) async fn incus_start(&self, host: &Config) -> Result<()> {
         Self::require_linux()?;
         let name = self.incus_name();
-        if self.incus_instance()?.is_none() {
-            bail!("Incus container {name} does not exist; run `ssf vm build`");
+        match self.incus_instance()? {
+            None => bail!("Incus container {name} does not exist; run `ssf vm build`"),
+            Some(i) => self.incus_check_instance(&i)?,
         }
         self.ensure_key()?;
         self.write_share(host)?;
@@ -616,13 +750,18 @@ impl Vm {
     /// Set the volume's size (the container stopped); Incus grows the
     /// filesystem on it.
     pub(in crate::vm) fn incus_grow(&self, want: Option<u32>) -> Result<Option<u32>> {
-        let pool = self.incus_pool()?;
+        let inst = self.incus_instance()?;
+        if let Some(i) = &inst {
+            self.incus_check_instance(i)?;
+        }
+        let pool = self.incus_data_pool(inst.as_ref())?;
         let name = self.incus_name();
         let vol = self.incus_volume(&pool)?.with_context(|| {
             format!(
-                "Incus volume {name} does not exist yet; `ssf vm build` makes it at [vm] data_gib"
+                "Incus volume {name} does not exist yet in pool {pool}; `ssf vm build` makes it at [vm] data_gib"
             )
         })?;
+        self.incus_check_volume(&pool, &vol)?;
         let Some(size) = vol.size_bytes() else {
             bail!(
                 "the Incus volume {name} has no size cap (the pool {pool} cannot set one), so there is nothing to grow: it can already use the pool's free space"
@@ -653,9 +792,19 @@ impl Vm {
     /// Delete the container and create it again; the volume stays, and
     /// the next start provisions the fresh root.
     pub(in crate::vm) fn incus_reset(&self) -> Result<()> {
-        let pool = self.incus_pool()?;
+        let inst = self.incus_instance()?;
+        if let Some(i) = &inst {
+            self.incus_check_instance(i)?;
+        }
+        let pool = self.incus_data_pool(inst.as_ref())?;
         let name = self.incus_name();
-        if self.incus_instance()?.is_some() {
+        // The new container mounts the volume; without it there is no
+        // container to make, so the old one is not deleted for nothing.
+        let vol = self.incus_volume(&pool)?.with_context(|| {
+            format!("Incus volume {name} is not in pool {pool}; `ssf vm build` makes it")
+        })?;
+        self.incus_check_volume(&pool, &vol)?;
+        if inst.is_some() {
             self.incus_run_within(&["delete", "-f", &name], QUICK_LIMIT)?;
         }
         self.incus_create(&pool)?;
@@ -669,15 +818,33 @@ impl Vm {
     /// neither.
     pub(in crate::vm) fn incus_destroy(&self) -> Result<bool> {
         let name = self.incus_name();
+        let inst = self.incus_instance()?;
+        if let Some(i) = &inst {
+            self.incus_check_instance(i)?;
+        }
+        // The container's own device names the pool; without a container
+        // every pool is searched, so a volume in a pool the default
+        // profile no longer uses is not reported as gone.
+        let volumes = match inst.as_ref().and_then(Instance::data_pool) {
+            Some(p) => self
+                .incus_volume(p)?
+                .map(|v| (p.to_string(), v))
+                .into_iter()
+                .collect(),
+            None => self.incus_volumes_anywhere()?,
+        };
+        // Every owner checked before anything is deleted.
+        for (pool, v) in &volumes {
+            self.incus_check_volume(pool, v)?;
+        }
         let mut removed = false;
-        if self.incus_instance()?.is_some() {
+        if inst.is_some() {
             self.incus_run_within(&["delete", "-f", &name], QUICK_LIMIT)?;
             println!("deleted Incus container {name}");
             removed = true;
         }
-        let pool = self.incus_pool()?;
-        if self.incus_volume(&pool)?.is_some() {
-            self.incus_run_within(&["storage", "volume", "delete", &pool, &name], QUICK_LIMIT)?;
+        for (pool, _) in &volumes {
+            self.incus_run_within(&["storage", "volume", "delete", pool, &name], QUICK_LIMIT)?;
             println!("deleted Incus volume {name} in pool {pool}");
             removed = true;
         }
@@ -701,8 +868,8 @@ impl Vm {
             Ok(i) => i,
             Err(e) => return unknown("the container", e),
         };
-        let data = match self.incus_pool().and_then(|p| self.incus_volume(&p)) {
-            Ok(v) => v.is_some(),
+        let data = match self.incus_volumes_anywhere() {
+            Ok(v) => !v.is_empty(),
             Err(e) => return unknown("the data volume", e),
         };
         Survey {
@@ -715,7 +882,8 @@ impl Vm {
 
     /// The volume's size cap, else what a build would make.
     pub(in crate::vm) fn incus_data_cap_gib(&self) -> u32 {
-        self.incus_pool()
+        self.incus_instance()
+            .and_then(|i| self.incus_data_pool(i.as_ref()))
             .and_then(|p| self.incus_volume(&p))
             .ok()
             .flatten()

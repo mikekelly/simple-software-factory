@@ -177,6 +177,9 @@ pub struct Facts {
     /// where the disk is a file inside `[vm] dir` and no such refusal is
     /// reachable.
     pub vm_disk: Option<String>,
+    /// `[vm] backend = "incus"`: the hand-run commands in a refusal are
+    /// `incus`'s, not `limactl`'s.
+    pub vm_incus: bool,
     /// What `ssf vm destroy` takes with it, in words: the VM's directory
     /// under Firecracker, where its disks are; the lima instance and its
     /// data disk (both in lima's own home, not under `[vm] dir`) as well
@@ -226,6 +229,7 @@ impl Facts {
                 vm::BackendKind::Incus => Some(vm.incus_name()),
                 vm::BackendKind::Firecracker => None,
             },
+            vm_incus: vm.backend() == vm::BackendKind::Incus,
             vm_removed: match vm.backend() {
                 vm::BackendKind::Firecracker => {
                     format!("its disks in {}", vm.dir.display())
@@ -756,6 +760,16 @@ fn vm_uncheckable(facts: &Facts) -> (String, String) {
             "point ssf back at it (`ssf config set vm.enabled true`) and run this again, so the clones and worktrees on that disk can be looked at".to_string(),
         );
     }
+    let (disk_delete, disk_list, list) = if facts.vm_incus {
+        (
+            "incus storage volume delete <pool>",
+            "incus storage volume list",
+            "incus list",
+        )
+    } else {
+        ("limactl disk delete", "limactl disk list", "limactl list")
+    };
+    let answers = if facts.vm_incus { "Incus" } else { "lima" };
     match (facts.vm_running, facts.vm_startable, facts.vm_data) {
         (Some(true), _, _) => (
             format!("VM {name} gave no report"),
@@ -775,7 +789,7 @@ fn vm_uncheckable(facts: &Facts) -> (String, String) {
         (Some(false), false, Some(true)) => (
             format!("VM {name}'s data disk outlived its instance"),
             format!(
-                "nothing can mount it to look inside, so decide about the disk and remove it by hand (`limactl disk delete{}`)",
+                "nothing can mount it to look inside, so decide about the disk and remove it by hand (`{disk_delete}{}`)",
                 match &facts.vm_disk {
                     Some(d) => format!(" {d}"),
                     None => String::new(),
@@ -786,7 +800,7 @@ fn vm_uncheckable(facts: &Facts) -> (String, String) {
         // may be asserted about a disk here.
         (Some(false), false, None) => (
             format!("VM {name} has no guest to start, and its data disk could not be asked about"),
-            "find out why first (`limactl disk list` by hand says what lima answers)".to_string(),
+            format!("find out why first (`{disk_list}` by hand says what {answers} answers)"),
         ),
         // Written out rather than folded into the arm above so that the
         // compiler, not a comment, is what keeps the two apart. Nothing
@@ -797,7 +811,7 @@ fn vm_uncheckable(facts: &Facts) -> (String, String) {
         ),
         (None, _, _) => (
             format!("VM {name} could not be asked whether it is running"),
-            "find out why first (`limactl list` by hand says what lima answers)".to_string(),
+            format!("find out why first (`{list}` by hand says what {answers} answers)"),
         ),
     }
 }

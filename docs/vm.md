@@ -102,7 +102,15 @@ Incus profile uses; the container is created from `images:ubuntu/24.04` (or
 `vm.image`) with `security.nesting=true` and the `mknod` and `setxattr` syscall
 intercepts, so Docker works inside it. `share/` is mounted read-only (and
 idmapped) at `/mnt/ssf`, the volume at `/var/lib/ssf`, and a proxy device
-publishes the container's sshd on `127.0.0.1:<ssh_port>`.
+publishes the container's sshd on `127.0.0.1:<ssh_port>`. Incus names are per host Incus
+daemon, not per user: two host users with the same `vm.name` would collide on
+`ssf-<vm.name>`. ssf marks the container and the volume it builds with
+`user.ssf.owner=<uid>`, and `build`, `start`, `reset`, `grow`, `destroy` and
+`ssf uninstall` refuse an `ssf-<vm.name>` container or volume whose owner key
+is missing or names another uid; give each user a distinct `vm.name`. Reset,
+grow and destroy find the volume in the pool the container's data device
+names (destroy without a container searches every pool), so a later change of
+the default profile's pool does not lose track of it.
 
 All `[vm]` keys (`backend`, `name`, `dir`, `vcpus`, `mem_mib`, `data_gib`,
 `root_gib`, `ssh_port`, `files`, `guest_binary`, and the binaries and images to
