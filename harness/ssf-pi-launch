@@ -41,8 +41,12 @@ if [ "$harness" = opencode ]; then
   # dependency of the git every factory host has); a merge it cannot do stops
   # the launch rather than dropping the user's configuration.
   # Without one, no merge is needed and perl is not required.
+  # `ssf launch` hands a configuration that already lists it when it sets the
+  # compaction threshold, which needs no merge either.
   if [ -z "${OPENCODE_CONFIG_CONTENT:-}" ]; then
     OPENCODE_CONFIG_CONTENT=$(printf '{"plugin":["file://%s"]}' "$bridge")
+  elif case "$OPENCODE_CONFIG_CONTENT" in *"\"file://$bridge\""*) true ;; *) false ;; esac; then
+    :
   else
   OPENCODE_CONFIG_CONTENT=$(SSF_PLUGIN="file://$bridge" perl -MJSON::PP -e '
     my $json = JSON::PP->new->canonical;

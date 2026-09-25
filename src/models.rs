@@ -8,9 +8,9 @@
 //! level. This module knows how each harness takes those on its command
 //! line, seeds or lists the model ids shown by the menus, and validates
 //! effort levels; unknown model ids still pass through to the harness. It
-//! also knows the one harness that takes its context-compaction threshold
-//! through a settings file rather than a flag (`omp`), which is why the
-//! overlay for it is written from here. The per-harness data (flags, seeded
+//! also knows the two harnesses that take their context-compaction threshold
+//! through settings rather than a flag: `omp`, whose overlay is written from
+//! here, and `opencode`, whose `OPENCODE_CONFIG_CONTENT` is built here. The per-harness data (flags, seeded
 //! ids, effort levels, compaction route) is each harness's row in
 //! [`crate::harness::HARNESSES`]; this module holds the functions it names.
 
@@ -148,20 +148,65 @@ pub(crate) fn codex_compaction(tokens: u64) -> Vec<String> {
     ]
 }
 
+/// How long a listing may take before it is abandoned: long enough for the
+/// slowest listing ssf has seen, short enough that a hung harness command
+/// cannot hold up whatever asked for it forever.
+const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn run(bin: &str, args: &[&str]) -> Result<String> {
-    let out = Command::new(bin)
+    run_within(bin, args, RUN_TIMEOUT)
+}
+
+/// `bin args` with its stdout, killed and reported as an error once it has
+/// run for `timeout`. The output is read on threads, so a command that fills
+/// its pipe cannot stall the wait.
+fn run_within(bin: &str, args: &[&str], timeout: std::time::Duration) -> Result<String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = Command::new(bin)
         .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .with_context(|| format!("running {bin} {}", args.join(" ")))?;
-    if !out.status.success() {
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "{bin} {} did not finish within {}s",
+                args.join(" "),
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let out = stdout.join().unwrap_or_default();
+    let err = stderr.join().unwrap_or_default();
+    if !status.success() {
         bail!(
             "{bin} {} failed: {}",
             args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
+            String::from_utf8_lossy(&err).trim()
         );
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(String::from_utf8_lossy(&out).to_string())
 }
 
 /// Start `bin` with `args` so it rewrites its own model catalogue, and take
@@ -692,6 +737,12 @@ pub enum Compaction {
     /// model's window: `ssf launch` turns the token count into one with the
     /// window grok's model cache lists ([`grok_compaction_percent`]).
     Percent,
+    /// Through `OPENCODE_CONFIG_CONTENT`: OpenCode compacts once a message's
+    /// tokens reach the model's `limit.input` less `compaction.reserved`, so
+    /// `ssf launch` gives the launch model an input limit of the threshold,
+    /// with its own context and output limits (OpenCode takes a model's
+    /// limits whole), and a reserve of none (`opencode_compaction_config`).
+    OpenCodeConfig,
 }
 
 /// How `harness` takes a context-compaction threshold, when it takes one at
@@ -810,6 +861,118 @@ pub fn write_omp_compaction_overlay(tokens: u64) -> Result<PathBuf> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     crate::config::write_atomic(&path, body.as_bytes(), 0o644)?;
     Ok(path)
+}
+
+/// A model's `limit` as OpenCode lists it: `input`, when set, is where it
+/// already compacts (less its reserve).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OpenCodeLimits {
+    pub context: u64,
+    pub input: Option<u64>,
+    pub output: u64,
+}
+
+/// The limits `opencode models <provider> --verbose` lists for
+/// `provider/model`: each model is its `provider/model` line and then its
+/// JSON.
+pub(crate) fn opencode_model_limits(
+    listing: &str,
+    provider: &str,
+    model: &str,
+) -> Option<OpenCodeLimits> {
+    let name = format!("{provider}/{model}");
+    let mut offset = 0;
+    for line in listing.split_inclusive('\n') {
+        offset += line.len();
+        if line.trim_end() == name {
+            let v: serde_json::Value = serde_json::Deserializer::from_str(&listing[offset..])
+                .into_iter()
+                .next()?
+                .ok()?;
+            let limit = v.get("limit")?;
+            return Some(OpenCodeLimits {
+                context: limit.get("context")?.as_u64().filter(|c| *c > 0)?,
+                input: limit.get("input").and_then(serde_json::Value::as_u64),
+                output: limit.get("output")?.as_u64()?,
+            });
+        }
+    }
+    None
+}
+
+/// `config` (the `OPENCODE_CONFIG_CONTENT` given, or none) with the launch
+/// model compacting at `tokens`: its `limit.input` becomes `tokens`, and
+/// `compaction.reserved` 0, so OpenCode's check (`tokens >= limit.input -
+/// reserved`) fires at the threshold itself. OpenCode takes a configured
+/// limit whole, so the context and output the user's own `limit` does not
+/// give are filled from `listed`; theirs are kept.
+///
+/// `None` -- leave the configuration alone -- when the threshold would not
+/// lower where the model compacts: the user set its `input` themselves, or
+/// the listed input or the window is at or under the threshold (the model
+/// already compacts sooner, and a real limit is never raised). Also `None`
+/// for a configuration that is not an object to add to.
+pub(crate) fn opencode_compaction_config(
+    config: Option<&str>,
+    provider: &str,
+    model: &str,
+    listed: OpenCodeLimits,
+    tokens: u64,
+) -> Option<String> {
+    if tokens == 0 {
+        return None;
+    }
+    let mut config: serde_json::Value = match config.filter(|c| !c.trim().is_empty()) {
+        Some(given) => serde_json::from_str(given).ok()?,
+        None => serde_json::json!({}),
+    };
+    if !config.is_object() {
+        return None;
+    }
+    // A level that is not an object is replaced: OpenCode would refuse it.
+    fn object<'a>(v: &'a mut serde_json::Value, key: &str) -> &'a mut serde_json::Value {
+        let slot = &mut v[key];
+        if !slot.is_object() {
+            *slot = serde_json::json!({});
+        }
+        slot
+    }
+    let mut at = &mut config;
+    for key in ["provider", provider, "models", model, "limit"] {
+        at = object(at, key);
+    }
+    if at.get("input").is_some() {
+        return None;
+    }
+    let context = at
+        .get("context")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(listed.context);
+    if tokens >= context || listed.input.is_some_and(|input| tokens >= input) {
+        return None;
+    }
+    at["context"] = context.into();
+    if at.get("output").is_none() {
+        at["output"] = listed.output.into();
+    }
+    at["input"] = tokens.into();
+    object(&mut config, "compaction")["reserved"] = 0.into();
+    Some(config.to_string())
+}
+
+/// How long `ssf launch` waits on OpenCode's listing before it starts the
+/// session without the threshold.
+const OPENCODE_LIMITS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The model's limits as the installed OpenCode lists them.
+pub(crate) fn opencode_listed_limits(provider: &str, model: &str) -> Result<OpenCodeLimits> {
+    let listing = run_within(
+        "opencode",
+        &["models", provider, "--verbose"],
+        OPENCODE_LIMITS_TIMEOUT,
+    )?;
+    opencode_model_limits(&listing, provider, model)
+        .with_context(|| format!("opencode lists no limits for {provider}/{model}"))
 }
 
 /// OMP's normal five-minute inter-event watchdog can end a healthy, long
@@ -1306,6 +1469,156 @@ mod tests {
     }
 
     #[test]
+    fn opencode_limits_are_the_listed_models() {
+        let listing = "openrouter/a\n{\n  \"id\": \"a\",\n  \"limit\": {\"context\": 1000, \"input\": 900, \"output\": 10}\n}\nopenrouter/~b/c\n{\n  \"limit\": {\"context\": 1048576, \"output\": 943718}\n}\n";
+        assert_eq!(
+            opencode_model_limits(listing, "openrouter", "~b/c"),
+            Some(OpenCodeLimits {
+                context: 1_048_576,
+                input: None,
+                output: 943_718
+            })
+        );
+        assert_eq!(
+            opencode_model_limits(listing, "openrouter", "a"),
+            Some(OpenCodeLimits {
+                context: 1000,
+                input: Some(900),
+                output: 10
+            })
+        );
+        assert_eq!(opencode_model_limits(listing, "openrouter", "z"), None);
+    }
+
+    #[test]
+    fn opencode_compacts_at_the_threshold_as_its_input_limit() {
+        let v = |s: Option<String>| serde_json::from_str::<serde_json::Value>(&s.unwrap()).unwrap();
+        let listed = |context, input, output| OpenCodeLimits {
+            context,
+            input,
+            output,
+        };
+        let built = v(opencode_compaction_config(
+            None,
+            "openrouter",
+            "~b/c",
+            listed(1_048_576, None, 943_718),
+            30_000,
+        ));
+        assert_eq!(
+            built,
+            serde_json::json!({
+                "provider": {"openrouter": {"models": {"~b/c": {"limit":
+                    {"context": 1_048_576, "input": 30_000, "output": 943_718}}}}},
+                "compaction": {"reserved": 0}
+            })
+        );
+        // A user's configuration is kept, and its own entries beside ours.
+        let built = v(opencode_compaction_config(
+            Some(
+                r#"{"plugin":["x"],"compaction":{"auto":true},"provider":{"openrouter":{"options":{"k":1}}}}"#,
+            ),
+            "openrouter",
+            "m",
+            listed(100_000, None, 8_000),
+            50_000,
+        ));
+        assert_eq!(built["plugin"], serde_json::json!(["x"]));
+        assert_eq!(
+            built["compaction"],
+            serde_json::json!({"auto": true, "reserved": 0})
+        );
+        assert_eq!(built["provider"]["openrouter"]["options"]["k"], 1);
+        assert_eq!(
+            built["provider"]["openrouter"]["models"]["m"]["limit"]["input"],
+            50_000
+        );
+        // A listed input above the threshold is lowered to it.
+        let built = v(opencode_compaction_config(
+            None,
+            "p",
+            "m",
+            listed(200_000, Some(150_000), 8_000),
+            50_000,
+        ));
+        assert_eq!(
+            built["provider"]["p"]["models"]["m"]["limit"]["input"],
+            50_000
+        );
+        // The user's own limit: their context and output are kept, only the
+        // missing keys are filled from the listing, and one whose window is
+        // at or under the threshold is left alone.
+        let given = |limit: &str| {
+            format!(r#"{{"provider":{{"p":{{"models":{{"m":{{"limit":{limit}}}}}}}}}}}"#)
+        };
+        let built = v(opencode_compaction_config(
+            Some(&given(r#"{"context":120000}"#)),
+            "p",
+            "m",
+            listed(200_000, None, 8_000),
+            50_000,
+        ));
+        assert_eq!(
+            built["provider"]["p"]["models"]["m"]["limit"],
+            serde_json::json!({"context": 120_000, "input": 50_000, "output": 8_000})
+        );
+        let built = v(opencode_compaction_config(
+            Some(&given(r#"{"output":4000}"#)),
+            "p",
+            "m",
+            listed(200_000, None, 8_000),
+            50_000,
+        ));
+        assert_eq!(
+            built["provider"]["p"]["models"]["m"]["limit"],
+            serde_json::json!({"context": 200_000, "input": 50_000, "output": 4_000})
+        );
+        assert!(
+            opencode_compaction_config(
+                Some(&given(r#"{"context":40000}"#)),
+                "p",
+                "m",
+                listed(200_000, None, 8_000),
+                50_000
+            )
+            .is_none()
+        );
+        // A user's own input, or a listed one at or under the threshold, or
+        // a window it does not fit under, or no threshold, changes nothing;
+        // nor can a configuration that is not an object be added to.
+        assert!(
+            opencode_compaction_config(
+                Some(&given(r#"{"input":90000}"#)),
+                "p",
+                "m",
+                listed(200_000, None, 8_000),
+                50_000
+            )
+            .is_none()
+        );
+        let plain = listed(100, None, 8);
+        assert!(opencode_compaction_config(None, "p", "m", listed(100, Some(40), 8), 50).is_none());
+        assert!(opencode_compaction_config(None, "p", "m", listed(100, Some(50), 8), 50).is_none());
+        assert!(opencode_compaction_config(None, "p", "m", plain, 100).is_none());
+        assert!(opencode_compaction_config(None, "p", "m", plain, 0).is_none());
+        assert!(opencode_compaction_config(Some("[]"), "p", "m", plain, 50).is_none());
+        assert!(opencode_compaction_config(Some("{"), "p", "m", plain, 50).is_none());
+    }
+
+    #[test]
+    fn a_listing_that_hangs_is_abandoned() {
+        let started = std::time::Instant::now();
+        let err = run_within("sleep", &["30"], std::time::Duration::from_millis(200)).unwrap_err();
+        assert!(err.to_string().contains("did not finish"), "{err:#}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(
+            run_within("printf", &["ok"], std::time::Duration::from_secs(5)).unwrap(),
+            "ok"
+        );
+        assert!(run_within("false", &[], std::time::Duration::from_secs(5)).is_err());
+    }
+
+    #[test]
     fn odd_model_ids_are_quoted() {
         assert_eq!(
             apply_to_command("claude", "claude", Some("it's"), None, 0),
@@ -1313,7 +1626,7 @@ mod tests {
         );
     }
 
-    /// The three harnesses that take a context-compaction threshold, each the
+    /// The four harnesses that take a context-compaction threshold, each the
     /// way that harness takes it, and the rest left alone however the config
     /// is set.
     #[test]
@@ -1331,12 +1644,18 @@ mod tests {
         // overlay `ssf launch` writes, so nothing goes on the command line.
         assert!(auto_compaction_args("omp", 300_000).is_empty());
         assert!(matches!(auto_compaction("omp"), Some(Compaction::Overlay)));
+        // opencode takes it in the configuration `ssf launch` builds.
+        assert!(auto_compaction_args("opencode", 300_000).is_empty());
+        assert!(matches!(
+            auto_compaction("opencode"),
+            Some(Compaction::OpenCodeConfig)
+        ));
         // A harness without one is unaffected, and a count its harness
         // refuses is dropped rather than shelled into a launch that would
         // not come up.
         assert!(auto_compaction_args("grok", 300_000).is_empty());
         assert!(matches!(auto_compaction("grok"), Some(Compaction::Percent)));
-        for harness in ["pi", "opencode", "gemini", "copilot", "crush", "aider"] {
+        for harness in ["pi", "gemini", "copilot", "crush", "aider"] {
             assert!(
                 auto_compaction_args(harness, 300_000).is_empty(),
                 "{harness}"

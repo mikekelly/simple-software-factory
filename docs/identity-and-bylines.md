@@ -89,7 +89,12 @@ usage out. Grok sessions have it from
 (`~/.grok` without `$GROK_HOME`), whose `contextTokensUsed` and
 `contextWindowTokens` Grok keeps current (e.g. `5% of 500k`); a command a Grok
 subagent runs carries the subagent's session, so the usage shown is its
-parent's, the conversation's. Only a command that can post (`issue`/`pr` `create`, `comment`,
+parent's, the conversation's.
+OpenCode keeps its sessions in its own database, so its ssf plugin
+writes `$SSF_DELIVERY_MAILBOX/session/opencode-context.json` after each
+assistant message of the bound session: that message's tokens (counted as
+OpenCode's compaction check counts them), its model, and the model's context
+window from OpenCode's own provider list; the shim reads just that file. Only a command that can post (`issue`/`pr` `create`, `comment`,
 `review`) reads any of this.
 
 The three travel to the session as `SSF_HARNESS`, `SSF_MODEL` and `SSF_EFFORT`.

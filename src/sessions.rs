@@ -297,6 +297,34 @@ pub fn pi_context() -> Option<String> {
     mailbox_context(crate::models::pi_context_window)
 }
 
+/// How full an OpenCode session's context is: OpenCode keeps its sessions
+/// in its own database, so its bridge plugin (`harness/ssf-opencode.ts`)
+/// writes the latest assistant message's context tokens and its model's
+/// window to the mailbox's `session/opencode-context.json`. One small file
+/// read, since this runs in the `gh` shim; `None` whenever it is missing.
+pub fn opencode_context() -> Option<String> {
+    let mailbox = std::env::var_os("SSF_DELIVERY_MAILBOX")?;
+    opencode_context_of(&Path::new(&mailbox).join("session/opencode-context.json"))
+}
+
+fn opencode_context_of(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut body = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(64 << 10)
+        .read_to_string(&mut body)
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let used = v.get("tokens")?.as_u64()?;
+    let window = v.get("context")?.as_u64().filter(|w| *w > 0)?;
+    Some(format!(
+        "{}% of {}",
+        (used * 100 / window).min(100),
+        crate::models::token_size(window)
+    ))
+}
+
 /// The latest assistant turn of the transcript in the delivery mailbox's
 /// `session/` directory against the window `window` gives for its model.
 fn mailbox_context(window: fn(&str, &str) -> Option<u64>) -> Option<String> {
@@ -693,6 +721,23 @@ mod tests {
         assert_eq!(codex_context_of(&path).as_deref(), Some("25% of 200k"));
         std::fs::write(&path, lines[0].as_str()).unwrap();
         assert_eq!(codex_context_of(&path), None);
+    }
+
+    #[test]
+    fn opencode_context_is_the_plugins_record() {
+        let sandbox = crate::config::test_support::sandbox();
+        let file = sandbox.root().join("opencode-context.json");
+        assert_eq!(opencode_context_of(&file), None);
+        std::fs::write(
+            &file,
+            r#"{"tokens":262144,"context":1048576,"model":"openrouter/x"}"#,
+        )
+        .unwrap();
+        assert_eq!(opencode_context_of(&file).as_deref(), Some("25% of 1049k"));
+        std::fs::write(&file, r#"{"tokens":5,"context":0}"#).unwrap();
+        assert_eq!(opencode_context_of(&file), None);
+        std::fs::write(&file, "{").unwrap();
+        assert_eq!(opencode_context_of(&file), None);
     }
 
     #[test]

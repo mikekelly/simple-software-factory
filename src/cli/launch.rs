@@ -116,8 +116,9 @@ pub(super) fn launch(
     }
     // What the harness may fill its context to before it compacts its own
     // history. claude and codex take it on the command line, so the value is
-    // already in `command`; grok takes it as an environment variable (below);
-    // omp takes it only through its settings, so it is handed down as an overlay the session is
+    // already in `command`; grok takes it as an environment variable and
+    // opencode in its configuration content (below); omp takes it only
+    // through its settings, so it is handed down as an overlay the session is
     // pointed at. `PI_CONFIG_FILES` is the way that reaches a real session:
     // omp reads it at startup, while `omp --config <file>` is honoured by its
     // model listing and not by a session. A session started by hand, with no
@@ -130,48 +131,58 @@ pub(super) fn launch(
         .as_ref()
         .map(|s| s.harness.as_str())
         .or_else(|| repo_cfg.map(|r| r.harness.as_str()));
-    let tokens = || {
-        auto_compaction_tokens.unwrap_or_else(|| match repo_cfg {
-            Some(r) => cfg.auto_compaction_tokens_for(r),
-            None => cfg.auto_compaction_tokens_default(),
-        })
-    };
+    let tokens = auto_compaction_tokens.unwrap_or_else(|| match repo_cfg {
+        Some(r) => cfg.auto_compaction_tokens_for(r),
+        None => cfg.auto_compaction_tokens_default(),
+    });
     // grok takes a percentage of the model's window, not a count, through
     // `GROK_AUTO_COMPACT_THRESHOLD_PERCENT` (seen working with grok 1.0.41);
     // the window is what grok's model cache lists for the session's model.
     cmd.env_remove("GROK_AUTO_COMPACT_THRESHOLD_PERCENT");
-    if harness == Some("grok") {
-        let tokens = tokens();
+    if harness == Some("grok") && tokens > 0 {
         // A stack names the session's model (None on a harness switch means
         // grok's default); only without one is the repository's model grok's.
         let model = match &stack {
             Some(s) => s.model.as_deref(),
             None => repo_cfg.and_then(|r| r.model.as_deref()),
         };
-        if tokens > 0 {
-            match crate::models::grok_compaction_percent(tokens, model) {
-                Some(percent) => {
-                    cmd.env("GROK_AUTO_COMPACT_THRESHOLD_PERCENT", percent.to_string());
-                }
-                None => eprintln!(
-                    "ssf launch: grok lists no context window for this model; this session \
-compacts at grok's own threshold"
-                ),
+        match crate::models::grok_compaction_percent(tokens, model) {
+            Some(percent) => {
+                cmd.env("GROK_AUTO_COMPACT_THRESHOLD_PERCENT", percent.to_string());
             }
+            None => eprintln!(
+                "ssf launch: grok lists no context window for this model; this session \
+compacts at grok's own threshold"
+            ),
         }
     }
-    if harness == Some("omp") {
-        let tokens = tokens();
-        if tokens > 0 {
-            match crate::models::write_omp_compaction_overlay(tokens) {
-                Ok(path) => {
-                    cmd.env("PI_CONFIG_FILES", path);
+    // OpenCode takes it as the launch model's input limit, which needs that
+    // model's own limits: `opencode models` lists them. The plugin goes in
+    // too, so the launcher finds its configuration complete and has nothing
+    // to merge.
+    let model = stack.as_ref().and_then(|s| s.model.as_deref());
+    if harness == Some("opencode") && tokens > 0 {
+        match model.and_then(|m| m.split_once('/')) {
+            Some((provider, model)) => {
+                if let Some(config) = opencode_compaction(provider, model, tokens) {
+                    cmd.env("OPENCODE_CONFIG_CONTENT", config);
                 }
-                Err(e) => eprintln!(
-                    "ssf launch: could not write the omp compaction overlay ({e:#}); this session \
-compacts at omp's own threshold"
-                ),
             }
+            None => eprintln!(
+                "ssf launch: auto_compaction_tokens {tokens} is not applied: opencode takes it per \
+model, and this session names no provider/model; it compacts at opencode's own threshold"
+            ),
+        }
+    }
+    if harness == Some("omp") && tokens > 0 {
+        match crate::models::write_omp_compaction_overlay(tokens) {
+            Ok(path) => {
+                cmd.env("PI_CONFIG_FILES", path);
+            }
+            Err(e) => eprintln!(
+                "ssf launch: could not write the omp compaction overlay ({e:#}); this session \
+compacts at omp's own threshold"
+            ),
         }
     }
     // `SSF_ROLE` marked the reviewer sessions of before #115; an old one
@@ -207,6 +218,50 @@ compacts at omp's own threshold"
     }
     let err = cmd.exec();
     Err(anyhow::Error::from(err).context("exec failed"))
+}
+
+/// The `OPENCODE_CONFIG_CONTENT` that has `provider/model` compact at
+/// `tokens`, with ssf's plugin already listed so the launcher has nothing
+/// to merge; `None`, with a notice, when the session keeps OpenCode's own
+/// threshold.
+fn opencode_compaction(provider: &str, model: &str, tokens: u64) -> Option<String> {
+    let limits = match crate::models::opencode_listed_limits(provider, model) {
+        Ok(limits) => limits,
+        Err(e) => {
+            eprintln!("ssf launch: this session compacts at opencode's own threshold ({e:#})");
+            return None;
+        }
+    };
+    let given = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
+    let Some(config) = crate::models::opencode_compaction_config(
+        given.as_deref(),
+        provider,
+        model,
+        limits,
+        tokens,
+    ) else {
+        eprintln!(
+            "ssf launch: auto_compaction_tokens {tokens} is not applied to {provider}/{model}: it \
+already compacts sooner, its limit.input is set in OPENCODE_CONFIG_CONTENT, or that is not a JSON object"
+        );
+        return None;
+    };
+    let mut config: serde_json::Value = serde_json::from_str(&config).ok()?;
+    let plugin = format!(
+        "file://{}",
+        crate::delivery_channel::opencode_bridge().display()
+    );
+    if let Some(list) = config
+        .get_mut("plugin")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        if !list.iter().any(|p| p.as_str() == Some(&plugin)) {
+            list.push(plugin.into());
+        }
+    } else if config.get("plugin").is_none() {
+        config["plugin"] = serde_json::json!([plugin]);
+    }
+    Some(config.to_string())
 }
 
 pub(crate) fn server_executable() -> Result<PathBuf> {
