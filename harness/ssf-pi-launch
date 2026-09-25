@@ -40,6 +40,10 @@ if [ "$harness" = opencode ]; then
   # added to its `plugin` list. Perl's core JSON::PP does the merge (perl is a
   # dependency of the git every factory host has); a merge it cannot do stops
   # the launch rather than dropping the user's configuration.
+  # Without one, no merge is needed and perl is not required.
+  if [ -z "${OPENCODE_CONFIG_CONTENT:-}" ]; then
+    OPENCODE_CONFIG_CONTENT=$(printf '{"plugin":["file://%s"]}' "$bridge")
+  else
   OPENCODE_CONFIG_CONTENT=$(SSF_PLUGIN="file://$bridge" perl -MJSON::PP -e '
     my $json = JSON::PP->new->canonical;
     my $given = $ENV{OPENCODE_CONFIG_CONTENT} // "";
@@ -54,6 +58,7 @@ if [ "$harness" = opencode ]; then
     echo "ssf-pi-launch: cannot add the ssf delivery plugin to OPENCODE_CONFIG_CONTENT; fix or unset it" >&2
     exit 2
   }
+  fi
   SSF_OPENCODE_PID=$$
   export OPENCODE_CONFIG_CONTENT SSF_OPENCODE_PID
   exec opencode "$@"
