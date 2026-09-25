@@ -331,8 +331,14 @@ mod tests {
         assert!(daemon_reachable());
         // A daemon that stops leaves its socket file behind, and connecting
         // to that is refused rather than answered.
+        // Another test thread that forks while the listener is open hands
+        // the child a copy until it execs, so give that copy time to close.
         drop(listener);
         assert!(path.exists());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while daemon_reachable() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(!daemon_reachable());
     }
 
