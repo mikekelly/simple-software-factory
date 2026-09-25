@@ -1012,15 +1012,30 @@ async fn run_cached_doctor() -> Value {
         Ok(exe) => exe,
         Err(e) => return fail(format!("doctor could not run: locating ssf-server: {e}")),
     };
-    let mut command = tokio::process::Command::new(exe);
+    // A named target's daemon keeps its config and state dirs in-process;
+    // the child must be told them, as the dashboard's own children are.
+    let context = || -> Result<_> {
+        Ok((
+            server_catalog::selected_vm_context()?,
+            server_catalog::selected_target_identity()?,
+        ))
+    };
+    let (vm, identity) = match context() {
+        Ok(c) => c,
+        Err(e) => return fail(format!("doctor could not run: {e:#}")),
+    };
+    let mut command = crate::dashboard_transport::local_client_command(
+        &exe,
+        &["doctor", "--json"],
+        server_catalog::service_local_context(),
+        vm.as_ref(),
+        identity.as_ref(),
+    );
     command
-        .args(["__client", "doctor", "--json"])
         // Same binary: there is no client/server version pair to compare.
         .env(VERSION_REPORTED_ENV, "1")
         .env_remove(CLIENT_VERSION_ENV)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
+        .stderr(std::process::Stdio::null());
     match tokio::time::timeout(Duration::from_secs(300), command.output()).await {
         Err(_) => fail("doctor did not finish within 300s".into()),
         Ok(Err(e)) => fail(format!("doctor could not run: {e}")),
