@@ -71,6 +71,7 @@ package() {
   install -Dm644 harness/ssf-delivery.ts "$pkgdir/usr/share/ssf/harness/ssf-delivery.ts"
   install -Dm755 harness/ssf-pi-launch "$pkgdir/usr/share/ssf/harness/ssf-pi-launch"
   install -Dm644 harness/ssf-opencode.ts "$pkgdir/usr/share/ssf/harness/ssf-opencode.ts"
+  install -Dm644 harness/ssf-grok.mjs "$pkgdir/usr/share/ssf/harness/ssf-grok.mjs"
   # The whole vm/ tree, mirrored under /usr/share/ssf: make-base.sh, the
   # guest scripts, the units and their per-backend drop-ins. A loop, not a
   # list, because `ssf vm build` reads whatever the guest scripts ask for

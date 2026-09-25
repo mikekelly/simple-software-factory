@@ -54,6 +54,9 @@ impl Vm {
         let opencode_bridge = crate::delivery_channel::opencode_bridge();
         std::fs::copy(&opencode_bridge, tree.join("ssf-opencode.ts"))
             .with_context(|| format!("copying {}", opencode_bridge.display()))?;
+        let grok_bridge = crate::delivery_channel::grok_bridge();
+        std::fs::copy(&grok_bridge, tree.join("ssf-grok.mjs"))
+            .with_context(|| format!("copying {}", grok_bridge.display()))?;
         // Credentials are imported only during adoption of legacy host state.
         let defaults = guest_config(&Config::default());
         write_private(

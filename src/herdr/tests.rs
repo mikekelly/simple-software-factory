@@ -10,8 +10,12 @@ async fn wait_for_pending(mailbox: &std::path::Path, sequence: u64) -> std::path
     loop {
         for entry in std::fs::read_dir(mailbox).unwrap().flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            // An event the harness recorded at once is already acknowledged.
-            if let Some(stem) = name.strip_suffix(".ack").or(Some(&name))
+            // An event the harness recorded at once is already acknowledged,
+            // and one the Grok bridge is sending is claimed as `.handed`.
+            if let Some(stem) = name
+                .strip_suffix(".ack")
+                .or(name.strip_suffix(".handed"))
+                .or(Some(&name))
                 && name.starts_with(&prefix)
                 && stem.ends_with(".json")
             {
@@ -27,9 +31,55 @@ async fn wait_for_pending(mailbox: &std::path::Path, sequence: u64) -> std::path
     }
 }
 
+/// End the live harness in `handle` the way a crash or a closed terminal
+/// would. Grok takes its first ctrl+c as "cancel the turn", which would run a
+/// queued event before it exits, so its TUI -- the pid Grok's registry gives
+/// for the conversation the bridge pinned -- is sent SIGTERM instead.
+async fn stop_harness(h: &Herdr, handle: &str, harness: &str, mailbox: &std::path::Path) {
+    if harness != "grok" {
+        h.run(&["pane", "send-keys", handle, "ctrl+d"])
+            .await
+            .unwrap();
+        return;
+    }
+    let id = std::fs::read_to_string(mailbox.join("session/grok-session")).unwrap();
+    let home = std::env::var_os("GROK_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".grok")
+        });
+    let active: Value =
+        serde_json::from_slice(&std::fs::read(home.join("active_sessions.json")).unwrap()).unwrap();
+    let pid = active
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["session_id"] == id.trim())
+        .and_then(|entry| entry["pid"].as_i64())
+        .expect("the pinned conversation is not open");
+    // SAFETY: a signal to the grok TUI this test started.
+    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGTERM) }, 0);
+}
+
 /// The session's own record, as text: the Pi/OMP transcript in the mailbox,
-/// or OpenCode's export of the conversation its plugin pinned.
+/// Grok's `updates.jsonl` for the conversation its bridge pinned, or
+/// OpenCode's export of the conversation its plugin pinned.
 fn live_transcript(harness: &str, mailbox: &std::path::Path, root: &str) -> String {
+    if harness == "grok" {
+        let id = std::fs::read_to_string(mailbox.join("session/grok-session")).unwrap();
+        let home = std::env::var_os("GROK_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".grok")
+            });
+        let file = std::fs::read_dir(home.join("sessions"))
+            .unwrap()
+            .flatten()
+            .map(|group| group.path().join(id.trim()).join("updates.jsonl"))
+            .find(|file| file.is_file())
+            .unwrap();
+        return std::fs::read_to_string(file).unwrap();
+    }
     if harness == "opencode" {
         let id = std::fs::read_to_string(mailbox.join("session/opencode-session")).unwrap();
         let out = std::process::Command::new("opencode")
@@ -53,7 +103,7 @@ fn live_transcript(harness: &str, mailbox: &std::path::Path, root: &str) -> Stri
 
 /// What each injected event leaves in [`live_transcript`], once.
 fn injected_marker(harness: &str) -> &'static str {
-    if harness == "opencode" {
+    if harness == "opencode" || harness == "grok" {
         "\"ssfDeliveryId\""
     } else {
         "\"customType\":\"ssf-item-activity\""
@@ -126,6 +176,164 @@ esac
     assert!(calls.contains("agent list"), "{calls}");
     assert!(!calls.contains("agent prompt"), "{calls}");
     assert!(!calls.contains("pane send"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// Grok's bridge attests only after its ACP probe works: with no attested
+/// bridge an event is pasted, as before the bridge; with one it goes to the
+/// mailbox; and one published and not yet recorded is never pasted beside.
+#[tokio::test]
+async fn grok_delivery_falls_back_to_the_terminal_without_its_bridge() {
+    let base = std::env::temp_dir().join(format!("ssf-herdr-grok-delivery-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let fake = base.join("herdr");
+    crate::test_support::write_executable(
+        &fake,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/calls"
+case "$1 $2" in
+  "agent list")
+    echo '{"agents":[{"agent":"grok","agent_status":"idle","pane_id":"w7:p1","workspace_id":"w7"}]}'
+    ;;
+  "agent prompt")
+    echo '{"result":{"type":"agent_prompted"}}'
+    ;;
+esac
+"#,
+    );
+    let mailbox = base.join("mailbox");
+    std::fs::create_dir(&mailbox).unwrap();
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+    let relaunch = |sequence| Relaunch {
+        command: "unused",
+        resume_command: None,
+        harness: "grok",
+        title: "unused",
+        text: None,
+        first_prompt: FirstPrompt::No,
+        channel: Some((&mailbox, sequence)),
+    };
+    h.deliver("w7", Some("w7:p1"), &relaunch(1), "[ssf] pasted")
+        .await
+        .unwrap();
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(calls.contains("agent prompt"), "{calls}");
+    assert_eq!(
+        std::fs::read_dir(&mailbox).unwrap().count(),
+        0,
+        "a paste was also published"
+    );
+
+    std::fs::remove_file(base.join("calls")).unwrap();
+    std::fs::write(
+        mailbox.join("ready.json"),
+        format!("{{\"pid\":{}}}", std::process::id()),
+    )
+    .unwrap();
+    h.deliver("w7", Some("w7:p1"), &relaunch(2), "[ssf] bridged")
+        .await
+        .unwrap();
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(!calls.contains("agent prompt"), "{calls}");
+    assert!(crate::delivery_channel::has_record(
+        &mailbox,
+        2,
+        "[ssf] bridged"
+    ));
+
+    // A bridge still starting (a relaunch): events wait for it.
+    std::fs::remove_file(mailbox.join("ready.json")).unwrap();
+    std::fs::remove_file(base.join("calls")).unwrap();
+    let marker = |state: &str, pid: u32| {
+        std::fs::write(
+            mailbox.join("bridge.json"),
+            format!("{{\"state\":\"{state}\",\"pid\":{pid}}}"),
+        )
+        .unwrap();
+    };
+    marker("starting", std::process::id());
+    let held = h
+        .deliver("w7", Some("w7:p1"), &relaunch(3), "[ssf] later")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        crate::delivery_channel::hold(&held),
+        Some(crate::delivery_channel::Hold::Unavailable),
+        "{held:#}"
+    );
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap_or_default();
+    assert!(!calls.contains("agent prompt"), "{calls}");
+
+    // The bridge stopped with event 2 unrecorded: it is pasted, then the new
+    // one, and nothing is left for a bridge that is not coming.
+    marker("stopped", std::process::id());
+    h.deliver("w7", Some("w7:p1"), &relaunch(3), "[ssf] later")
+        .await
+        .unwrap();
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    let bridged = calls.find("[ssf] bridged").expect(&calls);
+    let later = calls.find("[ssf] later").expect(&calls);
+    assert!(bridged < later, "{calls}");
+    let left: Vec<_> = std::fs::read_dir(&mailbox)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with('0') && !name.ends_with(".ack"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+
+    // An event the conversation already records is acknowledged, not pasted
+    // again, when the bridge declines before acknowledging it (a dead pid is
+    // the same).
+    std::fs::write(
+        mailbox.join("ready.json"),
+        format!("{{\"pid\":{}}}", std::process::id()),
+    )
+    .unwrap();
+    h.deliver("w7", Some("w7:p1"), &relaunch(4), "[ssf] recorded")
+        .await
+        .unwrap();
+    let name = std::fs::read_dir(&mailbox)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|name| name.starts_with("00000000000000000004-") && name.ends_with(".json"))
+        .unwrap();
+    std::fs::remove_file(mailbox.join("ready.json")).unwrap();
+    let home = base.join("grok-home");
+    let conversation = home.join("sessions/%2Fwork/0190-abc");
+    std::fs::create_dir_all(&conversation).unwrap();
+    std::fs::write(
+        conversation.join("updates.jsonl"),
+        format!(
+            "{{\"update\":{{\"sessionUpdate\":\"user_message_chunk\",\"content\":{{\"type\":\"text\",\"text\":\"[ssf] recorded\",\"_meta\":{{\"ssfDeliveryId\":\"{name}\"}}}}}}}}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(mailbox.join("session")).unwrap();
+    std::fs::write(mailbox.join("session/grok-session"), "0190-abc\n").unwrap();
+    std::fs::write(
+        mailbox.join("session/grok-home"),
+        format!("{}\n", home.display()),
+    )
+    .unwrap();
+    marker("declined", std::process::id());
+    std::fs::remove_file(base.join("calls")).unwrap();
+    h.deliver("w7", Some("w7:p1"), &relaunch(5), "[ssf] fifth")
+        .await
+        .unwrap();
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(calls.contains("[ssf] fifth"), "{calls}");
+    assert!(
+        !calls.contains("[ssf] recorded"),
+        "a recorded event was pasted again: {calls}"
+    );
+    assert!(mailbox.join(format!("{name}.ack")).is_file());
+    assert!(!mailbox.join(&name).exists());
     std::fs::remove_dir_all(base).unwrap();
 }
 
@@ -408,7 +616,7 @@ Reply with the single token RECOVERED-279 and nothing else.",
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// Against a running herdr server and an installed OMP/Pi/OpenCode: proves #334's
+/// Against a running herdr server and an installed OMP/Pi/OpenCode/Grok: proves #334's
 /// gate.  A native event wakes an idle session without submitting a draft,
 /// and an event accepted during a turn is handled afterwards.
 /// `cargo test herdr_live_native_delivery -- --ignored --nocapture`.
@@ -457,10 +665,12 @@ async fn herdr_live_native_delivery() {
         .replace("\"$SSF_PI_LAUNCHER\"", &quote(&launcher));
     let opencode_bridge =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("harness/ssf-opencode.ts");
+    let grok_bridge = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("harness/ssf-grok.mjs");
     let command = format!(
-        "SSF_DELIVERY_MAILBOX={} SSF_OPENCODE_BRIDGE={} {command}",
+        "SSF_DELIVERY_MAILBOX={} SSF_OPENCODE_BRIDGE={} SSF_GROK_BRIDGE={} {command}",
         quote(&mailbox),
-        quote(&opencode_bridge)
+        quote(&opencode_bridge),
+        quote(&grok_bridge)
     );
     let h = Herdr::new(HerdrConfig::default());
     h.status().await.unwrap();
@@ -597,9 +807,7 @@ async fn herdr_live_native_delivery() {
         "an event the transcript does not hold was acknowledged (#390): {}",
         kill_pending.display()
     );
-    h.run(&["pane", "send-keys", &handle, "ctrl+d"])
-        .await
-        .unwrap();
+    stop_harness(&h, &handle, &harness, &mailbox).await;
     let stopped = Instant::now() + Duration::from_secs(10);
     while h
         .agents()
@@ -658,9 +866,7 @@ duplicated:\n{transcript}"
     // harness died before its file was renamed to `.ack`.  A relaunch must
     // acknowledge that existing record and not inject the event again.
     std::fs::rename(kill_pending.with_extension("json.ack"), &kill_pending).unwrap();
-    h.run(&["pane", "send-keys", &handle, "ctrl+d"])
-        .await
-        .unwrap();
+    stop_harness(&h, &handle, &harness, &mailbox).await;
     let stopped = Instant::now() + Duration::from_secs(10);
     while h
         .agents()
@@ -746,6 +952,31 @@ acknowledged:\n{}",
             "busy event was not handled:\n{screen}"
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    // Grok shows a queued prompt's text on screen before it runs, so the
+    // answer is read from the conversation: the busy event waited for the
+    // turn in flight to finish, and was answered after it.
+    if harness == "grok" {
+        loop {
+            let transcript = live_transcript(&harness, &mailbox, &root);
+            let answer = transcript.find("\"text\":\"FOLLOWUP-RECEIVED-334\"");
+            if let Some(answer) = answer {
+                let primary = transcript
+                    .find("\"text\":\"PRIMARY-DONE-334\"")
+                    .expect("the turn in flight was cut short by the busy event");
+                assert!(primary < answer, "the busy event ran before the turn ended");
+                assert!(
+                    !transcript.contains("\"stop_reason\":\"cancelled\""),
+                    "a turn was cancelled:\n{transcript}"
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "busy event was not answered:\n{transcript}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
     }
 
     h.remove_worktree(&wt.id).await.unwrap();

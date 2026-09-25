@@ -52,6 +52,7 @@ fn harness_delivery_bridge_ships_on_each_host_and_into_the_guest() {
         );
     }
     assert!(repo().join("harness/ssf-opencode.ts").is_file());
+    assert!(repo().join("harness/ssf-grok.mjs").is_file());
     for manifest in [PKGBUILD, NFPM, "vm/guest/seed-common.sh"] {
         assert!(
             read(manifest).contains("ssf-pi-launch"),
@@ -60,6 +61,10 @@ fn harness_delivery_bridge_ships_on_each_host_and_into_the_guest() {
         assert!(
             read(manifest).contains("harness/ssf-opencode.ts"),
             "{manifest} does not ship the OpenCode delivery plugin"
+        );
+        assert!(
+            read(manifest).contains("ssf-grok.mjs"),
+            "{manifest} does not ship the Grok delivery bridge"
         );
     }
 }

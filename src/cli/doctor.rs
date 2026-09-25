@@ -457,9 +457,14 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
             }))
             .filter(|harness| crate::harness::channel(harness).bridged())
             .collect();
-        // One check per bridge file: OpenCode's plugin, or the Pi/OMP extension.
-        bridged.sort_by_key(|harness| *harness == "opencode");
-        bridged.dedup_by_key(|harness| *harness == "opencode");
+        // One check per bridge file: OpenCode's plugin, Grok's sidecar, or the
+        // Pi/OMP extension.
+        let bridge_of = |harness: &str| match harness {
+            "opencode" | "grok" => harness.to_owned(),
+            _ => "pi".to_owned(),
+        };
+        bridged.sort_by_key(|harness| bridge_of(harness));
+        bridged.dedup_by_key(|harness| bridge_of(harness));
         if !bridged.is_empty() {
             for harness in &bridged {
                 let bridge = crate::delivery_channel::bridge_serving_for(harness);
@@ -568,6 +573,10 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
                             mailbox.display(),
                             if crate::delivery_channel::available(&mailbox) {
                                 ""
+                            } else if harness == "grok" {
+                                "; unavailable: terminal fallback is in use; restart this session \
+(the bridge needs node, no sandbox profile, and the Grok ACP it was verified with; see its \
+session/grok-bridge.log)"
                             } else {
                                 "; restart this session to load the bridge"
                             }

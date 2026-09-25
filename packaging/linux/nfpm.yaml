@@ -133,6 +133,10 @@ contents:
     dst: /usr/share/ssf/harness/ssf-opencode.ts
     file_info:
       mode: 0644
+  - src: harness/ssf-grok.mjs
+    dst: /usr/share/ssf/harness/ssf-grok.mjs
+    file_info:
+      mode: 0644
   # The whole vm/ tree, mirrored under /usr/share/ssf: make-base.sh, the
   # guest scripts, the units and their per-backend drop-ins. nfpm copies a
   # directory src recursively and keeps each file's own mode (scripts 755,

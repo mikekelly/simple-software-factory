@@ -4,7 +4,7 @@ set -eu
 harness=$1
 shift
 case "$harness" in
-  omp|pi|opencode) ;;
+  omp|pi|opencode|grok) ;;
   *) echo "ssf-pi-launch: unsupported harness: $harness" >&2; exit 2 ;;
 esac
 
@@ -66,6 +66,93 @@ if [ "$harness" = opencode ]; then
   SSF_OPENCODE_PID=$$
   export OPENCODE_CONFIG_CONTENT SSF_OPENCODE_PID
   exec opencode "$@"
+fi
+
+if [ "$harness" = grok ]; then
+  # Grok takes events through a sidecar bridge (SSF_GROK_BRIDGE) that attaches
+  # to the TUI's leader over ACP; see harness/ssf-grok.mjs.
+  bridge=${SSF_GROK_BRIDGE:?SSF_GROK_BRIDGE is not set}
+  home=${GROK_HOME:-$HOME/.grok}
+  # The daemon checks this Grok's record before pasting a fallback event.
+  mkdir -p "$session_dir"
+  printf '%s\n' "$home" >"$session_dir/grok-home"
+  # The bridge's state for the daemon; see harness/ssf-grok.mjs.
+  marker=$SSF_DELIVERY_MAILBOX/bridge.json
+  # Continue the conversation the bridge recorded, unless this launch already
+  # names one (the daemon's own `--resume <id>`, say).
+  named=
+  for arg in "$@"; do
+    case "$arg" in
+      -r|--resume|--resume=*|-c|--continue|-s|--session-id|--session-id=*) named=1 ;;
+    esac
+  done
+  if [ -z "$named" ]; then
+    id=$(cat "$session_dir/grok-session" 2>/dev/null || true)
+    case "$id" in
+      *[!A-Za-z0-9-]*|'') ;;
+      *)
+        # A conversation deleted since is started afresh rather than refused.
+        for dir in "$home"/sessions/*/"$id"; do
+          if [ -d "$dir" ]; then
+            set -- "$@" --resume "$id"
+            break
+          fi
+        done
+        ;;
+    esac
+  fi
+  # Leader mode needs no sandbox profile (Grok refuses it under one) and a
+  # node to run the bridge; without either, Grok runs as it always has and
+  # events go through the terminal.
+  sandbox=${GROK_SANDBOX:-off}
+  prev=
+  for arg in "$@"; do
+    case "$prev" in
+      --sandbox) sandbox=$arg ;;
+    esac
+    case "$arg" in
+      --sandbox=*) sandbox=${arg#--sandbox=} ;;
+    esac
+    prev=$arg
+  done
+  if [ "$sandbox" = off ] && command -v node >/dev/null 2>&1; then
+    # A leader socket of this mailbox's own, short enough for a Unix socket
+    # path and named where `grok leader list` looks.
+    sum=$(printf '%s' "$SSF_DELIVERY_MAILBOX" | cksum | cut -d' ' -f1)
+    socket=$home/leader-ssf-$sum.sock
+    # A leader left by an earlier launch of this mailbox (its TUI killed
+    # outright) would hold the socket: stop it first.
+    lock=${socket%.sock}.lock
+    old=$(cat "$lock" 2>/dev/null | tr -cd 0-9)
+    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
+      case "$(ps -o command= -p "$old" 2>/dev/null)" in
+        *"agent leader"*)
+          kill "$old" 2>/dev/null || true
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$old" 2>/dev/null || break
+            sleep 0.2
+          done
+          ;;
+      esac
+    fi
+    if [ -z "$old" ] || ! kill -0 "$old" 2>/dev/null; then
+      rm -f "$socket" "$lock"
+    fi
+    # The bridge lives as long as the TUI: it watches this pid, which exec
+    # hands to grok. The subshell leaves it orphaned rather than grok's child.
+    (
+      SSF_GROK_PID=$$
+      SSF_GROK_SOCKET=$socket
+      export SSF_GROK_PID SSF_GROK_SOCKET
+      node "$bridge" </dev/null >/dev/null 2>&1 &
+      printf '{"state":"starting","pid":%s}' "$!" >"$marker.tmp-$$"
+      mv -f "$marker.tmp-$$" "$marker"
+    )
+    exec grok --leader --leader-socket "$socket" --no-auto-update "$@"
+  fi
+  printf '{"state":"declined"}' >"$marker.tmp-$$"
+  mv -f "$marker.tmp-$$" "$marker"
+  exec grok "$@"
 fi
 
 latest=$(find "$session_dir" -maxdepth 1 -type f -name '*.jsonl' -print | sort | tail -n 1)

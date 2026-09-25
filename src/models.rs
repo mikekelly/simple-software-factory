@@ -1002,6 +1002,12 @@ pub fn default_command(harness: &str) -> String {
         // continues the mailbox's conversation.
         return "\"$SSF_PI_LAUNCHER\" opencode --auto".into();
     }
+    if harness == "grok" {
+        // The launcher starts the TUI in leader mode with the ACP bridge named
+        // by `SSF_GROK_BRIDGE` beside it, and continues the mailbox's
+        // conversation.
+        return "\"$SSF_PI_LAUNCHER\" grok --always-approve".into();
+    }
     match unattended_flags(harness) {
         Some(flags) => format!("{harness} {flags}"),
         None => harness.to_string(),
@@ -1440,7 +1446,10 @@ mod tests {
             "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
         );
         assert_eq!(default_command("gemini"), "gemini --yolo --skip-trust");
-        assert_eq!(default_command("grok"), "grok --always-approve");
+        assert_eq!(
+            default_command("grok"),
+            "\"$SSF_PI_LAUNCHER\" grok --always-approve"
+        );
         assert_eq!(
             default_command("pi"),
             "\"$SSF_PI_LAUNCHER\" pi --approve -e \"$SSF_PI_BRIDGE\""

@@ -91,6 +91,7 @@ pub(super) fn launch(
         "SSF_OPENCODE_BRIDGE",
         crate::delivery_channel::opencode_bridge(),
     );
+    cmd.env("SSF_GROK_BRIDGE", crate::delivery_channel::grok_bridge());
     if let Some(n) = issue {
         cmd.env("SSF_ISSUE", n.to_string());
     }
