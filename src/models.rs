@@ -406,6 +406,26 @@ pub(crate) fn opencode_models() -> Result<Vec<String>> {
         .collect())
 }
 
+/// `grok models`: the ids listed under `Available models:`, one per line as
+/// `* grok-4.6 (default)` or `- grok-4.5`. It answers without a sign-in.
+/// Grok has a table to fall back on, so a listing that fails is an empty one.
+pub(crate) fn grok_models() -> Result<Vec<String>> {
+    Ok(run("grok", &["models"])
+        .map(|listing| parse_grok_models(&listing))
+        .unwrap_or_default())
+}
+fn parse_grok_models(listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .skip_while(|l| !l.trim_start().starts_with("Available models"))
+        .skip(1)
+        .filter_map(|l| {
+            let rest = l.trim_start().strip_prefix(['*', '-'])?;
+            rest.split_whitespace().next().map(str::to_string)
+        })
+        .collect()
+}
+
 /// Where a harness keeps its own files: the directory the environment
 /// variable `env` names when it is set (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`),
 /// else `~/<dotname>`. A test with no home of its own gets none, so a
@@ -1037,6 +1057,13 @@ mod tests {
             apply_to_command("codex", "codex", Some("gpt-5.5"), Some("xhigh"), 0),
             "codex -m gpt-5.5 -c model_reasoning_effort=xhigh"
         );
+    }
+
+    #[test]
+    fn grok_models_are_read_from_the_available_list() {
+        let listing = "You are not authenticated.\n\nDefault model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n";
+        assert_eq!(parse_grok_models(listing), ["grok-4.6", "grok-4.5"]);
+        assert!(parse_grok_models("error: something\n- not-a-model\n").is_empty());
     }
 
     #[test]
