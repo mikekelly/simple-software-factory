@@ -277,6 +277,10 @@ pub enum Settle {
     Ready,
     /// Blocked on a question ssf does not know: the prompt goes in anyway.
     AskAnyway,
+    /// herdr reports the harness settled but its screen is still blank:
+    /// the TUI has not drawn its composer yet, so a prompt sent now is lost.
+    /// OpenCode 1.18 is `idle` to herdr 0.9 seconds before it draws.
+    Undrawn,
 }
 
 /// The decision [`Herdr::settle_harness`] makes from the state herdr
@@ -287,9 +291,14 @@ pub enum Settle {
 /// state that settles it on its own is `working`: an agent already at
 /// work is past any first-run dialog, and what its screen shows is its
 /// own output.
+/// How often [`Herdr::settle_harness`] looks again at a blank screen.
+const UNDRAWN_POLL: Duration = Duration::from_millis(500);
+
 pub fn settle_step(state: &str, screen: &str) -> Settle {
     if state == "working" {
         Settle::Ready
+    } else if screen.trim().is_empty() {
+        Settle::Undrawn
     } else if let Some(answer) = driver::trust_dialog(screen) {
         Settle::Answer(answer)
     } else if state == "blocked" {
@@ -891,7 +900,8 @@ impl Herdr {
             bail!("herdr did not detect {harness} in pane {pane_id} in time");
         }
         let mut state = String::new();
-        for _ in 0..4 {
+        let mut answers = 0;
+        while answers < 4 {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 bail!("{harness} in {pane_id} did not settle in time");
@@ -905,11 +915,27 @@ impl Herdr {
                 .unwrap_or("")
                 .to_string();
             // A screen that will not read decides nothing; the state does.
-            let text = self.screen(pane_id).await.unwrap_or_default().join("\n");
+            let Ok(text) = self.screen(pane_id).await.map(|s| s.join("\n")) else {
+                return Ok(state);
+            };
             match settle_step(&state, &text) {
                 Settle::Answer(answer) => {
                     info!(pane_id, state, "accepting the folder trust dialog");
                     self.answer_trust(pane_id, answer).await?;
+                    answers += 1;
+                    continue;
+                }
+                Settle::Undrawn => {
+                    // A screen still blank at the deadline launches as before
+                    // this wait existed, rather than failing the launch.
+                    if deadline.saturating_duration_since(Instant::now()) <= UNDRAWN_POLL {
+                        warn!(
+                            pane_id,
+                            "{harness} drew nothing before the deadline; going on"
+                        );
+                        return Ok(state);
+                    }
+                    tokio::time::sleep(UNDRAWN_POLL).await;
                     continue;
                 }
                 Settle::AskAnyway => {

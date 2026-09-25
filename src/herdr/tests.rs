@@ -786,6 +786,19 @@ fn the_screen_decides_what_to_do_after_a_wait() {
 }
 
 #[test]
+fn a_blank_screen_is_not_ready_for_a_prompt() {
+    // herdr 0.9 reports OpenCode 1.18 `idle` seconds before its TUI draws
+    // a composer; a prompt sent then is lost (#508).
+    assert_eq!(settle_step("idle", ""), Settle::Undrawn);
+    assert_eq!(settle_step("idle", "\n   \n\n"), Settle::Undrawn);
+    assert_eq!(settle_step("blocked", "\n\n"), Settle::Undrawn);
+    // A working agent has taken input, whatever it has drawn.
+    assert_eq!(settle_step("working", ""), Settle::Ready);
+    let drawn = "  ┃  Ask anything… \"Fix a TODO in the codebase\"\n  ┃  Build auto";
+    assert_eq!(settle_step("idle", drawn), Settle::Ready);
+}
+
+#[test]
 fn a_stall_is_a_dialog_only_when_the_screen_shows_one() {
     let prompt = "You are working on mikekelly/simple-software-factory#121.\n\
 Do you trust the contents of this directory? is what Codex asks.";
