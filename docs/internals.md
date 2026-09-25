@@ -238,7 +238,7 @@ doctor` says which installed copy it refused. The pairing is not cosmetic: the
 bridge repairs the mailbox's ready marker, so a session running one from another
 build takes no events at all and its agent never hears that its item closed.
 Restarting the session loads the bridge this daemon serves; after upgrading SSF,
-restart any already-running OMP or Pi session for that reason.
+restart any already-running OMP, Pi or OpenCode session for that reason.
 
 The poller writes `ready.json` as the running extension's own attestation that
 events left in the mailbox will be taken, and rewrites it on any poll that does
@@ -260,7 +260,36 @@ still pending, and the replacement resumes that transcript: its bridge
 acknowledges an id already present or injects the still-pending event, and
 herdr does not also submit it through the terminal. `ssf doctor` checks the
 bridge and launcher a session would be started with, plus the ready marker of
-each live OMP or Pi session.
+each live OMP, Pi or OpenCode session.
+
+### OpenCode: the delivery plugin
+
+OpenCode sessions keep the same mailbox contract through a server plugin,
+`ssf-opencode.ts`. The launcher (`"$SSF_PI_LAUNCHER" opencode ...`) loads it by
+naming `SSF_OPENCODE_BRIDGE` in `OPENCODE_CONFIG_CONTENT`, which OpenCode merges
+over the user's own configuration, and records its own pid in
+`SSF_OPENCODE_PID`: only that process serves the mailbox, so an `opencode` the
+agent runs in a shell, which inherits the configuration, neither takes events
+nor the ready marker. The plugin submits each pending event with OpenCode's
+`session.promptAsync` API, with the model and agent of the conversation's last
+prompt and the mailbox id in the text part's metadata, and acknowledges the
+file once the session's stored messages hold that part. OpenCode stores a
+prompt the moment it is submitted: an idle agent starts a turn, and a working
+one takes it at its next step boundary without the tool call in flight being
+cut short. Nothing is typed into the pane, so a draft in the composer is left
+alone.
+
+The conversation events go to is the one the launcher resumed, else the first
+top-level session that takes a user message, which is SSF's first prompt; a
+later top-level session that takes one (a `/new`) takes the binding over, and
+subagent sessions never do. Until there is one, events wait in the mailbox. Its
+id is kept in the mailbox's `session/opencode-session`, and the launcher passes
+it as `--session` when OpenCode still lists it, so a relaunch continues the
+conversation and its plugin acknowledges an event already stored there rather
+than submitting it again. OpenCode loads plugins a moment after its TUI draws,
+so a relaunch waits up to 20 seconds for the ready marker before holding the
+event. An event stored while the agent was at work and then killed is in the
+resumed conversation but is answered only on its next turn.
 
 The same state directory holds the [context
 compaction](harnesses.md#context-compaction) overlay an OMP session is started
@@ -325,7 +354,7 @@ endpoint, keep the terminal path.
 
 ### The terminal path
 
-OpenCode, Gemini CLI, Copilot CLI, Grok CLI and Crush have no proven channel
+Gemini CLI, Copilot CLI, Grok CLI and Crush have no proven channel
 wired into SSF's attached interactive session, so their later activity uses
 `herdr agent prompt`; if herdr refuses because the agent is at a question, the
 raw bracketed-paste fallback is used. First prompts in every harness, and a
@@ -337,7 +366,9 @@ path above, there cannot be a person's draft in a pane SSF has just created.
 After the first message ssf records the agent's conversation id (Claude Code
 and Codex keep transcripts on disk). If the agent's terminal is gone, ssf
 starts it again with `--resume <id>` (Codex: `codex resume <id>`) and sends
-only the new events. If resuming fails, or the harness has no resume support,
+only the new events. OMP, Pi and OpenCode are resumed by their launcher from
+the item's delivery mailbox instead (a transcript there, or OpenCode's session
+id). If resuming fails, or the harness has no resume support,
 it starts fresh and resends the whole issue context, the session's own item,
 even when what triggered the relaunch was activity on an item it owns. If the
 workspace itself is gone, ssf re-creates it from the old branch (local or

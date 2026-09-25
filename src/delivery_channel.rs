@@ -38,6 +38,11 @@ use crate::herdr::{Channel, Herdr, Journal};
 /// pass is not held behind a busy one.
 const RECORD_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long a harness just relaunched gets to load its bridge before its
+/// mailbox counts as unavailable.  OpenCode draws its TUI before its server
+/// loads the plugin, so the marker can trail the pane by a few seconds.
+const BRIDGE_START_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// What an attempt got: the transcript holds the event, or the mailbox does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Receipt {
@@ -121,11 +126,11 @@ fn repo_dir(repo: &str) -> PathBuf {
 
 // ---- the bridge and the launcher this build ships -------------------------
 
-/// The two harness files this build ships, embedded.  The daemon starts a
-/// session with the path it names (`SSF_PI_BRIDGE`, `SSF_PI_LAUNCHER`) and the
-/// package installs the same two files under `share/ssf/harness`; embedding
-/// them keeps the pair in lockstep with the daemon whose mailbox protocol they
-/// implement, whatever the filesystem holds.  A factory whose daemon was
+/// The harness files this build ships, embedded.  The daemon starts a session
+/// with the paths it names (`SSF_PI_BRIDGE`, `SSF_PI_LAUNCHER`,
+/// `SSF_OPENCODE_BRIDGE`) and the package installs the same files under
+/// `share/ssf/harness`; embedding them keeps them in lockstep with the daemon
+/// whose mailbox protocol they implement, whatever the filesystem holds.  A factory whose daemon was
 /// replaced without its harness files -- a hand-installed binary, the dev build
 /// `packaging/dev-install.sh` points the service at while the package's copies
 /// stay behind, or a standalone binary install with no share tree at all --
@@ -136,9 +141,13 @@ fn repo_dir(repo: &str) -> PathBuf {
 /// releases its workspace (#402).
 const BRIDGE: &[u8] = include_bytes!("../harness/ssf-delivery.ts");
 const LAUNCHER: &[u8] = include_bytes!("../harness/ssf-pi-launch");
+/// OpenCode's bridge: the same mailbox contract as an OpenCode plugin, which
+/// the launcher loads from `SSF_OPENCODE_BRIDGE`.
+const OPENCODE_BRIDGE: &[u8] = include_bytes!("../harness/ssf-opencode.ts");
 
 const BRIDGE_NAME: &str = "harness/ssf-delivery.ts";
 const LAUNCHER_NAME: &str = "harness/ssf-pi-launch";
+const OPENCODE_BRIDGE_NAME: &str = "harness/ssf-opencode.ts";
 
 /// Where a session is pointed for one of those files, and whether that path
 /// holds this build's copy.
@@ -178,6 +187,30 @@ pub(crate) fn bridge() -> PathBuf {
 /// The launcher a session is started with.
 pub(crate) fn launcher() -> PathBuf {
     launcher_serving().path
+}
+
+/// The OpenCode plugin a session is started with.
+pub(crate) fn opencode_bridge() -> PathBuf {
+    opencode_bridge_serving().path
+}
+
+pub(crate) fn opencode_bridge_serving() -> Serving {
+    served(
+        OPENCODE_BRIDGE_NAME,
+        OPENCODE_BRIDGE,
+        &installed_candidates(OPENCODE_BRIDGE_NAME),
+        &crate::config::state_dir(),
+    )
+}
+
+/// The bridge `harness`'s sessions load: OpenCode's plugin, or the Pi/OMP
+/// extension.
+pub(crate) fn bridge_serving_for(harness: &str) -> Serving {
+    if harness == "opencode" {
+        opencode_bridge_serving()
+    } else {
+        bridge_serving()
+    }
 }
 
 pub(crate) fn bridge_serving() -> Serving {
@@ -453,9 +486,9 @@ fn report_receipt(receipt: Receipt, handle: &str, mailbox: &Path) {
     }
 }
 
-/// The mailbox channel OMP and Pi take events through: the daemon publishes
-/// to the session's mailbox and the bridge the session was launched with
-/// injects it.
+/// The mailbox channel OMP, Pi and OpenCode take events through: the daemon
+/// publishes to the session's mailbox and the bridge the session was launched
+/// with injects it.
 pub(crate) struct Mailbox;
 
 impl Channel for Mailbox {
@@ -484,9 +517,9 @@ impl Channel for Mailbox {
         has_record(mailbox, sequence, text)
     }
 
-    /// The per-session Pi/OMP command resumes the transcript. Its bridge
-    /// either finds this delivery ID there and acknowledges it, or injects
-    /// the still-pending event. In neither case should the relaunch path
+    /// The per-session Pi/OMP/OpenCode command resumes the transcript. Its
+    /// bridge either finds this delivery ID there and acknowledges it, or
+    /// injects the still-pending event. In neither case should the relaunch path
     /// submit the same body through the terminal.
     fn relaunched<'a>(
         &'a self,
@@ -501,6 +534,10 @@ impl Channel for Mailbox {
             let Some((mailbox, sequence)) = journal.filter(|_| recorded) else {
                 return Ok(false);
             };
+            let started = Instant::now();
+            while !available(mailbox) && started.elapsed() < BRIDGE_START_TIMEOUT {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
             let receipt = deliver(mailbox, sequence, text).await?;
             report_receipt(receipt, pane, mailbox);
             Ok(true)
@@ -608,6 +645,29 @@ mod tests {
         assert!(!serving.skewed, "a share tree that is absent is not a skew");
         assert!(serving.path.is_file());
         assert_eq!(std::fs::read(&serving.path).unwrap(), BRIDGE);
+    }
+
+    /// OpenCode's plugin is served like the Pi/OMP extension, and only to
+    /// OpenCode's sessions.
+    #[test]
+    fn opencode_sessions_get_the_opencode_plugin() {
+        let sandbox = crate::config::test_support::sandbox();
+        let missing = sandbox.root().join("share/ssf-opencode.ts");
+        let serving = served(
+            OPENCODE_BRIDGE_NAME,
+            OPENCODE_BRIDGE,
+            &[missing],
+            &sandbox.state_dir(),
+        );
+        assert!(serving.sound, "{}", serving.detail());
+        assert_eq!(std::fs::read(&serving.path).unwrap(), OPENCODE_BRIDGE);
+        assert!(serving.path.ends_with("harness/ssf-opencode.ts"));
+        assert!(
+            bridge_serving_for("opencode")
+                .path
+                .ends_with("ssf-opencode.ts")
+        );
+        assert!(bridge_serving_for("pi").path.ends_with("ssf-delivery.ts"));
     }
 
     /// The launcher is executed, not read.

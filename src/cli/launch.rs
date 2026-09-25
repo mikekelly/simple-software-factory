@@ -87,6 +87,10 @@ pub(super) fn launch(
     }
     cmd.env("SSF_PI_BRIDGE", crate::delivery_channel::bridge());
     cmd.env("SSF_PI_LAUNCHER", crate::delivery_channel::launcher());
+    cmd.env(
+        "SSF_OPENCODE_BRIDGE",
+        crate::delivery_channel::opencode_bridge(),
+    );
     if let Some(n) = issue {
         cmd.env("SSF_ISSUE", n.to_string());
     }

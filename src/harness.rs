@@ -238,7 +238,7 @@ pub static HARNESSES: &[Harness] = &[
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
         context: None,
-        channel: &Terminal,
+        channel: &Mailbox,
     },
     Harness {
         id: "gemini",
@@ -388,11 +388,12 @@ mod tests {
         // The delivery if-chain `Herdr::deliver` had before its channels
         // were a field: Claude and Codex by id, OMP and Pi by
         // `delivery_channel::supports`, the terminal for everyone else.
+        // OpenCode joined the mailbox with its plugin bridge (#508).
         assert_eq!(ids(|h| h.channel.session_bound()), ["claude", "codex"]);
-        assert_eq!(ids(|h| h.channel.bridged()), ["omp", "pi"]);
+        assert_eq!(ids(|h| h.channel.bridged()), ["omp", "pi", "opencode"]);
         assert_eq!(
             ids(|h| h.channel.journaled()),
-            ["claude", "codex", "omp", "pi"]
+            ["claude", "codex", "omp", "pi", "opencode"]
         );
         assert!(!channel("nope").journaled());
     }

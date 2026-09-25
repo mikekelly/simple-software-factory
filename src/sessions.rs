@@ -282,7 +282,7 @@ fn codex_context_of(path: &Path) -> Option<String> {
 
 /// How full an Oh My Pi session's context is, as its byline shows it. An
 /// ssf-launched OMP session keeps its transcript in the delivery mailbox's
-/// `session/` directory (`harness/ssf-pi-launch`), and OMP's commands inherit
+/// `session/` directory (`harness/ssf-pi-launch`, the OMP, Pi and OpenCode launcher), and OMP's commands inherit
 /// `SSF_DELIVERY_MAILBOX`; the usage is that transcript's latest assistant
 /// turn, and the window is what omp lists for the turn's model
 /// (`models::omp_context_window`). `None` whenever any of that is missing.

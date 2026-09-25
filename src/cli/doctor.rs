@@ -444,25 +444,35 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
         let driver_rows = open_workspaces
             .get(&cfg.driver_for(r))
             .and_then(|rows| rows.as_ref().ok());
-        let uses_native_channel = crate::harness::channel(&r.harness).bridged()
-            || state.repos.get(&r.name).is_some_and(|repo_state| {
-                repo_state.issues.values().any(|session| {
-                    session.overrides.as_ref().is_some_and(|overrides| {
-                        crate::harness::channel(&overrides.harness).bridged()
-                    })
+        // The bridged harnesses this repository's sessions run: its own, and
+        // any a session was started with instead.
+        let mut bridged: Vec<&str> = std::iter::once(r.harness.as_str())
+            .chain(state.repos.get(&r.name).into_iter().flat_map(|repo_state| {
+                repo_state.issues.values().filter_map(|session| {
+                    session
+                        .overrides
+                        .as_ref()
+                        .map(|overrides| overrides.harness.as_str())
                 })
-            });
-        if uses_native_channel {
-            let bridge = crate::delivery_channel::bridge_serving();
-            check(
-                bridge.sound,
-                format!(
-                    "{}: harness delivery bridge at {}{}",
-                    r.name,
-                    bridge.path.display(),
-                    bridge.detail()
-                ),
-            );
+            }))
+            .filter(|harness| crate::harness::channel(harness).bridged())
+            .collect();
+        // One check per bridge file: OpenCode's plugin, or the Pi/OMP extension.
+        bridged.sort_by_key(|harness| *harness == "opencode");
+        bridged.dedup_by_key(|harness| *harness == "opencode");
+        if !bridged.is_empty() {
+            for harness in &bridged {
+                let bridge = crate::delivery_channel::bridge_serving_for(harness);
+                check(
+                    bridge.sound,
+                    format!(
+                        "{}: harness delivery bridge at {}{}",
+                        r.name,
+                        bridge.path.display(),
+                        bridge.detail()
+                    ),
+                );
+            }
             let launcher = crate::delivery_channel::launcher_serving();
             check(
                 launcher.sound,

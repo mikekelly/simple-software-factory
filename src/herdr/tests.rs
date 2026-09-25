@@ -10,8 +10,12 @@ async fn wait_for_pending(mailbox: &std::path::Path, sequence: u64) -> std::path
     loop {
         for entry in std::fs::read_dir(mailbox).unwrap().flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with(&prefix) && name.ends_with(".json") {
-                return entry.path();
+            // An event the harness recorded at once is already acknowledged.
+            if let Some(stem) = name.strip_suffix(".ack").or(Some(&name))
+                && name.starts_with(&prefix)
+                && stem.ends_with(".json")
+            {
+                return mailbox.join(stem);
             }
         }
         assert!(
@@ -20,6 +24,39 @@ async fn wait_for_pending(mailbox: &std::path::Path, sequence: u64) -> std::path
             mailbox.display()
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The session's own record, as text: the Pi/OMP transcript in the mailbox,
+/// or OpenCode's export of the conversation its plugin pinned.
+fn live_transcript(harness: &str, mailbox: &std::path::Path, root: &str) -> String {
+    if harness == "opencode" {
+        let id = std::fs::read_to_string(mailbox.join("session/opencode-session")).unwrap();
+        let out = std::process::Command::new("opencode")
+            .args(["export", id.trim()])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        return String::from_utf8_lossy(&out.stdout).into_owned();
+    }
+    let transcript = std::fs::read_dir(mailbox.join("session"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .unwrap();
+    std::fs::read_to_string(transcript).unwrap()
+}
+
+/// What each injected event leaves in [`live_transcript`], once.
+fn injected_marker(harness: &str) -> &'static str {
+    if harness == "opencode" {
+        "\"ssfDeliveryId\""
+    } else {
+        "\"customType\":\"ssf-item-activity\""
     }
 }
 
@@ -375,7 +412,7 @@ Reply with the single token RECOVERED-279 and nothing else.",
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// Against a running herdr server and an installed OMP/Pi: proves #334's
+/// Against a running herdr server and an installed OMP/Pi/OpenCode: proves #334's
 /// gate.  A native event wakes an idle session without submitting a draft,
 /// and an event accepted during a turn is handled afterwards.
 /// `cargo test herdr_live_native_delivery -- --ignored --nocapture`.
@@ -422,7 +459,13 @@ async fn herdr_live_native_delivery() {
         .unwrap_or_else(|_| crate::models::default_command(&harness))
         .replace("\"$SSF_PI_BRIDGE\"", &quote(&bridge))
         .replace("\"$SSF_PI_LAUNCHER\"", &quote(&launcher));
-    let command = format!("SSF_DELIVERY_MAILBOX={} {command}", quote(&mailbox));
+    let opencode_bridge =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("harness/ssf-opencode.ts");
+    let command = format!(
+        "SSF_DELIVERY_MAILBOX={} SSF_OPENCODE_BRIDGE={} {command}",
+        quote(&mailbox),
+        quote(&opencode_bridge)
+    );
     let h = Herdr::new(HerdrConfig::default());
     h.status().await.unwrap();
     let wt = h
@@ -551,8 +594,10 @@ async fn herdr_live_native_delivery() {
         .await
         .unwrap();
     let kill_pending = wait_for_pending(&mailbox, 2).await;
+    // OpenCode stores a prompt the moment it is submitted, busy or not, so its
+    // record -- and the acknowledgement -- can come before the kill.
     assert!(
-        !kill_pending.with_extension("json.ack").is_file(),
+        harness == "opencode" || !kill_pending.with_extension("json.ack").is_file(),
         "an event the transcript does not hold was acknowledged (#390): {}",
         kill_pending.display()
     );
@@ -601,20 +646,9 @@ async fn herdr_live_native_delivery() {
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let transcript = std::fs::read_dir(mailbox.join("session"))
-        .unwrap()
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "jsonl")
-        })
-        .unwrap();
-    let transcript = std::fs::read_to_string(transcript).unwrap();
+    let transcript = live_transcript(&harness, &mailbox, &root);
     assert_eq!(
-        transcript
-            .matches("\"customType\":\"ssf-item-activity\"")
-            .count(),
+        transcript.matches(injected_marker(&harness)).count(),
         2,
         "the killed event was not recorded exactly once, or the idle event was \
 duplicated:\n{transcript}"
@@ -674,20 +708,9 @@ acknowledged:\n{}",
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let transcript = std::fs::read_dir(mailbox.join("session"))
-        .unwrap()
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "jsonl")
-        })
-        .unwrap();
-    let transcript = std::fs::read_to_string(transcript).unwrap();
+    let transcript = live_transcript(&harness, &mailbox, &root);
     assert_eq!(
-        transcript
-            .matches("\"customType\":\"ssf-item-activity\"")
-            .count(),
+        transcript.matches(injected_marker(&harness)).count(),
         2,
         "a relaunch re-injected an event the transcript already recorded:\n{transcript}"
     );

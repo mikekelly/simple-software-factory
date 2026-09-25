@@ -802,6 +802,11 @@ pub fn default_command(harness: &str) -> String {
     if harness == "pi" {
         return "\"$SSF_PI_LAUNCHER\" pi --approve -e \"$SSF_PI_BRIDGE\"".into();
     }
+    if harness == "opencode" {
+        // The launcher loads the plugin named by `SSF_OPENCODE_BRIDGE` and
+        // continues the mailbox's conversation.
+        return "\"$SSF_PI_LAUNCHER\" opencode --auto".into();
+    }
     match unattended_flags(harness) {
         Some(flags) => format!("{harness} {flags}"),
         None => harness.to_string(),
@@ -1249,7 +1254,10 @@ mod tests {
             default_command("omp"),
             "PI_STREAM_IDLE_TIMEOUT_MS=900000 \"$SSF_PI_LAUNCHER\" omp --auto-approve -e \"$SSF_PI_BRIDGE\""
         );
-        assert_eq!(default_command("opencode"), "opencode --auto");
+        assert_eq!(
+            default_command("opencode"),
+            "\"$SSF_PI_LAUNCHER\" opencode --auto"
+        );
         assert_eq!(default_command("copilot"), "copilot --allow-all");
         assert_eq!(default_command("crush"), "crush --yolo");
         // Every agent ssf knows has unattended flags.
