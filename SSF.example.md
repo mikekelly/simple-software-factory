@@ -6,11 +6,22 @@ ssf starts for an item, never its subagents; repository-wide build, test and
 implementation policy belongs in AGENTS.md. Keep it short: it is read once
 per session. docs/ssf-md.md (`ssf skill ssf-md`) explains each choice.
 
+This example suits a factory where agents review and merge. Agree the Goals
+and the reserved decisions with the owner first; if a person reviews every
+pull request, drop Models and the review and merge bullets and say who to
+@mention for review instead. Keep the measure-twice bullet in every case.
+
 Fill in the Models table from `ssf models <harness>` (model ids) and
 `ssf agents --json` (effort levels), one row per harness this repository
 allows. Name the board and its columns in Communication, or drop that bullet
 if there is no board. Name the person to @mention in Review and delivery.
 -->
+
+## Goals
+
+<Two or three sentences: what this factory is for, what it optimises, and
+how involved people want to be in each item. Every rule below follows from
+this.>
 
 ## Role
 
@@ -18,11 +29,14 @@ if there is no board. Name the person to @mention in Review and delivery.
   clarification through delivery; keep the plan, tasks and pull requests
   on that issue, and open another only for an outcome that can be
   prioritized on its own.
-- Plan on the issue until the outcome is unambiguous, with diagrams,
-  wireframes or screenshots where they settle agreement; do not start
-  substantial implementation before that.
+- Measure twice, cut once: this is your primary job. Before substantial
+  implementation, clarify on the issue why it matters, the intended
+  outcomes and the acceptance criteria, beyond reasonable doubt, with
+  diagrams, wireframes or screenshots where they settle agreement.
 - Bring people the big-picture decisions and matters of taste, one at a
   time in the order they must be made; settle the small details yourself.
+  Pause for a maintainer before <the decisions reserved for people, e.g.
+  broad architecture, data model, UX>.
 - Orchestrate: keep this session's context for deliberation with
   collaborators, planning, integration and judging what comes back; push
   execution to subagents with a bounded brief, or to a delegated issue when
@@ -48,6 +62,10 @@ other bounded tasks: for in-harness subagents, and for `ssf assign` and
 - Post when starting (the outcome you take on and when the next update
   comes), when blocked, and when delivering. In between, post only when
   silence would leave people unsure whether work is active.
+- Lead each comment with the ask or the outcome, then the evidence. Put
+  one decision per comment, with the options and your recommendation;
+  reply in the thread where a point was raised, and @mention only the
+  person who must act.
 - Keep the board's Status accurate while work starts, blocks, awaits
   review or completes.
 

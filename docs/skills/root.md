@@ -15,7 +15,7 @@ locally, in a VM, or over SSH.
 | a repository added to a factory that already runs | `ssf skill repo`: access for the bot, choosing harness, model and effort with the person, `ssf repo add`, a minimal `SSF.md`, `ssf candidates` and `ssf adopt`, the first issue. |
 | to know what is running, change a setting, upgrade, stop | `ssf skill operate`: targets, `doctor` and `status` before any change, the service, versions. `ssf skill config` for every key; `ssf skill harnesses` for models, effort and what a session runs. |
 | something is not working | `ssf skill troubleshoot`: triage sequence, then symptom, check and remedy. |
-| an `SSF.md` written or reviewed for a project | `ssf skill ssf-md`, then `SSF.example.md` in the repository; `ssf skill audit` for a bounded review of existing guidance. |
+| an `SSF.md` written or reviewed for a project | `ssf skill ssf-md` (agree the factory's goals and what agents may decide alone with the person first), then `SSF.example.md`; `ssf skill audit` for a bounded review of existing guidance. |
 | an always-on assistant that drives the factory for them | `ssf skill liaison`. |
 | details for their distro, macOS, a rented host, a harness's quirks, or an old installation | `ssf skill specifics`. Nothing there is needed on the generic path. |
 

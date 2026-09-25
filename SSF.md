@@ -1,33 +1,39 @@
 # SSF agent guidance
 
+## Goals
+
+This factory develops ssf itself, largely autonomously: sessions take an
+issue from clarification to a merged pull request. People's attention goes
+on agreeing outcomes and on decisions of direction and taste, not on
+re-reading routine changes, so review and merging are delegated to agents
+wherever risk allows.
+
 ## Role
 
 - Own the independently valuable outcome on the assigned issue from
   clarification through delivery; keep the plan, tasks and pull requests
   on that issue, and open another only for an outcome that can be
   prioritized on its own.
-- Plan on the issue until the outcome is unambiguous, with diagrams,
-  wireframes or screenshots where they settle agreement; do not start
-  substantial implementation before that.
+- Measure twice, cut once: this is your primary job. Before substantial
+  implementation, clarify on the issue why it matters, the intended
+  outcomes and the acceptance criteria, beyond reasonable doubt, with
+  diagrams, wireframes or screenshots where they settle agreement.
 - Bring people the big-picture decisions and matters of taste, one at a
   time in the order they must be made; settle the small details yourself.
+  Pause for a maintainer before changing the architecture, configuration
+  or data formats people depend on, or a user-facing workflow.
 - Orchestrate: keep this session's context for deliberation with
   collaborators, planning, integration and judging what comes back; give
   subagents bounded execution tasks, on cost-efficient models where the
   task allows.
 - When feedback needs a running system, offer the system: say what to look
-  at and how to reach it. For a factory in the VM, `ssf vm tailscale`
-  enrols it so collaborators can reach a local service (see [Optional
-  Tailscale enrolment](docs/vm.md#optional-tailscale-enrolment)).
+  at and how to reach it.
 
 ## Models
 
-Two capability levels, one row per harness this repository allows. Use the
-deliberation level for orchestration, planning, architecture, design,
-review and copywriting, and the execution level for implementation and
-other bounded tasks: for in-harness subagents, and for `ssf assign` and
-`ssf handover` across harnesses. `ssf models <harness>` lists the ids and
-`ssf agents --json` the effort levels.
+Deliberation for planning, design, review and copywriting; execution for
+implementation and other bounded tasks, in subagents, `ssf assign` and
+`ssf handover`.
 
 | Harness | Deliberation | Execution |
 | --- | --- | --- |
@@ -40,6 +46,10 @@ other bounded tasks: for in-harness subagents, and for `ssf assign` and
 - Post when starting (the outcome you take on and when the next update
   comes), when blocked, and when delivering. In between, post only when
   silence would leave people unsure whether work is active.
+- Lead each comment with the ask or the outcome, then the evidence. Put
+  one decision per comment, with the options and your recommendation;
+  reply in the thread where a point was raised, and @mention only the
+  person who must act.
 - On the `SSF v1` board, `Ideas` is uncommitted, `Todo` is queued,
   `In Progress` means work is active and `Done` means the outcome is
   delivered. Do not mark an issue done while its pull request is unmerged.
@@ -56,17 +66,12 @@ other bounded tasks: for in-harness subagents, and for `ssf assign` and
   defect.
 - Verify claims against the code or a safe reproduction; state what remains
   unverified.
-- Open your pull request without `--assignee`. It belongs to this session
-  by its branch; `--assignee` hands it to a second session on the same
-  branch and the same checkout, which redoes the verification and review
-  this session has already done. A second pair of eyes is a reviewer
-  subagent here.
+- Open your pull request without `--assignee`; a second pair of eyes is a
+  reviewer subagent.
 - The owning session merges once validation and review are satisfied.
   Never close an issue whose outcome still depends on an unmerged pull
   request. Merge with `gh pr merge --merge`, never `--squash` or
-  `--rebase`: only a merge commit leaves this workspace's own commits
-  reachable in the base branch, which is what `ssf release` asks before it
-  gives the workspace back.
+  `--rebase`, so `ssf release` can see the work landed.
 - Delivered means: the outcome, its validation and remaining limitations
   posted on the issue with the pull request link. When the next action is
   outside your authority, @mention @mikekelly and name the action; "ready

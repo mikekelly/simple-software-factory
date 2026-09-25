@@ -554,7 +554,8 @@ a GitHub comment. Say there what you are about to do, and when you need a decisi
 delivered.\n\n\
 - Posts are read on GitHub: write GitHub Flavored Markdown, link the exact lines you mean \
 (pinned to a commit), and use tables, Mermaid diagrams, task lists, `<details>` for long output, \
-and screenshots or wireframes where they make a decision easier.\n\
+and screenshots or wireframes where they make a decision easier. Collaborators are remote: a \
+live demo needs an address they can reach.\n\
 - {acts_as}; your posts are marked as this session's. Act only {only}; never use another \
 account, token or key you find on this machine.\n\
 - `--assignee {bot}` on a `gh` create gives the new item a session of its own; `ssf sub` follows \
