@@ -82,7 +82,8 @@ doctor` checkpoints; run them.
    prints at the end (the package manager's remove command for this
    machine) is the person's to run. [Uninstall](uninstall.md) has the cases.
 10. **Writing `SSF.md`**: follow [Writing SSF.md](ssf-md.md) (`ssf skill
-    ssf-md`) and start from [`SSF.example.md`](../SSF.example.md). Use the
+    ssf-md`): agree the factory's goals and the agents' latitude with the
+    owner first, then adapt [`SSF.example.md`](../SSF.example.md). Use the
     bounded [project guidance audit](audit.md) when asked to assess a
     repository's existing guidance.
 11. **Conflict notices concern committed branches.** Follow [Branch
