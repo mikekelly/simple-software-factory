@@ -16,7 +16,9 @@
  * that takes a user message -- ssf's first prompt.  Its id is kept in the
  * mailbox's `session/opencode-session`, which is how a relaunch continues the
  * same conversation.  A later top-level session that takes a user message (a
- * `/new` in the TUI) takes the binding over; subagent sessions never do.
+ * `/new` in the TUI) takes the binding over for events not yet submitted;
+ * one already submitted stays with the session it went to.  Subagent
+ * sessions never take the binding.
  * Until there is a session, events wait in the mailbox.
  *
  * Only the process the launcher exec'd (`SSF_OPENCODE_PID`) serves the
@@ -83,9 +85,10 @@ export const SsfDelivery = async ({ client }: { client: Client }) => {
 	if (!mailbox || process.env.SSF_OPENCODE_PID !== String(process.pid)) return {};
 	const ready = path.join(mailbox, "ready.json");
 	const pinned = path.join(mailbox, "session", "opencode-session");
-	// Files submitted to the bound session whose part is not stored yet; a
-	// new binding is a conversation that has none of them (#390).
-	const handed = new Set<string>();
+	// Files submitted and not yet stored, each with the session it went to.
+	// One is never submitted again, even after a rebind: the conversation it
+	// went to may still store it, and is the one that acknowledges it (#390).
+	const handed = new Map<string, string>();
 	let session: string | undefined;
 	let polling = false;
 
@@ -102,7 +105,6 @@ export const SsfDelivery = async ({ client }: { client: Client }) => {
 	function bind(id: string) {
 		if (session === id) return;
 		session = id;
-		handed.clear();
 		try {
 			fs.mkdirSync(path.dirname(pinned), { recursive: true, mode: 0o700 });
 			fs.writeFileSync(`${pinned}.tmp`, `${id}\n`, { mode: 0o600 });
@@ -135,19 +137,28 @@ export const SsfDelivery = async ({ client }: { client: Client }) => {
 				.filter((name) => name.endsWith(".json") && name !== "ready.json")
 				.sort();
 			if (pending.length === 0) return;
-			const stored = new Set<unknown>();
+			// What each session concerned has stored: the bound one, and any an
+			// earlier binding was handed an event it has not stored yet.
+			const stored = new Map<string, Set<unknown>>();
 			// An event is answered by the model and agent the conversation's
 			// last prompt used, not the configured default: OpenCode takes the
 			// model per message, and the TUI's `-m` is only the TUI's.
 			let last: Info | undefined;
-			const messages = await client.session.messages({ path: { id } });
-			for (const message of messages.data ?? []) {
-				if (message.info?.role === "user") last = message.info;
-				for (const part of message.parts ?? []) stored.add(part.metadata?.ssfDeliveryId);
+			for (const sid of new Set([id, ...pending.flatMap((n) => handed.get(n) ?? [])])) {
+				const ids = new Set<unknown>();
+				const messages = await client.session.messages({ path: { id: sid } });
+				for (const message of messages.data ?? []) {
+					if (sid === id && message.info?.role === "user") last = message.info;
+					for (const part of message.parts ?? []) ids.add(part.metadata?.ssfDeliveryId);
+				}
+				stored.set(sid, ids);
 			}
 			for (const name of pending) {
 				const file = path.join(mailbox!, name);
-				if (stored.has(name)) {
+				// A handed event is acknowledged by the session it went to; one
+				// not handed by this process, by the bound one (a resume).
+				const owner = handed.get(name) ?? id;
+				if (stored.get(owner)?.has(name)) {
 					fs.renameSync(file, `${file}.ack`);
 					handed.delete(name);
 					continue;
@@ -164,7 +175,7 @@ export const SsfDelivery = async ({ client }: { client: Client }) => {
 					},
 				});
 				// A refused submission stays pending and is tried again.
-				if (!sent.error) handed.add(name);
+				if (!sent.error) handed.set(name, id);
 			}
 		} catch {
 			// A partial write, shutdown race, or transient API error remains pending.

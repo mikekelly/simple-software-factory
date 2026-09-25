@@ -36,7 +36,24 @@ if [ "$harness" = opencode ]; then
   esac
   # The plugin serves the mailbox only in this process (exec keeps the pid):
   # an `opencode` the agent runs inherits the config but not the mailbox.
-  OPENCODE_CONFIG_CONTENT=$(printf '{"plugin":["file://%s"]}' "$bridge")
+  # A configuration already in OPENCODE_CONFIG_CONTENT is kept: the plugin is
+  # added to its `plugin` list. Perl's core JSON::PP does the merge (perl is a
+  # dependency of the git every factory host has); a merge it cannot do stops
+  # the launch rather than dropping the user's configuration.
+  OPENCODE_CONFIG_CONTENT=$(SSF_PLUGIN="file://$bridge" perl -MJSON::PP -e '
+    my $json = JSON::PP->new->canonical;
+    my $given = $ENV{OPENCODE_CONFIG_CONTENT} // "";
+    my $config = $given =~ /\S/ ? $json->decode($given) : {};
+    die "not a JSON object\n" unless ref $config eq "HASH";
+    my $list = $config->{plugin} //= [];
+    die "its plugin entry is not a list\n" unless ref $list eq "ARRAY";
+    push @$list, $ENV{SSF_PLUGIN}
+      unless grep { !ref && $_ eq $ENV{SSF_PLUGIN} } @$list;
+    print $json->encode($config);
+  ') || {
+    echo "ssf-pi-launch: cannot add the ssf delivery plugin to OPENCODE_CONFIG_CONTENT; fix or unset it" >&2
+    exit 2
+  }
   SSF_OPENCODE_PID=$$
   export OPENCODE_CONFIG_CONTENT SSF_OPENCODE_PID
   exec opencode "$@"

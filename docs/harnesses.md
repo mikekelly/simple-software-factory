@@ -212,7 +212,12 @@ a capability ssf assumes:
 
 `ssf launch` sets `SSF_PI_BRIDGE` to the packaged extension,
 `SSF_OPENCODE_BRIDGE` to the packaged OpenCode plugin and `SSF_PI_LAUNCHER`
-to an exec wrapper, not a process that stays beside the harness.
+to an exec wrapper, not a process that stays beside the harness. For
+OpenCode the wrapper adds the plugin to the `plugin` list of any
+`OPENCODE_CONFIG_CONTENT` already set and keeps the rest of it. It uses
+`perl` for that (a dependency of git), and refuses to start, saying why,
+when the variable is not a JSON object it can merge into (JSONC comments
+included), rather than drop it.
 
 Limits on what a session may *do* (do not merge, do not close issues)
 belong in the [SSF agent guidance
