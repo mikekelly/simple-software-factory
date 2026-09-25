@@ -639,3 +639,29 @@ fn the_service_line_follows_the_daemon_and_names_the_unit() {
         format!("daemon not answering ({unit} running)")
     );
 }
+
+#[test]
+fn doctor_summary_keeps_only_failures_and_warnings() {
+    assert_eq!(doctor_summary(None), Value::Null);
+    let report = json!({
+        "checked_at": "2026-09-25T10:00:00+00:00",
+        "problems": 1,
+        "checks": [
+            {"level": "ok", "message": "fine"},
+            {"level": "fail", "message": "broken"},
+            {"level": "note", "message": "fyi"},
+            {"level": "warn", "message": "odd"},
+        ],
+    });
+    assert_eq!(
+        doctor_summary(Some(&report)),
+        json!({
+            "checked_at": "2026-09-25T10:00:00+00:00",
+            "problems": 1,
+            "warnings": [
+                {"level": "fail", "message": "broken"},
+                {"level": "warn", "message": "odd"},
+            ],
+        })
+    );
+}

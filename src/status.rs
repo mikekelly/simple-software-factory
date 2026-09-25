@@ -540,6 +540,14 @@ impl Snapshot {
             // urgent line per one).
             "blocked_sessions": sessions.iter().filter(|s| s.blocked.is_some()).map(|s| s.id.clone()).collect::<Vec<_>>(),
             "driver": driver_status,
+            // The daemon's latest cached doctor run, failures and warnings
+            // only; null before its first run.
+            "doctor": doctor_summary(
+                std::fs::read(doctor_cache_path())
+                    .ok()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .as_ref()
+            ),
             "sessions": sessions,
             "repos": repos,
         });
@@ -547,6 +555,37 @@ impl Snapshot {
             dashboard_presentation(&payload).expect("canonical status always contains sessions");
         payload
     }
+}
+
+/// Where the daemon keeps its latest `ssf doctor --json` report.
+pub fn doctor_cache_path() -> std::path::PathBuf {
+    crate::config::state_dir().join("doctor.json")
+}
+
+/// The status view of a cached doctor report: when it ran, how many
+/// problems, and only its fail and warn entries.
+pub fn doctor_summary(report: Option<&Value>) -> Value {
+    let Some(report) = report else {
+        return Value::Null;
+    };
+    let warnings: Vec<Value> = report
+        .get("checks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|c| {
+            matches!(
+                c.get("level").and_then(Value::as_str),
+                Some("fail" | "warn")
+            )
+        })
+        .cloned()
+        .collect();
+    json!({
+        "checked_at": report.get("checked_at"),
+        "problems": report.get("problems"),
+        "warnings": warnings,
+    })
 }
 
 /// Join every tracked item with its workspace. `workspaces` is `None`
@@ -1509,7 +1548,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
         })
         .collect();
     Ok(
-        json!({"cards":cards,"monitored_items":unattached,"scratch":scratch,"blocked":blocked,"released":released,"last_error":payload["last_error"],"repositories":watched_repositories(payload),"repository_projects":repository_projects(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
+        json!({"cards":cards,"monitored_items":unattached,"scratch":scratch,"blocked":blocked,"released":released,"last_error":payload["last_error"],"doctor":payload["doctor"],"repositories":watched_repositories(payload),"repository_projects":repository_projects(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
     )
 }
 
@@ -1583,7 +1622,9 @@ mod dashboard_tests {
     /// model so a repository's HUD can warn about and list them (#509).
     #[test]
     fn lists_blocked_and_released_items_and_the_last_error() {
-        let snapshot = dashboard_presentation(&json!({"last_error":"poll failed","sessions":[
+        let snapshot = dashboard_presentation(&json!({"last_error":"poll failed",
+            "doctor":{"checked_at":"t","problems":0,"warnings":[{"level":"warn","message":"odd"}]},
+            "sessions":[
             {"id":"o/r#1","repo":"o/r","owner":"o/r#1","active":true,"agent_live":true,
                 "agent_state":"blocked","github_state":"open",
                 "blocked":{"reason":"login","harness":"claude","harness_name":"Claude Code"}},
@@ -1596,6 +1637,7 @@ mod dashboard_tests {
         ]}))
         .unwrap();
         assert_eq!(snapshot["last_error"], "poll failed");
+        assert_eq!(snapshot["doctor"]["warnings"][0]["message"], "odd");
         let blocked = snapshot["blocked"].as_array().unwrap();
         assert_eq!(blocked.len(), 1);
         assert_eq!(blocked[0]["id"], "o/r#1");

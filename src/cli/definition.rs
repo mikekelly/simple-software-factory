@@ -312,7 +312,11 @@ pub(super) enum Command {
         force: bool,
     },
     /// Check that GitHub, the drivers in use and the configured harnesses are usable.
-    Doctor,
+    Doctor {
+        /// Print one JSON object (`problems`, `checks`) instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// The background service, and desktop integration where a desktop offers it (Factory menu entries on Omarchy).
     Ui {
         #[command(subcommand)]

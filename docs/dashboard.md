@@ -347,7 +347,9 @@ signed in, or could not start), each an item as above plus `repo` and
 whose workspace `ssf release` or `ssf purge` removed, each an item as above
 plus `repo` and `released_at`; scratch sessions are in `dashboard.scratch`
 instead. `dashboard.last_error` is the daemon's last recorded error, or
-`null`. The extension's top-bar HUD reads all three.
+`null`. `dashboard.doctor` is the top-level `doctor` (the cached doctor run's
+failures and warnings, see [internals](internals.md)), or `null`. The
+extension's top-bar HUD reads all four.
 
 `dashboard.repositories` lists the repositories the factory watches, as
 `owner/name`. A factory watches a repository rather than the items in it, so

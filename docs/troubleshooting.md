@@ -18,6 +18,11 @@ ssf vm status                       # only when the factory runs in a VM: runnin
 
 A good `ssf doctor` ends with `all good`. Every failing line starts `FAIL` and
 carries its own remedy; `note` lines are informational and do not fail the run.
+`ssf doctor --json` prints the same report as one object,
+`{"problems": N, "checks": [{"level": "ok"|"fail"|"warn"|"note", "message": "..."}]}`,
+with the same exit status. The daemon also runs it about 30 seconds after it
+starts and every 15 minutes after, and `ssf status --json` carries the latest
+result's failures and warnings as `doctor` (see [internals](internals.md)).
 
 Logs, on the machine that runs the daemon:
 

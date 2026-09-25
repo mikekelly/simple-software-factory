@@ -82,7 +82,7 @@ pub async fn client_main() -> Result<()> {
         [route] => route,
         _ => bail!("multiple --server destinations are supported only by `ssf dashboard`"),
     };
-    let doctor = matches!(cli.command, Command::Doctor);
+    let doctor = matches!(cli.command, Command::Doctor { .. });
     if doctor {
         return run_doctor_client(route, &catalog, inherited.as_ref(), &args);
     }
@@ -135,7 +135,10 @@ fn run_doctor_client(
 ) -> Result<()> {
     let client_version =
         std::env::var(CLIENT_VERSION_ENV).unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_owned());
-    let already_reported = std::env::var_os(VERSION_REPORTED_ENV).is_some();
+    // With `--json` stdout carries one object, so the version lines are left
+    // to the server's own fallback check, which records them in it.
+    let json = args.iter().any(|a| a == "--json");
+    let already_reported = json || std::env::var_os(VERSION_REPORTED_ENV).is_some();
     let identity = route_identity(route, catalog, inherited);
     // An SSH catalog name belongs to this client. Sending it to the remote
     // host would make doctor inspect an unrelated `ssf@NAME` service there.
@@ -158,16 +161,24 @@ fn run_doctor_client(
         Some(host) => std::process::Command::new("ssh")
             .arg("--")
             .arg(host)
-            .arg(remote_client_command(args, Some(&client_version), None))
+            .arg({
+                let command = remote_client_command(args, Some(&client_version), None);
+                if json {
+                    command.replacen(&format!("{VERSION_REPORTED_ENV}=1 "), "", 1)
+                } else {
+                    command
+                }
+            })
             .status(),
         None => {
             let mut command = std::process::Command::new(server_executable()?);
             command.arg("__client").args(args);
             apply_local_route(&mut command, route, endpoint_identity)?;
-            command
-                .env(CLIENT_VERSION_ENV, &client_version)
-                .env(VERSION_REPORTED_ENV, "1")
-                .status()
+            command.env(CLIENT_VERSION_ENV, &client_version);
+            if !json {
+                command.env(VERSION_REPORTED_ENV, "1");
+            }
+            command.status()
         }
     }
     .context("running doctor on the selected server")?;
@@ -693,12 +704,12 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 if let Some(note) = note {
                     eprintln!("{note}");
                 }
-                if !matches!(cli.command, Command::Status { .. } | Command::Doctor) {
+                if !matches!(cli.command, Command::Status { .. } | Command::Doctor { .. }) {
                     vm.ensure_factory_ownership(&cfg)?;
                 }
                 if matches!(
                     cli.command,
-                    Command::Doctor | Command::Status { json: false, .. }
+                    Command::Doctor { .. } | Command::Status { json: false, .. }
                 ) {
                     eprintln!(
                         "host VM{}: {} ({backend}, {}); inspecting guest factory",
@@ -715,7 +726,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 // version before #413 -- is a fact of this host's
                 // `~/.config/omarchy`, which nothing inside the VM can read.
                 // So it is said here, where the report will not carry it.
-                if matches!(cli.command, Command::Doctor)
+                if matches!(cli.command, Command::Doctor { .. })
                     && let Some(note) = factory_ui::superseded_widget_note()
                 {
                     eprintln!("note {note}");
@@ -967,7 +978,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             print!("{}", prompt::guide(&bot, factory_vm::in_guest()));
             Ok(())
         }
-        Command::Doctor => doctor().await,
+        Command::Doctor { json } => doctor(json).await,
         Command::Vm { command } => vm_cmd(command).await,
         Command::Ui { command } => ui_cmd(command),
         Command::Uninstall {
