@@ -424,7 +424,7 @@ harness = "codex"
     // 0 reaches no harness as a count: each keeps its own default.
     assert_eq!(
         cfg.repos[2].harness_command(tokens(2)),
-        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}'"
+        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\",\"worktree\":{\"baseRef\":\"head\"}}'"
     );
     assert!(
         cfg.repos[0]
@@ -538,7 +538,7 @@ harness = "aider"
         |i: usize| cfg.repos[i].harness_command(cfg.auto_compaction_tokens_for(&cfg.repos[i]));
     assert_eq!(
         cmd(0),
-        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}' --autocompact 300000"
+        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\",\"worktree\":{\"baseRef\":\"head\"}}' --autocompact 300000"
     );
     assert_eq!(
         cmd(1),
@@ -549,7 +549,7 @@ harness = "aider"
     // Resuming builds on the same base.
     assert_eq!(
         crate::sessions::resume_command("claude", &cmd(0), "abc").unwrap(),
-        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}' --autocompact 300000 --resume abc"
+        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\",\"worktree\":{\"baseRef\":\"head\"}}' --autocompact 300000 --resume abc"
     );
 }
 

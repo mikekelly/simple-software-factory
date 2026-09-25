@@ -1439,7 +1439,7 @@ mod tests {
     fn default_commands_are_permission_free() {
         assert_eq!(
             default_command("claude"),
-            "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}'"
+            "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\",\"worktree\":{\"baseRef\":\"head\"}}'"
         );
         assert_eq!(
             default_command("codex"),

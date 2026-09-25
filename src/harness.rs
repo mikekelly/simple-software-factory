@@ -96,7 +96,7 @@ pub static HARNESSES: &[Harness] = &[
         mise_package: "claude",
         command: "claude",
         unattended_flags: Some(
-            "--dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}'",
+            "--dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\",\"worktree\":{\"baseRef\":\"head\"}}'",
         ),
         catalogue: Some(Catalogue {
             model_flag: "--model",
