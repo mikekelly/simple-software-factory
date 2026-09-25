@@ -315,17 +315,34 @@ another conversation (a `/new`, a resume) for events not yet submitted.
 The handshake and the load are the startup probe: only once both work does
 the bridge write `ready.json`. A Grok that no longer speaks what the bridge
 was verified against (grok 1.0.41), a sandbox profile (Grok refuses leader
-mode under one), or no `node` leaves no marker, and the channel then prompts
-the pane as it did before the bridge; `session/grok-bridge.log` in the mailbox
-says why. An event already published and not acknowledged is held rather than
-pasted beside, and a relaunch whose bridge does not attest within 20 seconds
-settles it and submits it through the terminal.
+mode under one), or no `node` leaves no `ready.json`, and the channel then
+prompts the pane as it did before the bridge; `session/grok-bridge.log` in the
+mailbox says why.
+
+The bridge's state is in `bridge.json` (`{"state","pid"}`): the launcher
+writes `starting` with the bridge's pid (or `declined` when it runs Grok
+without one), and the bridge moves it to `ready`, `declined` or `stopped`.
+Events are held only while the bridge is starting (for at most 240 seconds,
+past the bridge's own 120-second wait for the leader) or ready with its pid
+alive. Once it has declined or stopped, or its pid is dead, the daemon settles
+every unacknowledged file: it claims each by renaming it to `<name>.claimed`,
+acknowledges the ones Grok's record already holds (`updates.jsonl` of the
+conversation in `session/grok-session`, under the Grok home the launcher wrote
+to `session/grok-home`), and pastes the rest in order. The bridge in turn
+claims a file by renaming it to `<name>.handed` before it sends it, so a file
+is delivered by one side only; a `.handed` file left by a bridge that died is
+acknowledged if recorded, or pending again.
 
 The launcher continues the conversation the bridge pinned in
 `session/grok-session` with `--resume` unless the command already names one
 (ssf's own `--resume <id>`). Grok leaves a leader running after its last
 client goes, so when the TUI exits the bridge stops it and removes its socket;
 a relaunch starts a fresh leader with the session's current environment.
+A leader left behind anyway (the TUI and bridge killed outright) is stopped by
+the next launch on the same mailbox before it starts its own; for a session
+that is finished, `grok leader list` shows it (`leader-ssf-*.sock`) and
+`grok leader kill` stops it, along with every other leader it finds (so only
+with no Grok session running).
 
 The same state directory holds the [context
 compaction](harnesses.md#context-compaction) overlay an OMP session is started

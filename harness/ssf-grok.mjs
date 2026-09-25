@@ -116,8 +116,28 @@ function ownedByThisProcess() {
 	}
 }
 
+/**
+ * The bridge's state for the daemon: `starting` (written by the launcher),
+ * then `ready`, `declined` or `stopped`. Only a starting or ready bridge
+ * makes the daemon hold events.
+ */
+const marker = path.join(mailbox, "bridge.json");
+function mark(state) {
+	try {
+		if (state === "stopped") {
+			const current = JSON.parse(fs.readFileSync(marker, "utf8"));
+			if (current?.pid !== process.pid) return;
+		}
+		fs.writeFileSync(`${marker}.tmp-${process.pid}`, JSON.stringify({ state, pid: process.pid }), { mode: 0o600 });
+		fs.renameSync(`${marker}.tmp-${process.pid}`, marker);
+	} catch {
+		// The daemon treats a missing marker as no bridge.
+	}
+}
+
 function attest() {
 	if (ownedByThisProcess()) return;
+	mark("ready");
 	fs.mkdirSync(mailbox, { recursive: true, mode: 0o700 });
 	fs.writeFileSync(`${ready}.tmp-${process.pid}`, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
 	fs.renameSync(`${ready}.tmp-${process.pid}`, ready);
@@ -131,6 +151,7 @@ let cleaned = false;
 function cleanup() {
 	if (cleaned) return;
 	cleaned = true;
+	mark("stopped");
 	if (ownedByThisProcess()) {
 		try {
 			fs.unlinkSync(ready);
@@ -221,6 +242,7 @@ function connect() {
 		// leave the pending files to a relaunch, as a gone session does.
 		lost = true;
 		clearInterval(ticker);
+		mark("stopped");
 		if (ownedByThisProcess()) {
 			try {
 				fs.unlinkSync(ready);
@@ -314,6 +336,7 @@ async function main() {
 			// A TUI that refused leader mode (a sandbox profile) never opens the
 			// socket; its events go through the terminal.
 			log("the TUI opened no leader session; not attesting (terminal delivery)");
+			mark("declined");
 			return outlive();
 		}
 		await sleep(TICK);
@@ -330,6 +353,7 @@ async function main() {
 	} catch (e) {
 		// The startup probe: a Grok whose protocol changed is not attested.
 		log(`ACP probe failed, not attesting (terminal delivery): ${e.message}`);
+		mark("declined");
 		agent.removeAllListeners("exit");
 		agent.kill();
 		return outlive();
@@ -355,21 +379,40 @@ async function main() {
 				pin(session);
 				log(`now serving ${session}`);
 			}
-			const pending = fs
-				.readdirSync(mailbox)
-				.filter((name) => name.endsWith(".json") && name !== "ready.json")
-				.sort();
-			for (const name of pending) {
-				const file = path.join(mailbox, name);
-				const owner = handed.get(name) ?? session;
-				if (recorded(owner).has(name)) {
-					fs.renameSync(file, `${file}.ack`);
-					handed.delete(name);
+			// An event is claimed by renaming it to `.handed` before it is sent,
+			// so the daemon's terminal fallback (which claims `.claimed`) and
+			// this bridge never both deliver it.
+			const entries = fs.readdirSync(mailbox).filter((name) => /^\d/.test(name));
+			for (const entry of entries.filter((name) => name.endsWith(".json.handed")).sort()) {
+				const name = entry.slice(0, -".handed".length);
+				if (handed.has(name)) {
+					if (recorded(handed.get(name)).has(name)) {
+						fs.renameSync(path.join(mailbox, entry), path.join(mailbox, `${name}.ack`));
+						handed.delete(name);
+					}
 					continue;
 				}
-				if (handed.has(name)) continue;
+				// Left by an earlier bridge: done if recorded, else pending again.
+				const target = recorded(session).has(name) ? `${name}.ack` : name;
+				try {
+					fs.renameSync(path.join(mailbox, entry), path.join(mailbox, target));
+				} catch {
+					// Claimed by the daemon meanwhile.
+				}
+			}
+			for (const name of entries.filter((name) => name.endsWith(".json")).sort()) {
+				const file = path.join(mailbox, name);
+				if (recorded(session).has(name)) {
+					fs.renameSync(file, `${file}.ack`);
+					continue;
+				}
 				const text = eventText(fs.readFileSync(file, "utf8"));
 				if (text === undefined) continue;
+				try {
+					fs.renameSync(file, `${file}.handed`);
+				} catch {
+					continue;
+				}
 				handed.set(name, session);
 				// Answered when the prompt's turn ends; the record is what counts.
 				request(
@@ -379,7 +422,14 @@ async function main() {
 				).catch((e) => {
 					log(`prompt ${name}: ${e.message}`);
 					// Refused outright: submit it again unless it was recorded.
-					if (!recorded(handed.get(name) ?? session).has(name)) handed.delete(name);
+					if (!recorded(handed.get(name) ?? session).has(name)) {
+						handed.delete(name);
+						try {
+							fs.renameSync(`${file}.handed`, file);
+						} catch {
+							// Already settled.
+						}
+					}
 				});
 			}
 		} catch (e) {

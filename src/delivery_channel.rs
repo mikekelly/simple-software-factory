@@ -345,9 +345,15 @@ pub(crate) fn available(path: &Path) -> bool {
         .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
         .and_then(|ready| ready.get("pid")?.as_i64())
         .and_then(|pid| i32::try_from(pid).ok());
-    let Some(pid) = pid else { return false };
+    pid.is_some_and(alive)
+}
+
+fn alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
     // SAFETY: signal 0 changes no process state; it only checks whether the
-    // extension process named by its own ready marker still exists.
+    // bridge process named by its own marker still exists.
     let result = unsafe { libc::kill(pid, 0) };
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
@@ -374,7 +380,22 @@ fn event_paths(path: &Path, sequence: u64, text: &str) -> (PathBuf, PathBuf) {
 /// the bridge or through the terminal.
 pub(crate) fn has_record(path: &Path, sequence: u64, text: &str) -> bool {
     let (pending, ack) = event_paths(path, sequence, text);
-    pending.exists() || ack.exists()
+    pending.exists() || ack.exists() || claimed(&pending, HANDED) || claimed(&pending, CLAIMED)
+}
+
+/// A pending file the Grok bridge has claimed to submit (`<name>.handed`), and
+/// one the daemon has claimed to settle itself (`<name>.claimed`).  Each side
+/// takes a file only by renaming it from the name the other side also renames
+/// from, so exactly one of them has it.
+const HANDED: &str = "handed";
+const CLAIMED: &str = "claimed";
+
+fn claimed_path(pending: &Path, how: &str) -> PathBuf {
+    PathBuf::from(format!("{}.{how}", pending.display()))
+}
+
+fn claimed(pending: &Path, how: &str) -> bool {
+    claimed_path(pending, how).exists()
 }
 
 /// Another attempt for this event sequence that the harness has not
@@ -383,17 +404,16 @@ pub(crate) fn has_record(path: &Path, sequence: u64, text: &str) -> bool {
 /// publishing beside it would have the session record them twice.
 fn unacknowledged(path: &Path, sequence: u64, here: &Path) -> bool {
     let prefix = format!("{sequence:020}-");
+    let here = here.file_name().map(|n| n.to_string_lossy().into_owned());
     std::fs::read_dir(path)
         .into_iter()
         .flatten()
         .flatten()
-        .map(|entry| entry.path())
-        .any(|candidate| {
-            candidate != here
-                && candidate.extension().is_some_and(|ext| ext == "json")
-                && candidate
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+        .any(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // A file the Grok bridge has claimed is still unrecorded.
+            let stem = name.strip_suffix(".handed").unwrap_or(&name);
+            stem.ends_with(".json") && stem.starts_with(&prefix) && Some(stem) != here.as_deref()
         })
 }
 
@@ -468,7 +488,7 @@ pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<Re
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    if !pending.exists() {
+    if !pending.exists() && !claimed(&pending, HANDED) {
         let stem = pending
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -563,27 +583,157 @@ impl Channel for Mailbox {
     }
 }
 
-/// Any event the mailbox holds that its bridge has not acknowledged.
-fn any_pending(path: &Path) -> bool {
-    std::fs::read_dir(path)
+/// How long a Grok bridge may say it is starting before the daemon stops
+/// waiting for it: its own budget for the TUI's leader and conversation
+/// (120 seconds) and for its two ACP requests (30 each), with room to spare.
+const GROK_BRIDGE_BUDGET: Duration = Duration::from_secs(240);
+
+/// What the Grok bridge says of itself in the mailbox's `bridge.json`, which
+/// the launcher writes `starting` (with the bridge's pid) and the bridge moves
+/// to `ready`, `declined` (its startup probe failed) or `stopped`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrokBridge {
+    /// Attesting to the mailbox: it takes events.
+    Serving,
+    /// A live bridge that has not finished its probe: events wait for it.
+    Starting,
+    /// Declined, stopped, dead, too slow, or never started: nothing will take
+    /// events from the mailbox, so the daemon settles them itself.
+    Gone,
+}
+
+fn grok_bridge_state(mailbox: &Path) -> GrokBridge {
+    if available(mailbox) {
+        return GrokBridge::Serving;
+    }
+    let marker = mailbox.join("bridge.json");
+    let state = std::fs::read(&marker)
+        .ok()
+        .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok());
+    let fresh = std::fs::metadata(&marker)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|at| at.elapsed().ok())
+        .is_some_and(|age| age < GROK_BRIDGE_BUDGET);
+    let Some(state) = state else {
+        return GrokBridge::Gone;
+    };
+    let pid = state
+        .get("pid")
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|pid| i32::try_from(pid).ok());
+    let live = pid.is_some_and(alive);
+    match state.get("state").and_then(serde_json::Value::as_str) {
+        // A ready bridge whose marker went missing repairs it on its next tick.
+        Some("ready") if live => GrokBridge::Starting,
+        Some("starting") if live && fresh => GrokBridge::Starting,
+        _ => GrokBridge::Gone,
+    }
+}
+
+/// Where the session's Grok keeps its conversations: what the launcher
+/// recorded in `session/grok-home`, else what the session would have resolved.
+fn grok_home(mailbox: &Path) -> PathBuf {
+    std::fs::read_to_string(mailbox.join("session/grok-home"))
+        .ok()
+        .map(|home| home.trim().to_owned())
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("GROK_HOME").map(PathBuf::from))
+        .or_else(|| dirs::home_dir().map(|home| home.join(".grok")))
+        .unwrap_or_else(|| PathBuf::from(".grok"))
+}
+
+/// Whether the conversation the bridge pinned records the event the mailbox
+/// file `name` carried: the bridge tags each prompt with it, and Grok keeps
+/// the tag in the conversation's `updates.jsonl`.
+fn grok_recorded(mailbox: &Path, name: &str) -> bool {
+    let Ok(id) = std::fs::read_to_string(mailbox.join("session/grok-session")) else {
+        return false;
+    };
+    let id = id.trim();
+    if id.is_empty() || id.contains(['/', '.']) {
+        return false;
+    }
+    let needle = format!("\"ssfDeliveryId\":\"{name}\"");
+    std::fs::read_dir(grok_home(mailbox).join("sessions"))
         .into_iter()
         .flatten()
         .flatten()
-        .any(|entry| {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            name.ends_with(".json") && name != "ready.json" && !name.starts_with('.')
+        .map(|group| group.path().join(id).join("updates.jsonl"))
+        .filter_map(|file| std::fs::read_to_string(file).ok())
+        .any(|updates| updates.contains(&needle))
+}
+
+/// Settle every event a Grok mailbox holds that no bridge will take: each is
+/// claimed (renamed to `.claimed`, so a bridge that comes up late cannot also
+/// submit it), acknowledged when the conversation already records it, and
+/// otherwise pasted -- except an attempt at `sequence` itself, whose events
+/// `text` carries again.  Says whether the conversation records `text`'s own
+/// file, which then needs no paste either.
+async fn settle_grok(
+    herdr: &Herdr,
+    pane: &str,
+    mailbox: &Path,
+    sequence: u64,
+    text: &str,
+) -> Result<bool> {
+    let (own, own_ack) = event_paths(mailbox, sequence, text);
+    let own = own.file_name().map(|n| n.to_string_lossy().into_owned());
+    let prefix = format!("{sequence:020}-");
+    let mut names: Vec<(String, String)> = std::fs::read_dir(mailbox)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            let stem = file.strip_suffix(".handed").unwrap_or(&file).to_owned();
+            let event =
+                stem.ends_with(".json") && stem.as_bytes().first().is_some_and(u8::is_ascii_digit);
+            event.then_some((stem, file))
         })
+        .collect();
+    names.sort();
+    let mut recorded = own_ack.exists();
+    for (stem, file) in names {
+        let from = mailbox.join(&file);
+        let claim = mailbox.join(format!("{stem}.{CLAIMED}"));
+        if std::fs::rename(&from, &claim).is_err() {
+            // Taken by someone else meanwhile.
+            continue;
+        }
+        let ack = mailbox.join(format!("{stem}.ack"));
+        if grok_recorded(mailbox, &stem) {
+            recorded |= Some(&stem) == own.as_ref();
+        } else if !stem.starts_with(&prefix) {
+            let body = std::fs::read(&claim).unwrap_or_default();
+            let earlier = serde_json::from_slice::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("text")?.as_str().map(str::to_owned));
+            if let Some(earlier) = earlier {
+                let sent = crate::herdr::Terminal
+                    .deliver(herdr, pane, None, &earlier)
+                    .await;
+                if let Err(e) = sent {
+                    // Back to pending, for the next attempt.
+                    let _ = std::fs::rename(&claim, &from);
+                    return Err(e);
+                }
+            }
+        }
+        std::fs::rename(&claim, &ack).with_context(|| format!("settling {}", claim.display()))?;
+    }
+    Ok(recorded)
 }
 
 /// Grok's channel: the mailbox while its sidecar bridge attests to it, the
 /// terminal otherwise.  The bridge attests only once its ACP handshake and
 /// session load have worked, so a Grok it cannot drive -- a protocol that
 /// changed, a sandbox profile that refuses leader mode, no node -- keeps the
-/// paste delivery it had before the bridge.  An event already published and
-/// not acknowledged is the exception: pasting beside it could put it in the
-/// conversation twice, so the mailbox holds it for the relaunch to settle, as
-/// it does for OMP and Pi.
+/// paste delivery it had before the bridge.  Events wait while a bridge is
+/// starting; once none is serving, those still in the mailbox are settled
+/// against the conversation's record and the rest are pasted, so nothing
+/// stalls there and nothing is submitted twice.
 pub(crate) struct Grok;
 
 impl Channel for Grok {
@@ -599,11 +749,21 @@ impl Channel for Grok {
         text: &'a str,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            match journal {
-                Some((mailbox, _)) if available(mailbox) || any_pending(mailbox) => {
-                    Mailbox.deliver(herdr, pane, journal, text).await
+            let Some((mailbox, sequence)) = journal else {
+                return crate::herdr::Terminal
+                    .deliver(herdr, pane, None, text)
+                    .await;
+            };
+            match grok_bridge_state(mailbox) {
+                GrokBridge::Serving => Mailbox.deliver(herdr, pane, journal, text).await,
+                GrokBridge::Starting => Err(DeliveryUnavailable {
+                    mailbox: mailbox.to_path_buf(),
                 }
-                _ => {
+                .into()),
+                GrokBridge::Gone => {
+                    if settle_grok(herdr, pane, mailbox, sequence, text).await? {
+                        return Ok(());
+                    }
                     crate::herdr::Terminal
                         .deliver(herdr, pane, None, text)
                         .await
@@ -616,10 +776,9 @@ impl Channel for Grok {
         has_record(mailbox, sequence, text)
     }
 
-    /// [`Mailbox`]'s relaunch while the relaunched session's bridge comes up.
-    /// One that does not attest leaves the event to the terminal, and its file
-    /// is settled first, so that no later attempt waits on a bridge that is
-    /// not coming.
+    /// [`Mailbox`]'s relaunch once the relaunched session's bridge serves.
+    /// One that declines, dies or outlasts its budget leaves the events to the
+    /// terminal, settled first against the conversation's record.
     fn relaunched<'a>(
         &'a self,
         herdr: &'a Herdr,
@@ -634,20 +793,17 @@ impl Channel for Grok {
                 return Ok(false);
             };
             let started = Instant::now();
-            while !available(mailbox) && started.elapsed() < BRIDGE_START_TIMEOUT {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+            while grok_bridge_state(mailbox) == GrokBridge::Starting
+                && started.elapsed() < GROK_BRIDGE_BUDGET
+            {
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            if available(mailbox) {
+            if grok_bridge_state(mailbox) == GrokBridge::Serving {
                 return Mailbox
                     .relaunched(herdr, pane, journal, recorded, resumed, text)
                     .await;
             }
-            let (pending, ack) = event_paths(mailbox, sequence, text);
-            if pending.exists() {
-                std::fs::rename(&pending, &ack)
-                    .with_context(|| format!("settling {}", pending.display()))?;
-            }
-            Ok(false)
+            settle_grok(herdr, pane, mailbox, sequence, text).await
         })
     }
 }

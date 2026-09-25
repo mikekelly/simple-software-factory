@@ -237,7 +237,7 @@ a capability ssf assumes:
 | `claude` | the bypass-permissions flag and the inline `--settings '{"crossSessionInbound":"accept"}'` | without them the session cannot take later item activity natively and falls back to the terminal |
 | `pi`, `omp` | `"$SSF_PI_LAUNCHER" pi\|omp ... -e "$SSF_PI_BRIDGE"` | the launcher isolates and resumes the session, the extension is the item-activity channel; without it `ssf doctor` asks for the session to be restarted after the command is fixed |
 | `opencode` | `"$SSF_PI_LAUNCHER" opencode ...` | the launcher loads the delivery plugin named by `SSF_OPENCODE_BRIDGE` and continues the mailbox's conversation (`--session`); without it later activity is held rather than pasted |
-| `grok` | `"$SSF_PI_LAUNCHER" grok ...` | the launcher starts the TUI in leader mode with the ACP delivery bridge named by `SSF_GROK_BRIDGE` beside it and continues the mailbox's conversation (`--resume`); without it later activity is pasted into the terminal |
+| `grok` | `"$SSF_PI_LAUNCHER" grok ...` | the launcher starts the TUI in leader mode with the ACP delivery bridge named by `SSF_GROK_BRIDGE` beside it and continues the mailbox's conversation (`--resume`); without it, or once the bridge has declined or stopped, later activity is pasted into the terminal after Grok's record is checked for it |
 | `omp` | `PI_STREAM_IDLE_TIMEOUT_MS=900000` | the longer stream-idle window suits long agentic turns; the default sets it and a custom command replaces the whole default |
 | any | no `--model` or effort flag of its own | ssf appends those from `repo.model` and `repo.effort` |
 

@@ -10,8 +10,12 @@ async fn wait_for_pending(mailbox: &std::path::Path, sequence: u64) -> std::path
     loop {
         for entry in std::fs::read_dir(mailbox).unwrap().flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            // An event the harness recorded at once is already acknowledged.
-            if let Some(stem) = name.strip_suffix(".ack").or(Some(&name))
+            // An event the harness recorded at once is already acknowledged,
+            // and one the Grok bridge is sending is claimed as `.handed`.
+            if let Some(stem) = name
+                .strip_suffix(".ack")
+                .or(name.strip_suffix(".handed"))
+                .or(Some(&name))
                 && name.starts_with(&prefix)
                 && stem.ends_with(".json")
             {
@@ -241,10 +245,17 @@ esac
         "[ssf] bridged"
     ));
 
-    // The bridge went away with that event unrecorded: the next one is held,
-    // not pasted.
+    // A bridge still starting (a relaunch): events wait for it.
     std::fs::remove_file(mailbox.join("ready.json")).unwrap();
     std::fs::remove_file(base.join("calls")).unwrap();
+    let marker = |state: &str, pid: u32| {
+        std::fs::write(
+            mailbox.join("bridge.json"),
+            format!("{{\"state\":\"{state}\",\"pid\":{pid}}}"),
+        )
+        .unwrap();
+    };
+    marker("starting", std::process::id());
     let held = h
         .deliver("w7", Some("w7:p1"), &relaunch(3), "[ssf] later")
         .await
@@ -256,6 +267,73 @@ esac
     );
     let calls = std::fs::read_to_string(base.join("calls")).unwrap_or_default();
     assert!(!calls.contains("agent prompt"), "{calls}");
+
+    // The bridge stopped with event 2 unrecorded: it is pasted, then the new
+    // one, and nothing is left for a bridge that is not coming.
+    marker("stopped", std::process::id());
+    h.deliver("w7", Some("w7:p1"), &relaunch(3), "[ssf] later")
+        .await
+        .unwrap();
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    let bridged = calls.find("[ssf] bridged").expect(&calls);
+    let later = calls.find("[ssf] later").expect(&calls);
+    assert!(bridged < later, "{calls}");
+    let left: Vec<_> = std::fs::read_dir(&mailbox)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with('0') && !name.ends_with(".ack"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+
+    // An event the conversation already records is acknowledged, not pasted
+    // again, when the bridge declines before acknowledging it (a dead pid is
+    // the same).
+    std::fs::write(
+        mailbox.join("ready.json"),
+        format!("{{\"pid\":{}}}", std::process::id()),
+    )
+    .unwrap();
+    h.deliver("w7", Some("w7:p1"), &relaunch(4), "[ssf] recorded")
+        .await
+        .unwrap();
+    let name = std::fs::read_dir(&mailbox)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|name| name.starts_with("00000000000000000004-") && name.ends_with(".json"))
+        .unwrap();
+    std::fs::remove_file(mailbox.join("ready.json")).unwrap();
+    let home = base.join("grok-home");
+    let conversation = home.join("sessions/%2Fwork/0190-abc");
+    std::fs::create_dir_all(&conversation).unwrap();
+    std::fs::write(
+        conversation.join("updates.jsonl"),
+        format!(
+            "{{\"update\":{{\"sessionUpdate\":\"user_message_chunk\",\"content\":{{\"type\":\"text\",\"text\":\"[ssf] recorded\",\"_meta\":{{\"ssfDeliveryId\":\"{name}\"}}}}}}}}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(mailbox.join("session")).unwrap();
+    std::fs::write(mailbox.join("session/grok-session"), "0190-abc\n").unwrap();
+    std::fs::write(
+        mailbox.join("session/grok-home"),
+        format!("{}\n", home.display()),
+    )
+    .unwrap();
+    marker("declined", std::process::id());
+    std::fs::remove_file(base.join("calls")).unwrap();
+    h.deliver("w7", Some("w7:p1"), &relaunch(5), "[ssf] fifth")
+        .await
+        .unwrap();
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(calls.contains("[ssf] fifth"), "{calls}");
+    assert!(
+        !calls.contains("[ssf] recorded"),
+        "a recorded event was pasted again: {calls}"
+    );
+    assert!(mailbox.join(format!("{name}.ack")).is_file());
+    assert!(!mailbox.join(&name).exists());
     std::fs::remove_dir_all(base).unwrap();
 }
 
