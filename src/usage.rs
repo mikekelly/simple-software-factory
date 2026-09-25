@@ -584,9 +584,13 @@ fn account_words(account: &Account, named: bool) -> Vec<String> {
                 .as_deref()
                 .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
                 .map(|t| {
+                    // A weekly reset days away needs its day, not just its time.
+                    let far =
+                        t.signed_duration_since(chrono::Utc::now()) > chrono::Duration::hours(24);
+                    let format = if far { "%a %H:%M" } else { "%H:%M" };
                     format!(
                         " (resets {})",
-                        t.with_timezone(&chrono::Local).format("%H:%M")
+                        t.with_timezone(&chrono::Local).format(format)
                     )
                 })
                 .unwrap_or_default();

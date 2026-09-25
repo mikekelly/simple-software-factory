@@ -1405,7 +1405,10 @@
   function clock(iso) {
     const at = new Date(iso);
     if (Number.isNaN(at.getTime())) return null;
-    return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    // A weekly reset days away needs its day, not just its time.
+    if (at.getTime() - Date.now() <= 24 * 3600 * 1000) return time;
+    return `${at.toLocaleDateString([], { weekday: "short" })} ${time}`;
   }
 
   globalThis.ssfWrites = {
