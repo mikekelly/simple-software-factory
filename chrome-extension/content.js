@@ -1494,6 +1494,15 @@
       );
     }
     if (factory.warning) lines.push(factory.warning);
+    // The daemon's cached doctor run (#513), one compact line with each
+    // message in its hover.
+    const doctor = factory.doctorWarnings ?? [];
+    if (doctor.length) {
+      lines.push({
+        text: `${doctor.length} doctor warning${doctor.length === 1 ? "" : "s"}`,
+        title: doctor.map((one) => `${String(one.level).toUpperCase()} ${one.message}`).join("\n"),
+      });
+    }
     // The daemon's last error names the repository whose pass failed
     // (`owner/name: …`); another repository's error, or one naming none (a
     // driver, which `warning` already reports), is not this page's.
@@ -1596,7 +1605,10 @@
         const row =
           typeof line === "string"
             ? element("div", "ssf-also", line)
-            : hudRow(line.id, null, line.text);
+            : line.id
+              ? hudRow(line.id, null, line.text)
+              : element("div", "ssf-also", line.text);
+        if (line.title) row.title = line.title;
         if (label) row.append(element("span", "ssf-when", ` (${factory.label})`));
         warnings.push(row);
       }

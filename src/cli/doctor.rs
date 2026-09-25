@@ -1,10 +1,66 @@
 use super::prelude::*;
 use super::*;
+use serde_json::{Value, json};
+use std::time::Duration;
 
-pub(super) async fn doctor() -> Result<()> {
+/// Where every doctor line goes: printed as text, or, with `--json`,
+/// collected and printed as one JSON object at the end.
+static JSON_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RECORDED: std::sync::Mutex<Vec<Value>> = std::sync::Mutex::new(Vec::new());
+
+#[derive(Clone, Copy)]
+pub(super) enum Level {
+    Ok,
+    Fail,
+    Warn,
+    Note,
+}
+
+impl Level {
+    fn word(self) -> &'static str {
+        match self {
+            Level::Ok => "ok",
+            Level::Fail => "fail",
+            Level::Warn => "warn",
+            Level::Note => "note",
+        }
+    }
+    fn prefix(self) -> &'static str {
+        match self {
+            Level::Ok => "ok  ",
+            Level::Fail => "FAIL",
+            Level::Warn => "WARN",
+            Level::Note => "note",
+        }
+    }
+}
+
+/// Record one doctor line.
+pub(super) fn record(level: Level, msg: impl Into<String>) {
+    let msg = msg.into();
+    if JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        RECORDED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(check_json(level, &msg));
+    } else {
+        println!("{} {}", level.prefix(), msg);
+    }
+}
+
+fn check_json(level: Level, msg: &str) -> Value {
+    json!({"level": level.word(), "message": msg})
+}
+
+fn report_json(problems: usize, checks: Vec<Value>) -> Value {
+    json!({"problems": problems, "checks": checks})
+}
+
+pub(super) async fn doctor(json_out: bool) -> Result<()> {
+    JSON_MODE.store(json_out, std::sync::atomic::Ordering::Relaxed);
     let problems = std::cell::Cell::new(0);
     let check = |ok: bool, msg: String| {
-        println!("{} {}", if ok { "ok  " } else { "FAIL" }, msg);
+        record(if ok { Level::Ok } else { Level::Fail }, msg);
         if !ok {
             problems.set(problems.get() + 1);
         }
@@ -132,7 +188,10 @@ pub(super) async fn doctor() -> Result<()> {
     }
     let retired = cfg.retired_keys();
     for (key, why) in retired {
-        println!("note {key} in config.toml no longer does anything: {why}; remove the line");
+        record(
+            Level::Note,
+            format!("{key} in config.toml no longer does anything: {why}; remove the line"),
+        );
     }
     let state = state::State::load().unwrap_or_default();
     // Harnesses no repository is configured with, because an item was
@@ -174,13 +233,14 @@ pub(super) async fn doctor() -> Result<()> {
                     login::how_to_sign_in(h)
                 ),
             ),
-            login::LoginState::Unknown => {
-                println!(
-                    "note {name}: cannot tell whether it is signed in {place} ({}{})",
+            login::LoginState::Unknown => record(
+                Level::Note,
+                format!(
+                    "{name}: cannot tell whether it is signed in {place} ({}{})",
                     probe.detail,
                     used_by(h)
-                )
-            }
+                ),
+            ),
         }
     }
     // In the guest: the data disk and the memory, which only show from
@@ -206,7 +266,7 @@ pub(super) async fn doctor() -> Result<()> {
                     }
                 ),
             ),
-            Err(e) => println!("note data disk: {e:#}"),
+            Err(e) => record(Level::Note, format!("data disk: {e:#}")),
         }
         if let Some(m) = std::fs::read_to_string("/proc/meminfo")
             .ok()
@@ -245,7 +305,10 @@ pub(super) async fn doctor() -> Result<()> {
             true
         }
         Err(e) => {
-            println!("note the daemon is not answering (`ssf sub|unsub` need it): {e:#}");
+            record(
+                Level::Note,
+                format!("the daemon is not answering (`ssf sub|unsub` need it): {e:#}"),
+            );
             false
         }
     };
@@ -337,7 +400,10 @@ pub(super) async fn doctor() -> Result<()> {
             Some((list, source)) => {
                 let l = allow::AllowList::new(&bot, list.iter().map(String::as_str), source);
                 if l.is_anyone() {
-                    println!("WARN {}: allowed users: {}", r.name, l.describe());
+                    record(
+                        Level::Warn,
+                        format!("{}: allowed users: {}", r.name, l.describe()),
+                    );
                 } else {
                     check(true, format!("{}: allowed users: {}", r.name, l.describe()));
                 }
@@ -585,9 +651,12 @@ pub(super) async fn doctor() -> Result<()> {
                 ),
             ),
             Some(root) => match release::held_work(&root, r.base_branch.as_deref()).await {
-                Err(e) => println!(
-                    "note {}: worktrees of {} could not be checked: {e:#}",
-                    r.name, root
+                Err(e) => record(
+                    Level::Note,
+                    format!(
+                        "{}: worktrees of {} could not be checked: {e:#}",
+                        r.name, root
+                    ),
                 ),
                 Ok(report) => {
                     let stale = match &report.fetch_error {
@@ -658,8 +727,8 @@ pub(super) async fn doctor() -> Result<()> {
                             },
                         );
                     } else {
-                        println!(
-                            "WARN {}: {} of {total} worktree{} under {} hold{} work only it has (commits on no other branch and not on origin, uncommitted changes, a stash), with no agent on it{stale}:",
+                        let mut msg = format!(
+                            "{}: {} of {total} worktree{} under {} hold{} work only it has (commits on no other branch and not on origin, uncommitted changes, a stash), with no agent on it{stale}:",
                             r.name,
                             stranded.len(),
                             plural(total),
@@ -667,25 +736,26 @@ pub(super) async fn doctor() -> Result<()> {
                             if stranded.len() == 1 { "s" } else { "" }
                         );
                         for (line, _) in &stranded {
-                            println!("              - {line}");
+                            msg.push_str(&format!("\n              - {line}"));
                         }
                         // What to do depends on the item: a comment reaches
                         // an active one and its session is started again in
                         // the checkout; a retired one gets nothing, so its
                         // branch is pushed by hand.
                         if stranded.iter().any(|(_, active)| *active) {
-                            println!(
-                                "              an active item: comment on it (`gh issue comment <n> --body \"...\"`) and its session is started again in that checkout"
+                            msg.push_str(
+                                "\n              an active item: comment on it (`gh issue comment <n> --body \"...\"`) and its session is started again in that checkout",
                             );
                         }
                         if stranded.iter().any(|(_, active)| !*active) {
-                            println!(
-                                "              a retired item, or none: push the branch by hand (`git -C <checkout> push -u origin <branch>`), or look and decide"
+                            msg.push_str(
+                                "\n              a retired item, or none: push the branch by hand (`git -C <checkout> push -u origin <branch>`), or look and decide",
                             );
                         }
-                        println!(
-                            "              `ssf purge --force` or removing the directory loses the uncommitted changes and leaves the commits on a local branch nothing lists (a detached HEAD's go too)"
+                        msg.push_str(
+                            "\n              `ssf purge --force` or removing the directory loses the uncommitted changes and leaves the commits on a local branch nothing lists (a detached HEAD's go too)",
                         );
+                        record(Level::Warn, msg);
                     }
                 }
             },
@@ -859,15 +929,18 @@ pub(super) async fn doctor() -> Result<()> {
     // VM on.
     if reports_backend_tooling(factory_vm::in_guest()) {
         let vm = factory_vm::Vm::new(&cfg);
-        println!(
-            "note {} backend: {}{}",
-            vm.backend(),
-            vm.tooling().detail,
-            if cfg.vm.enabled {
-                ""
-            } else {
-                "; [vm] enabled is false, so nothing here needs it until you turn the VM on"
-            }
+        record(
+            Level::Note,
+            format!(
+                "{} backend: {}{}",
+                vm.backend(),
+                vm.tooling().detail,
+                if cfg.vm.enabled {
+                    ""
+                } else {
+                    "; [vm] enabled is false, so nothing here needs it until you turn the VM on"
+                }
+            ),
         );
     }
     // The desktop integration lives on the host; inside the guest there is
@@ -880,9 +953,12 @@ pub(super) async fn doctor() -> Result<()> {
     // the host prints the note itself before forwarding this command
     // (`cli::client`).
     if factory_vm::in_guest() {
-        println!("note superseded bar widget: checked on the host, not inside the VM");
+        record(
+            Level::Note,
+            "superseded bar widget: checked on the host, not inside the VM",
+        );
     } else if let Some(note) = factory_ui::superseded_widget_note() {
-        println!("note {note}");
+        record(Level::Note, note);
     }
     check(
         true,
@@ -891,11 +967,86 @@ pub(super) async fn doctor() -> Result<()> {
             cfg.projects_dir(cfg.default_driver()).display()
         ),
     );
+    if json_out {
+        let checks = std::mem::take(&mut *RECORDED.lock().unwrap_or_else(|e| e.into_inner()));
+        println!("{}", report_json(problems.get(), checks));
+    }
     if problems.get() > 0 {
         bail!("{} problem(s) found", problems.get());
     }
-    println!("all good");
+    if !json_out {
+        println!("all good");
+    }
     Ok(())
+}
+
+/// Run `ssf doctor --json` in a child process of this daemon about 30s
+/// after start and then every 15 minutes, and keep the latest report in
+/// the state directory for `ssf status --json` (`status::doctor_summary`).
+/// A child process keeps doctor's blocking probes, and its IPC ping of
+/// this daemon, off the daemon's own loop.
+pub(super) async fn cache_loop() {
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    loop {
+        let mut report = run_cached_doctor().await;
+        report["checked_at"] = json!(chrono::Utc::now().to_rfc3339());
+        let path = status::doctor_cache_path();
+        let written = serde_json::to_vec(&report)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| {
+                let tmp = path.with_extension("json.tmp");
+                std::fs::write(&tmp, bytes)?;
+                std::fs::rename(&tmp, &path)?;
+                Ok(())
+            });
+        if let Err(e) = written {
+            tracing::warn!("storing the doctor report at {}: {e:#}", path.display());
+        }
+        tokio::time::sleep(Duration::from_secs(15 * 60)).await;
+    }
+}
+
+async fn run_cached_doctor() -> Value {
+    let fail = |msg: String| report_json(1, vec![check_json(Level::Fail, &msg)]);
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return fail(format!("doctor could not run: locating ssf-server: {e}")),
+    };
+    // A named target's daemon keeps its config and state dirs in-process;
+    // the child must be told them, as the dashboard's own children are.
+    let context = || -> Result<_> {
+        Ok((
+            server_catalog::selected_vm_context()?,
+            server_catalog::selected_target_identity()?,
+        ))
+    };
+    let (vm, identity) = match context() {
+        Ok(c) => c,
+        Err(e) => return fail(format!("doctor could not run: {e:#}")),
+    };
+    let mut command = crate::dashboard_transport::local_client_command(
+        &exe,
+        &["doctor", "--json"],
+        server_catalog::service_local_context(),
+        vm.as_ref(),
+        identity.as_ref(),
+    );
+    command
+        // Same binary: there is no client/server version pair to compare.
+        .env(VERSION_REPORTED_ENV, "1")
+        .env_remove(CLIENT_VERSION_ENV)
+        .stderr(std::process::Stdio::null());
+    match tokio::time::timeout(Duration::from_secs(300), command.output()).await {
+        Err(_) => fail("doctor did not finish within 300s".into()),
+        Ok(Err(e)) => fail(format!("doctor could not run: {e}")),
+        Ok(Ok(out)) => parse_doctor_output(&out.stdout)
+            .unwrap_or_else(|| fail(format!("doctor printed no report (exit {})", out.status))),
+    }
+}
+
+fn parse_doctor_output(stdout: &[u8]) -> Option<Value> {
+    let v: Value = serde_json::from_slice(stdout).ok()?;
+    (v.get("problems")?.is_u64() && v.get("checks")?.is_array()).then_some(v)
 }
 
 /// The harnesses no repository is configured with but an item is pinned
@@ -962,18 +1113,27 @@ pub(super) fn report_versions(
         .unwrap_or_else(|| "server version".into());
     match version_compatibility(client, server_version) {
         VersionCompatibility::Exact => {
-            println!("ok   client version {client}; {server} {server_version}");
+            record(
+                Level::Ok,
+                format!("client version {client}; {server} {server_version}"),
+            );
             false
         }
         VersionCompatibility::Patch => {
-            println!(
-                "WARN client version {client}; {server} {server_version}; patch-level differences are compatible, but update the client or server to the same release and restart the server"
+            record(
+                Level::Warn,
+                format!(
+                    "client version {client}; {server} {server_version}; patch-level differences are compatible, but update the client or server to the same release and restart the server"
+                ),
             );
             false
         }
         VersionCompatibility::Incompatible => {
-            println!(
-                "FAIL client version {client}; {server} {server_version}; update the client or server to the same release and restart the server (or run `ssf vm restart` for a VM)"
+            record(
+                Level::Fail,
+                format!(
+                    "client version {client}; {server} {server_version}; update the client or server to the same release and restart the server (or run `ssf vm restart` for a VM)"
+                ),
             );
             true
         }
@@ -1060,6 +1220,33 @@ pub(super) fn which(bin: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+
+    #[test]
+    fn json_report_has_problems_and_leveled_checks() {
+        let report = report_json(
+            1,
+            vec![
+                check_json(Level::Ok, "fine"),
+                check_json(Level::Fail, "broken"),
+                check_json(Level::Warn, "odd"),
+                check_json(Level::Note, "fyi"),
+            ],
+        );
+        assert_eq!(
+            report,
+            json!({"problems": 1, "checks": [
+                {"level": "ok", "message": "fine"},
+                {"level": "fail", "message": "broken"},
+                {"level": "warn", "message": "odd"},
+                {"level": "note", "message": "fyi"},
+            ]})
+        );
+        assert_eq!(
+            parse_doctor_output(report.to_string().as_bytes()),
+            Some(report)
+        );
+        assert_eq!(parse_doctor_output(b"ok   not json"), None);
+    }
 
     #[test]
     fn exact_versions_are_healthy_and_patch_differences_are_warnings() {

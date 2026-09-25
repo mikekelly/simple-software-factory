@@ -12,7 +12,14 @@ to the driver. The top level carries `server`, `bot_login`,
 `anyone_allowed` (the
 wildcard allow-list is in effect somewhere; the dashboards warn while it is),
 `blocked_sessions` (the ids of sessions whose harness is not signed in),
-`driver`, `sessions`, `repos` and the derived `dashboard` presentation.
+`driver`, `doctor`, `sessions`, `repos` and the derived `dashboard` presentation.
+
+`doctor` is the daemon's latest cached `ssf doctor --json` run (about 30
+seconds after the daemon starts, then every 15 minutes, in a child process
+with a 300-second limit, kept in `doctor.json` in the state directory):
+`checked_at` (RFC 3339), `problems` and `warnings`, the run's `fail` and `warn`
+entries (`level`, `message`). It is `null` before the first run. A run that
+cannot start, times out or prints no report is one `fail` entry.
 
 `daemon_reachable` is whether something answers on the factory's Unix socket
 (`ssf.sock`), and is the field that says whether the factory is running;

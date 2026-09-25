@@ -96,6 +96,8 @@ function payload() {
       lastError: entry.snapshot?.last_error ?? null,
       blocked: entry.snapshot?.blocked ?? [],
       released: entry.snapshot?.released ?? [],
+      /// The daemon's cached doctor run (#513): its fail and warn entries.
+      doctorWarnings: entry.snapshot?.doctor?.warnings ?? [],
     })),
   };
 }

@@ -398,7 +398,9 @@ scratch sessions (`ssf scratch`) and its item sessions with an agent, with a
 in order:
 
 - **Warnings**: the factory's own warning (unreachable, driver down, stale),
-  the daemon's last error, a factory the extension cannot reach, and each item
+  the daemon's last error, a factory the extension cannot reach, a compact
+  **N doctor warnings** line (from the daemon's cached `ssf doctor` run; hover
+  it for the messages), and each item
   in the repository whose harness is not signed in. Left out when there is
   none.
 - **Active sessions**: each issue or pull request with an agent, linked, with

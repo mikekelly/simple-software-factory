@@ -25,5 +25,6 @@ pub(super) async fn run_factory(cfg: Config, once: bool) -> Result<()> {
         engine.tick().await;
         return Ok(());
     }
+    tokio::spawn(super::doctor::cache_loop());
     engine.run_forever().await
 }
