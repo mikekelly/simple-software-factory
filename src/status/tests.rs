@@ -257,7 +257,8 @@ fn peers_table_lists_each_session_with_its_facts() {
     let s = sessions(&cfg(), &st, Some(&ws));
     let text = render_peers(&s, Some("acme/widgets#1"));
     assert!(text.starts_with("acme/widgets\n"));
-    assert!(text.contains("#1     issue open    done"), "{text}");
+    // herdr's `done` is an agent that ended its turn: shown as idle (#510).
+    assert!(text.contains("#1     issue open    idle"), "{text}");
     assert!(text.contains("Item 1 (you)"), "{text}");
     assert!(
         text.contains("branch bot/issue-1  ·  column in-progress  ·  via assigned  ·  prompts 2"),

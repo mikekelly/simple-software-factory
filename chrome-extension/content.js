@@ -270,7 +270,8 @@
     working: { label: "Working", kind: "working" },
     idle: { label: "Waiting on you", kind: "waiting" },
     blocked: { label: "Waiting on you", kind: "waiting" },
-    done: { label: "Done", kind: "done" },
+    // An older ssf still reports herdr's `done`: an agent that ended its turn (#510).
+    done: { label: "Waiting on you", kind: "waiting" },
     "no-agent": { label: "Problem", kind: "problem" },
     "no-workspace": { label: "Problem", kind: "problem" },
     unknown: { label: "Problem", kind: "problem" },
