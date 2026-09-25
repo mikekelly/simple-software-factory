@@ -525,6 +525,52 @@ fn grok_subagent(path: &Path) -> bool {
         .is_some_and(|s| s["session_kind"] == "subagent")
 }
 
+/// How full a Grok session's context is, as its byline shows it
+/// (`5% of 500k`): Grok gives the commands it runs its session as
+/// `GROK_SESSION_ID`, and the session's `signals.json` holds
+/// `contextTokensUsed` and `contextWindowTokens` (grok 1.0.41). A subagent's
+/// commands carry the subagent's own session, so its parent's context is
+/// shown: the conversation's, not the helper's. `None` whenever any of that
+/// is missing.
+pub fn grok_context() -> Option<String> {
+    let id = std::env::var("GROK_SESSION_ID").ok()?;
+    grok_context_in(&grok_root(), &id)
+}
+
+fn grok_context_in(root: &Path, id: &str) -> Option<String> {
+    if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+        return None;
+    }
+    let group = std::fs::read_dir(root.join("sessions"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|g| g.join(id).is_dir())?;
+    let session = grok_parent(&group, id).unwrap_or_else(|| group.join(id));
+    let signals: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(session.join("signals.json")).ok()?).ok()?;
+    let used = signals.get("contextTokensUsed")?.as_u64()?;
+    let window = signals.get("contextWindowTokens")?.as_u64()?;
+    if used == 0 || window == 0 {
+        return None;
+    }
+    Some(format!(
+        "{}% of {}",
+        (used * 100 / window).min(100),
+        crate::models::token_size(window)
+    ))
+}
+
+/// The session in `group` that spawned subagent session `id`, by its
+/// `subagents/<id>/meta.json`; `None` for a top-level session.
+fn grok_parent(group: &Path, id: &str) -> Option<PathBuf> {
+    std::fs::read_dir(group)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|s| s.join("subagents").join(id).join("meta.json").is_file())
+}
+
 /// The newest top-level Grok session started in `cwd` and changed at or
 /// after `since`; a subagent's child session is never the conversation.
 fn capture_grok(root: &Path, cwd: &str, since: SystemTime, exclude: &[String]) -> Option<String> {
@@ -850,6 +896,44 @@ mod tests {
         );
         assert_eq!(percent_decode("%2Fa%2fb-c"), Some("/a/b-c".into()));
         assert_eq!(percent_decode("bad%2"), None);
+    }
+
+    #[test]
+    fn grok_context_is_the_sessions_signals() {
+        let sandbox = crate::config::test_support::sandbox();
+        let root = sandbox.root();
+        let group = root.join("sessions/%2Fwork%2Frepo");
+        let parent = "019a0000-0000-7000-8000-000000000001";
+        let child = "019a0000-0000-7000-8000-000000000002";
+        for id in [parent, child] {
+            std::fs::create_dir_all(group.join(id)).unwrap();
+        }
+        std::fs::write(
+            group.join(parent).join("signals.json"),
+            r#"{"contextTokensUsed":26363,"contextWindowTokens":500000,"compactionCount":0}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            group.join(child).join("signals.json"),
+            r#"{"contextTokensUsed":400000,"contextWindowTokens":500000}"#,
+        )
+        .unwrap();
+        // Before the parent names the child, the child answers for itself.
+        assert_eq!(grok_context_in(root, child).as_deref(), Some("80% of 500k"));
+        let meta = group.join(parent).join("subagents").join(child);
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("meta.json"), "{}").unwrap();
+        assert_eq!(grok_context_in(root, parent).as_deref(), Some("5% of 500k"));
+        assert_eq!(grok_context_in(root, child).as_deref(), Some("5% of 500k"));
+        assert_eq!(grok_context_in(root, "missing-session"), None);
+        assert_eq!(grok_context_in(root, "../x"), None);
+        assert_eq!(grok_context_in(root, ""), None);
+        std::fs::write(
+            group.join(parent).join("signals.json"),
+            r#"{"contextTokensUsed":0,"contextWindowTokens":500000}"#,
+        )
+        .unwrap();
+        assert_eq!(grok_context_in(root, parent), None);
     }
 
     #[test]

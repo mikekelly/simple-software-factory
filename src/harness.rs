@@ -311,14 +311,14 @@ pub static HARNESSES: &[Harness] = &[
             list_models: Some(("grok models", models::grok_models)),
             refresh: None,
         }),
-        auto_compaction: None,
+        auto_compaction: Some(Compaction::Percent),
         login_phrases: &[
             "approve in your browser to finish signing in",
             "waiting for approval",
         ],
         api_key_vars: &["XAI_API_KEY"],
         reads_transcript: true,
-        context: None,
+        context: Some(crate::sessions::grok_context),
         channel: &Terminal,
     },
     Harness {
@@ -360,7 +360,7 @@ mod tests {
     /// The membership the separate tables had before they were one: the
     /// agents and sign-in lists named all nine, the model table all but
     /// crush, compaction three and transcripts two; grok has since gained a
-    /// transcript reader.
+    /// transcript reader, a compaction threshold and a context reader (#508).
     #[test]
     fn membership_matches_the_tables_it_replaced() {
         let all = [
@@ -378,12 +378,12 @@ mod tests {
         );
         assert_eq!(
             ids(|h| h.auto_compaction.is_some()),
-            ["claude", "codex", "omp"]
+            ["claude", "codex", "omp", "grok"]
         );
         assert_eq!(ids(|h| h.reads_transcript), ["claude", "codex", "grok"]);
         assert_eq!(
             ids(|h| h.context.is_some()),
-            ["claude", "codex", "omp", "pi"]
+            ["claude", "codex", "omp", "pi", "grok"]
         );
         // The delivery if-chain `Herdr::deliver` had before its channels
         // were a field: Claude and Codex by id, OMP and Pi by

@@ -688,6 +688,10 @@ pub enum Compaction {
     /// as an overlay and points the session at it with `PI_CONFIG_FILES`, omp
     /// having neither a flag nor an environment variable for it.
     Overlay,
+    /// Through `GROK_AUTO_COMPACT_THRESHOLD_PERCENT`, a percentage of the
+    /// model's window: `ssf launch` turns the token count into one with the
+    /// window grok's model cache lists ([`grok_compaction_percent`]).
+    Percent,
 }
 
 /// How `harness` takes a context-compaction threshold, when it takes one at
@@ -766,6 +770,34 @@ fn omp_compaction_overlay(tokens: u64) -> (PathBuf, String) {
              compaction:\n  thresholdTokens: {tokens}\n"
         ),
     )
+}
+
+/// The context window, in tokens, grok lists for its models in
+/// `models_cache.json` (`models.<id>.info.context_window`, grok 1.0.41), under
+/// `$GROK_HOME` or `~/.grok`: `model`'s, or with no model named the smallest
+/// listed, since the session then runs grok's own default.
+fn grok_context_window(cache: &serde_json::Value, model: Option<&str>) -> Option<u64> {
+    let models = cache.get("models")?.as_object()?;
+    let window = |v: &serde_json::Value| v["info"]["context_window"].as_u64().filter(|w| *w > 0);
+    match model {
+        Some(id) => window(models.get(id)?),
+        None => models.values().filter_map(window).min(),
+    }
+}
+
+/// The percentage `GROK_AUTO_COMPACT_THRESHOLD_PERCENT` takes for a threshold
+/// of `tokens`: `tokens` as a share of the model's window, rounded down so
+/// grok compacts no later than the count, and kept within `1`-`100`. `None`
+/// when the window is not known, which leaves grok's own default alone.
+pub fn grok_compaction_percent(tokens: u64, model: Option<&str>) -> Option<u64> {
+    let dir = harness_dir("GROK_HOME", ".grok")?;
+    let cache = std::fs::read_to_string(dir.join("models_cache.json")).ok()?;
+    let window = grok_context_window(&serde_json::from_str(&cache).ok()?, model)?;
+    Some(percent_of(tokens, window))
+}
+
+fn percent_of(tokens: u64, window: u64) -> u64 {
+    (tokens.saturating_mul(100) / window).clamp(1, 100)
 }
 
 /// Write that overlay, when this build has not written it already.
@@ -1302,9 +1334,9 @@ mod tests {
         // A harness without one is unaffected, and a count its harness
         // refuses is dropped rather than shelled into a launch that would
         // not come up.
-        for harness in [
-            "pi", "opencode", "gemini", "grok", "copilot", "crush", "aider",
-        ] {
+        assert!(auto_compaction_args("grok", 300_000).is_empty());
+        assert!(matches!(auto_compaction("grok"), Some(Compaction::Percent)));
+        for harness in ["pi", "opencode", "gemini", "copilot", "crush", "aider"] {
             assert!(
                 auto_compaction_args(harness, 300_000).is_empty(),
                 "{harness}"
@@ -1583,6 +1615,24 @@ mod tests {
 
     /// The two environment variables that move a harness's own directory,
     /// and the home each falls back to.
+    #[test]
+    fn grok_compaction_is_a_share_of_the_listed_window() {
+        let cache: serde_json::Value = serde_json::from_str(
+            r#"{"models":{"grok-4.7":{"info":{"context_window":500000}},
+                "small":{"info":{"context_window":256000}},
+                "odd":{"info":{}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(grok_context_window(&cache, Some("grok-4.7")), Some(500_000));
+        assert_eq!(grok_context_window(&cache, None), Some(256_000));
+        assert_eq!(grok_context_window(&cache, Some("odd")), None);
+        assert_eq!(grok_context_window(&cache, Some("nope")), None);
+        assert_eq!(percent_of(300_000, 500_000), 60);
+        assert_eq!(percent_of(299_999, 500_000), 59);
+        assert_eq!(percent_of(300_000, 256_000), 100);
+        assert_eq!(percent_of(1_000, 500_000), 1);
+    }
+
     #[test]
     fn catalogue_directories_follow_the_harnesss_environment() {
         let home = Some(PathBuf::from("/home/ssf"));

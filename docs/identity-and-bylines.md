@@ -84,7 +84,12 @@ percentage is approximate). A listing can take seconds, so ssf caches it in
 `~/.cache/ssf/omp-models.json` or `~/.cache/ssf/pi-models.txt` (under
 `$XDG_CACHE_HOME` when set) and refreshes it in the background once a day, or
 when it lacks the model; a post made before the cache has the model leaves the
-usage out. Only a command that can post (`issue`/`pr` `create`, `comment`,
+usage out. Grok sessions have it from
+`$GROK_HOME/sessions/<URL-encoded cwd>/<GROK_SESSION_ID>/signals.json`
+(`~/.grok` without `$GROK_HOME`), whose `contextTokensUsed` and
+`contextWindowTokens` Grok keeps current (e.g. `5% of 500k`); a command a Grok
+subagent runs carries the subagent's session, so the usage shown is its
+parent's, the conversation's. Only a command that can post (`issue`/`pr` `create`, `comment`,
 `review`) reads any of this.
 
 The three travel to the session as `SSF_HARNESS`, `SSF_MODEL` and `SSF_EFFORT`.
