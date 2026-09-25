@@ -291,6 +291,9 @@ pub enum Settle {
 /// state that settles it on its own is `working`: an agent already at
 /// work is past any first-run dialog, and what its screen shows is its
 /// own output.
+/// How often [`Herdr::settle_harness`] looks again at a blank screen.
+const UNDRAWN_POLL: Duration = Duration::from_millis(500);
+
 pub fn settle_step(state: &str, screen: &str) -> Settle {
     if state == "working" {
         Settle::Ready
@@ -923,7 +926,16 @@ impl Herdr {
                     continue;
                 }
                 Settle::Undrawn => {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    // A screen still blank at the deadline launches as before
+                    // this wait existed, rather than failing the launch.
+                    if deadline.saturating_duration_since(Instant::now()) <= UNDRAWN_POLL {
+                        warn!(
+                            pane_id,
+                            "{harness} drew nothing before the deadline; going on"
+                        );
+                        return Ok(state);
+                    }
+                    tokio::time::sleep(UNDRAWN_POLL).await;
                     continue;
                 }
                 Settle::AskAnyway => {
