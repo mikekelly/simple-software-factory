@@ -336,8 +336,18 @@ it came from.
 
 Each item in `dashboard.monitored_items`, and each card's `origin` and
 `additional` items, carries `has_workspace`, with `branch` when the driver
-reports one. An item that has a workspace is not one `ssf assign` accepts:
+reports one, and `github_state` (`open`, `closed`, `merged` or `unknown`).
+An item that has a workspace is not one `ssf assign` accepts:
 `ssf release` is what frees it, so a client draws no assign form for it.
+
+`dashboard.blocked` lists the items whose harness cannot take prompts (not
+signed in, or could not start), each an item as above plus `repo` and
+`blocked` (`reason`, `harness`, `harness_name`, `detail`, `since`, `fix`, as in
+`ssf status --json`). `dashboard.released` lists the items no longer active
+whose workspace `ssf release` or `ssf purge` removed, each an item as above
+plus `repo` and `released_at`; scratch sessions are in `dashboard.scratch`
+instead. `dashboard.last_error` is the daemon's last recorded error, or
+`null`. The extension's top-bar HUD reads all three.
 
 `dashboard.repositories` lists the repositories the factory watches, as
 `owner/name`. A factory watches a repository rather than the items in it, so

@@ -1372,6 +1372,7 @@
   globalThis.ssfWrites = {
     STYLE,
     scratchPhase,
+    agentList,
     projectKey,
     projectRepos,
     render,

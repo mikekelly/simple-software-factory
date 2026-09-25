@@ -1242,7 +1242,8 @@ fn issue(row: &Value, fallback: &str) -> Value {
     };
     json!({"id":id,"title":row["title"].as_str().unwrap_or(id),"url":url.map(|url|url.to_string()),
         "kind":row["kind"].as_str().unwrap_or("issue"),"active":row["active"] == true,
-        "has_workspace":has_workspace,"branch":branch})
+        "has_workspace":has_workspace,"branch":branch,
+        "github_state":row["github_state"].as_str().unwrap_or("unknown")})
 }
 
 /// Why a card carries no `last_activity_at`, when it carries none: ssf dates a
@@ -1474,8 +1475,38 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
                 "state":row["scratch_state"]})
         })
         .collect();
+    // Items whose harness is not signed in or could not start: a client
+    // warns about them next to the repository they are in (#509).
+    let blocked: Vec<Value> = rows
+        .iter()
+        .filter(|row| !row["blocked"].is_null())
+        .map(|row| {
+            let mut one = issue(row, text(row, "id"));
+            one["repo"] = row["repo"].clone();
+            one["blocked"] = row["blocked"].clone();
+            one
+        })
+        .collect();
+    // Items whose workspace `ssf release` or `ssf purge` removed and that
+    // are no longer active, so a client can list what was recently let go
+    // (#509). Scratch sessions are already in `scratch`.
+    let released: Vec<Value> = rows
+        .iter()
+        .filter(|row| {
+            text(row, "kind") != "scratch"
+                && row["active"] != true
+                && row["subscriber_only"] != true
+                && !text(row, "released_at").is_empty()
+        })
+        .map(|row| {
+            let mut one = issue(row, text(row, "id"));
+            one["repo"] = row["repo"].clone();
+            one["released_at"] = row["released_at"].clone();
+            one
+        })
+        .collect();
     Ok(
-        json!({"cards":cards,"monitored_items":unattached,"scratch":scratch,"repositories":watched_repositories(payload),"repository_projects":repository_projects(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
+        json!({"cards":cards,"monitored_items":unattached,"scratch":scratch,"blocked":blocked,"released":released,"last_error":payload["last_error"],"repositories":watched_repositories(payload),"repository_projects":repository_projects(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
     )
 }
 
@@ -1543,6 +1574,37 @@ mod dashboard_tests {
         assert_eq!(scratch[1]["active"], false);
         assert_eq!(scratch[1]["owner_login"], "alice");
         assert_eq!(scratch[1]["harness"], "codex");
+    }
+
+    /// Blocked and released items, and the daemon's last error, are in the
+    /// model so a repository's HUD can warn about and list them (#509).
+    #[test]
+    fn lists_blocked_and_released_items_and_the_last_error() {
+        let snapshot = dashboard_presentation(&json!({"last_error":"poll failed","sessions":[
+            {"id":"o/r#1","repo":"o/r","owner":"o/r#1","active":true,"agent_live":true,
+                "agent_state":"blocked","github_state":"open",
+                "blocked":{"reason":"login","harness":"claude","harness_name":"Claude Code"}},
+            {"id":"o/r#2","repo":"o/r","owner":"o/r#2","active":false,"kind":"pull_request",
+                "github_state":"merged","released_at":"2026-09-20T10:00:00Z"},
+            {"id":"o/r~s","repo":"o/r","kind":"scratch","active":false,
+                "released_at":"2026-09-20T10:00:00Z"},
+            {"id":"o/r#3","repo":"o/r","owner":"o/r#3","active":true,
+                "released_at":"2026-09-20T10:00:00Z"}
+        ]}))
+        .unwrap();
+        assert_eq!(snapshot["last_error"], "poll failed");
+        let blocked = snapshot["blocked"].as_array().unwrap();
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0]["id"], "o/r#1");
+        assert_eq!(blocked[0]["repo"], "o/r");
+        assert_eq!(blocked[0]["blocked"]["harness"], "claude");
+        let released = snapshot["released"].as_array().unwrap();
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0]["id"], "o/r#2");
+        assert_eq!(released[0]["kind"], "pull_request");
+        assert_eq!(released[0]["github_state"], "merged");
+        assert_eq!(released[0]["released_at"], "2026-09-20T10:00:00Z");
+        assert_eq!(snapshot["cards"][0]["origin"]["github_state"], "open");
     }
 
     /// A scratch session's state says what a client lists it as: running,

@@ -12,8 +12,10 @@
 //     popover;
 //   * a repository's pages and a project board get a button in GitHub's top
 //     bar, next to the repository's or the project's name, counting their
-//     scratch sessions (#414); a click opens them in a popover with New
-//     scratch. A project serves every watched repository linked to it (#499);
+//     active sessions and marking any warning (#509); a click opens a HUD in
+//     a popover: warnings, active sessions, scratch sessions with New scratch
+//     (#414), recently released items and installed harnesses. A project
+//     serves every watched repository linked to it (#499);
 //   * every other page gets nothing.
 //
 // The five user-facing states are fixed in colour and icon so they read the
@@ -1424,20 +1426,29 @@
     return placed;
   }
 
-  /// A page's scratch sessions, as a button in GitHub's top bar: `SSF · N
-  /// scratch`, N being the sessions not yet released. A click opens the list
-  /// in a popover (`scratchCards`). Nothing is drawn where the top bar cannot
-  /// be found.
+  /// A page's SSF HUD, as a button in GitHub's top bar: `SSF · N active`, N
+  /// being the live scratch sessions and the item sessions with an agent in
+  /// the page's repositories, with a warning mark while anything in the
+  /// Warnings section applies (#509). A click opens the HUD in a popover
+  /// (`scratchCards`). Nothing is drawn where the top bar cannot be found.
   function updateScratch(entry, want) {
     entry.scratch = want;
-    const count = want.factories
-      .flatMap((one) => scratchRows(one.factory, one.repos))
-      .filter((one) => globalThis.ssfWrites?.scratchPhase(one) !== "released").length;
-    const button = element("button", "ssf-topbar", `SSF \u00b7 ${count} scratch`);
+    let count = 0;
+    let warned = false;
+    for (const { factory, repos } of want.factories) {
+      count += scratchRows(factory, repos).filter(
+        (one) => globalThis.ssfWrites?.scratchPhase(one) === "live",
+      ).length;
+      count += activeCards(factory, repos).length;
+      if (factoryWarnings(factory, repos).length) warned = true;
+    }
+    const text = `SSF \u00b7 ${count} active${warned ? " \u26a0" : ""}`;
+    const button = element("button", "ssf-topbar", text);
     button.type = "button";
     button.setAttribute("aria-haspopup", "dialog");
     button.setAttribute("aria-expanded", String(popoverOpen(want.name)));
-    button.title = `Scratch sessions on ${want.label}`;
+    button.title = `SSF on ${want.label}${warned ? " (needs attention)" : ""}`;
+    if (warned) button.dataset.ssfWarned = "true";
     reconcile(entry.shadow, [button]);
     const slot = topBar();
     if (!slot) return false;
@@ -1452,50 +1463,235 @@
     return true;
   }
 
+  /// The repository of an item id (`owner/repo#5`), or of a scratch id
+  /// (`owner/repo~x`).
+  function repoOf(id) {
+    return /^([^/#~]+\/[^/#~]+)[#~]/.exec(String(id ?? ""))?.[1] ?? null;
+  }
+
+  /// A factory's item cards in some repositories: its sessions with an agent,
+  /// scratch sessions left out (the Scratch section lists those).
+  function activeCards(factory, repos) {
+    return (factory.cards ?? []).filter(
+      (card) =>
+        !String(card.origin?.id ?? "").includes("~") &&
+        repos.some((repo) => sameRepo(repoOf(card.origin?.id), repo)),
+    );
+  }
+
+  /// What a factory has to say to a person looking at some of its
+  /// repositories: the snapshot's own warning, the daemon's last error, the
+  /// extension's own view of the stream, and each item whose harness is not
+  /// signed in. Each is one line.
+  function factoryWarnings(factory, repos) {
+    const lines = [];
+    if (factory.state === "error" || factory.state === "stale") {
+      lines.push(
+        factory.error
+          ? `Factory not answering: ${factory.error}`
+          : "Factory not answering; showing its last snapshot",
+      );
+    }
+    if (factory.warning) lines.push(factory.warning);
+    // The daemon's last error names the repository whose pass failed
+    // (`owner/name: …`); another repository's error, or one naming none (a
+    // driver, which `warning` already reports), is not this page's.
+    const failed = /^([^\s:]+\/[^\s:]+): /.exec(factory.lastError ?? "")?.[1];
+    if (failed && repos.some((repo) => sameRepo(failed, repo))) {
+      lines.push(`Last error: ${factory.lastError}`);
+    }
+    for (const one of factory.blocked ?? []) {
+      if (!repos.some((repo) => sameRepo(one.repo ?? repoOf(one.id), repo))) continue;
+      const harness = one.blocked?.harness_name || one.blocked?.harness || "Its harness";
+      const fix = one.blocked?.fix ? `; ${one.blocked.fix}` : "";
+      lines.push({ id: one.id, text: `${harness} is not signed in${fix}` });
+    }
+    return lines;
+  }
+
+  /// One section of the HUD: a card with a neutral band naming it, and the
+  /// rows in its body. `tone` colours the band.
+  function hudSection(key, title, rows, tone = "no-agent", note = null) {
+    const node = named(element("div", "ssf-card"), `hud:${key}`);
+    const band = element("div", "ssf-state ssf-band");
+    band.dataset.ssfBand = tone;
+    band.append(element("span", "ssf-word", title));
+    if (note) band.append(element("span", "ssf-when", note));
+    band.append(element("span", "ssf-brand", "SSF"));
+    node.append(named(band, "state"));
+    const body = named(element("div", "ssf-body"), "body");
+    body.append(...rows);
+    node.append(body);
+    return node;
+  }
+
+  /// A HUD row: a link to an item, then its words, muted.
+  function hudRow(id, title, ...words) {
+    const line = element("div", "ssf-also");
+    line.append(itemLink(id, title ? `${id} ${title}` : String(id ?? "")));
+    for (const word of words.filter(Boolean)) {
+      line.append(element("span", "ssf-sep", " \u00b7 "), element("span", undefined, word));
+    }
+    return line;
+  }
+
+  /// An item's GitHub state as a word, when the factory knows it.
+  function githubWord(item) {
+    const state = String(item?.github_state ?? "");
+    return state && state !== "unknown" ? state[0].toUpperCase() + state.slice(1) : null;
+  }
+
+  /// Each factory's installed harnesses, from the same `api/agents` listing
+  /// the New scratch form asks for. A listing is asked again once a minute,
+  /// and a failed one on the next render after ten seconds.
+  const harnessLists = new Map();
+
+  function harnessesOf(factory) {
+    let entry = harnessLists.get(factory.url);
+    const age = entry ? Date.now() - entry.at : Infinity;
+    if (!entry || (!entry.pending && (age > 60000 || (entry.error && age > 10000)))) {
+      entry = { agents: entry?.agents ?? null, error: null, at: Date.now(), pending: true };
+      harnessLists.set(factory.url, entry);
+      Promise.resolve(chrome.runtime.sendMessage({ type: "ssf:agents", url: factory.url }))
+        .then((reply) => {
+          if (reply?.ok) entry.agents = globalThis.ssfWrites?.agentList(reply.body) ?? [];
+          else entry.error = reply?.error ?? "the factory did not answer";
+        })
+        .catch((error) => {
+          entry.error = String(error);
+        })
+        .finally(() => {
+          entry.pending = false;
+          if (popover?.scratch) renderPopover();
+        });
+    }
+    return entry;
+  }
+
   /// A factory's scratch rows for some repositories.
   function scratchRows(factory, repos) {
     return (factory.scratch ?? []).filter((one) => repos.some((repo) => sameRepo(one?.repo, repo)));
   }
 
-  /// The popover's body: one card per factory, in the sidebar card's shape
-  /// (#497) -- a neutral band naming the list, and the sessions in its body.
-  /// `mine` is the GitHub user signed in on this page, from GitHub's own
+  /// The popover's body, the HUD (#509): Warnings, Active sessions, Scratch,
+  /// Recently released and Harnesses, each a card in the sidebar card's shape
+  /// (#497), across every factory that watches the page's repositories. An
+  /// empty section is left out, but for Active sessions and Scratch, which say
+  /// so. `mine` is the GitHub user signed in on this page, from GitHub's own
   /// `user-login` meta tag: it says whose session to make, and is not an
   /// access control.
   function scratchCards(want) {
     const section = element("div", "ssf-popover");
     const login = document.querySelector('meta[name="user-login"]')?.content?.trim() || null;
     const label = (snapshot?.factories?.length ?? 0) > 1;
+    const on = (factory) => (label ? `on ${factory.label}` : null);
+
+    const warnings = [];
+    const active = [];
+    const released = [];
+    const harnesses = [];
+    for (const { factory, repos } of want.factories) {
+      for (const line of factoryWarnings(factory, repos)) {
+        const row =
+          typeof line === "string"
+            ? element("div", "ssf-also", line)
+            : hudRow(line.id, null, line.text);
+        if (label) row.append(element("span", "ssf-when", ` (${factory.label})`));
+        warnings.push(row);
+      }
+      for (const card of activeCards(factory, repos)) {
+        const word = (PRESENTATION[String(card.agent_state ?? "").trim()] ?? PROBLEM).label;
+        active.push(
+          hudRow(
+            card.origin?.id,
+            card.origin?.title,
+            githubWord(card.origin),
+            word,
+            card.harness,
+            on(factory),
+          ),
+        );
+      }
+      for (const item of factory.released ?? []) {
+        if (!repos.some((repo) => sameRepo(item.repo ?? repoOf(item.id), repo))) continue;
+        released.push({
+          at: item.released_at,
+          row: hudRow(
+            item.id,
+            item.title,
+            githubWord(item),
+            `released ${ago(item.released_at) ?? ""}`.trim(),
+            on(factory),
+          ),
+        });
+      }
+      for (const one of scratchRows(factory, repos)) {
+        if (!one.released_at || globalThis.ssfWrites?.scratchPhase(one) !== "released") continue;
+        const row = element("div", "ssf-also", String(one.id));
+        row.append(
+          element("span", "ssf-sep", " \u00b7 "),
+          element("span", undefined, `scratch released ${ago(one.released_at) ?? ""}`.trim()),
+        );
+        released.push({ at: one.released_at, row });
+      }
+      const listed = harnessesOf(factory);
+      const blocked = new Set(
+        (factory.blocked ?? []).map((one) => String(one.blocked?.harness ?? "")),
+      );
+      if (listed.error) {
+        harnesses.push(element("div", "ssf-also", `Could not list harnesses: ${listed.error}`));
+      } else if (!listed.agents) {
+        harnesses.push(element("div", "ssf-also", "loading\u2026"));
+      } else {
+        for (const agent of listed.agents) {
+          const row = element("div", "ssf-also", `${agent.id} \u00b7 ${agent.name}`);
+          if (blocked.has(agent.id)) {
+            row.append(
+              element("span", "ssf-sep", " \u00b7 "),
+              element("span", undefined, "not signed in"),
+            );
+          }
+          if (label) row.append(element("span", "ssf-when", ` (${factory.label})`));
+          harnesses.push(row);
+        }
+      }
+    }
+
+    if (warnings.length) section.append(hudSection("warnings", "Warnings", warnings, "problem"));
+    section.append(
+      hudSection(
+        "active",
+        "Active sessions",
+        active.length ? active : [element("div", "ssf-also", "No item sessions running.")],
+        active.length ? "working" : "no-agent",
+      ),
+    );
     for (const { factory, repos } of want.factories) {
       const sessions = scratchRows(factory, repos).map((one) => ({
         ...one,
         stateLabel: scratchState(factory, one),
       }));
-      const node = named(element("div", "ssf-card"), `card:${factory.url}`);
-      const band = element("div", "ssf-state ssf-band");
-      band.dataset.ssfBand = "no-agent";
-      band.append(element("span", "ssf-word", "Scratch sessions"));
-      if (label) band.append(element("span", "ssf-when", `on ${factory.label}`));
-      band.append(element("span", "ssf-brand", "SSF"));
-      node.append(named(band, "state"));
-      const body = named(element("div", "ssf-body"), "body");
-      node.append(body);
       const panel = globalThis.ssfWrites?.renderScratch({
         factories: [factory],
         repos,
         login,
         sessions,
       });
-      if (panel) {
-        body.append(named(panel, "writes"));
-      } else {
-        const count = `${sessions.length} scratch session${sessions.length === 1 ? "" : "s"}`;
-        body.append(
-          named(element("p", "ssf-hold", `${count}; writes are off for this factory.`), "off"),
-        );
-      }
+      const count = `${sessions.length} scratch session${sessions.length === 1 ? "" : "s"}`;
+      const rows = panel
+        ? [named(panel, "writes")]
+        : [named(element("p", "ssf-hold", `${count}; writes are off for this factory.`), "off")];
+      const node = hudSection("scratch", "Scratch sessions", rows, "no-agent", on(factory));
+      // Kept under the factory's name, so the form a person is filling in
+      // stays theirs when the other sections change around it.
+      named(node, `card:${factory.url}`);
       section.append(node);
     }
+    if (released.length) {
+      released.sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
+      section.append(hudSection("released", "Recently released", released.map((one) => one.row)));
+    }
+    if (harnesses.length) section.append(hudSection("harnesses", "Harnesses", harnesses));
     return section;
   }
 
