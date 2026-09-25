@@ -207,11 +207,14 @@ pub static HARNESSES: &[Harness] = &[
             list_models: Some(("pi --list-models", models::pi_models)),
             refresh: None,
         }),
+        // Pi compacts at `reserveTokens` below the window, set only in
+        // `~/.pi/agent/settings.json` or the project's `.pi/settings.json`:
+        // no flag, variable or overlay file reaches one session alone.
         auto_compaction: None,
         login_phrases: PI_LOGIN_PHRASES,
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
-        context: None,
+        context: Some(crate::sessions::pi_context),
         channel: &Mailbox,
     },
     Harness {
@@ -377,6 +380,10 @@ mod tests {
             ["claude", "codex", "omp"]
         );
         assert_eq!(ids(|h| h.reads_transcript), ["claude", "codex"]);
+        assert_eq!(
+            ids(|h| h.context.is_some()),
+            ["claude", "codex", "omp", "pi"]
+        );
         // The delivery if-chain `Herdr::deliver` had before its channels
         // were a field: Claude and Codex by id, OMP and Pi by
         // `delivery_channel::supports`, the terminal for everyone else.

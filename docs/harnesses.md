@@ -238,7 +238,8 @@ harness's own default alone.
 | `claude` | `--autocompact <tokens>` on the launch command, resumes included | Claude Code accepts `100000`-`1000000` and refuses to start outside it, so a count it cannot take is refused while the config loads and again when `ssf config set` or `ssf repo set` would write one |
 | `codex` | `-c model_auto_compact_token_limit=<tokens>`, the same route the effort level takes | codex type-checks the key and reports a bad value at startup |
 | `omp` | `PI_CONFIG_FILES` pointed at a one-key overlay under the state directory, written by `ssf launch` | omp has no flag or environment variable for the value. A command that already sets `PI_CONFIG_FILES` for itself keeps its own overlays, layered after ssf's |
-| everything else | nothing | `pi`, `opencode`, `gemini`, `grok`, `copilot` and `crush` have no such setting; a value configured above them is unused rather than an error, so one instance value can sit above a mixed set of repositories |
+| `pi` | nothing | Pi compacts at `compaction.reserveTokens` below the model's window, read only from `~/.pi/agent/settings.json` or the project's `.pi/settings.json`; with no flag, variable or overlay file for one session, ssf leaves Pi's own default alone rather than write into the operator's or the repository's settings |
+| everything else | nothing | `opencode`, `gemini`, `grok`, `copilot` and `crush` have no such setting; a value configured above them is unused rather than an error, so one instance value can sit above a mixed set of repositories |
 
 Set it per repository as well as per instance: a large-context model can
 afford more room than a 200K one, and a repository whose items carry long
