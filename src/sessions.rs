@@ -126,6 +126,8 @@ pub fn resume_failed(screen: &[String]) -> bool {
         "no session found",
         "could not find session",
         "not found: session",
+        // grok, after trying the id locally and then remotely.
+        "failed to restore session",
     ]
     .iter()
     .any(|m| text.contains(m))
@@ -487,25 +489,13 @@ fn grok_modified(session: &Path) -> Option<SystemTime> {
 
 /// The ids of the subagent sessions the sessions in `group` spawned.
 ///
-/// Grok keeps a subagent's child session in the normal sessions tree, next to
-/// its parent, and records it in the parent's `subagents/<x>/meta.json`
-/// (`docs/user-guide/17-sessions.md`). UNVERIFIED: neither the layout nor the
-/// schema of `meta.json` has been seen on disk (no signed-in session yet), so
-/// every entry name under `subagents/` and every string anywhere in its
-/// `meta.json` counts as a child id; only a string naming a sibling session
-/// can matter. `summary.json`'s `parent_session_id` is not used: the docs give
-/// it to forks and restores, which are the conversation to resume.
+/// Grok keeps a subagent's child session in the normal sessions tree, beside
+/// its parent, and records it in the parent's `subagents/<id>/meta.json` as
+/// `child_session_id` (seen with grok 1.0.41, next to a `parent_session_id`
+/// naming the parent, which must not count). The child's own `summary.json`
+/// also says `"session_kind": "subagent"`; that is checked per session, and
+/// this covers a child whose summary is not written yet.
 fn grok_children(group: &Path) -> std::collections::HashSet<String> {
-    fn strings(v: &serde_json::Value, out: &mut std::collections::HashSet<String>) {
-        match v {
-            serde_json::Value::String(s) => {
-                out.insert(s.clone());
-            }
-            serde_json::Value::Array(a) => a.iter().for_each(|v| strings(v, out)),
-            serde_json::Value::Object(o) => o.values().for_each(|v| strings(v, out)),
-            _ => {}
-        }
-    }
     let mut children = std::collections::HashSet::new();
     let Ok(sessions) = std::fs::read_dir(group) else {
         return children;
@@ -515,18 +505,24 @@ fn grok_children(group: &Path) -> std::collections::HashSet<String> {
             continue;
         };
         for sub in subagents.flatten() {
-            if let Some(name) = sub.file_name().to_str() {
-                children.insert(name.to_string());
-            }
-            if let Some(meta) = std::fs::read_to_string(sub.path().join("meta.json"))
+            if let Some(child) = std::fs::read_to_string(sub.path().join("meta.json"))
                 .ok()
                 .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
+                .and_then(|m| m["child_session_id"].as_str().map(str::to_string))
             {
-                strings(&meta, &mut children);
+                children.insert(child);
             }
         }
     }
     children
+}
+
+/// Whether the session at `path` is a subagent's, by its own `summary.json`.
+fn grok_subagent(path: &Path) -> bool {
+    std::fs::read_to_string(path.join("summary.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .is_some_and(|s| s["session_kind"] == "subagent")
 }
 
 /// The newest top-level Grok session started in `cwd` and changed at or
@@ -545,6 +541,7 @@ fn capture_grok(root: &Path, cwd: &str, since: SystemTime, exclude: &[String]) -
             || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
             || excluded(id, exclude)
             || children.contains(id)
+            || grok_subagent(&path)
         {
             continue;
         }
@@ -823,21 +820,26 @@ mod tests {
         assert!(transcript_modified(root, "grok", cwd, newer).is_some());
         assert!(transcript_modified(root, "grok", cwd, "../x").is_none());
         // A subagent's child session, newer than its parent, is not captured:
-        // named by the parent's `subagents/<x>/meta.json`, or by `<x>` itself.
+        // named by the parent's `subagents/<id>/meta.json` (which also names
+        // the parent), or marked in its own `summary.json`.
         let child = "019a0000-0000-7000-8000-00000000000c";
-        let named = "019a0000-0000-7000-8000-00000000000d";
-        for id in [child, named] {
+        let marked = "019a0000-0000-7000-8000-00000000000d";
+        for id in [child, marked] {
             std::fs::create_dir_all(group.join(id)).unwrap();
             std::fs::write(group.join(id).join("updates.jsonl"), "{}\n").unwrap();
         }
-        let meta = group.join(newer).join("subagents/task-1");
+        std::fs::write(
+            group.join(marked).join("summary.json"),
+            r#"{"session_kind":"subagent"}"#,
+        )
+        .unwrap();
+        let meta = group.join(newer).join("subagents").join(child);
         std::fs::create_dir_all(&meta).unwrap();
         std::fs::write(
             meta.join("meta.json"),
-            format!(r#"{{"child":{{"session_id":"{child}"}},"agent_type":"explore"}}"#),
+            format!(r#"{{"subagent_id":"{child}","parent_session_id":"{newer}","child_session_id":"{child}"}}"#),
         )
         .unwrap();
-        std::fs::create_dir_all(group.join(older).join("subagents").join(named)).unwrap();
         assert_eq!(capture_grok(root, cwd, since, &[]).as_deref(), Some(newer));
         // A path too long to encode is named by a `.cwd` file instead.
         std::fs::create_dir_all(long.join(older)).unwrap();
@@ -877,6 +879,13 @@ mod tests {
         assert!(resume_command("pi", "pi", "abc").is_none());
         assert!(resume_failed(&[
             "Error: No conversation found with session ID abc".into()
+        ]));
+        assert!(resume_failed(&[
+            "Error: Failed to restore session from remote: fetching session record: session get failed: 404 Not Found".into()
+        ]));
+        // Grok says this on its way to trying the id remotely, which may work.
+        assert!(!resume_failed(&[
+            "Session \"x\" not found locally, restoring conversation from remote...".into()
         ]));
         assert!(!resume_failed(&["❯".into()]));
     }
