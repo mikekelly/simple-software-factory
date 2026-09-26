@@ -180,15 +180,19 @@ the log line below carries the URL actually being served.
 ### Live terminal for an item's pane
 
 Each card on the browser page has an **Open terminal** link. It opens the
-session's agent pane in a new tab as a live terminal (xterm.js), streamed from
-herdr as the pane draws it. It is not the redacted pane mirror: anyone with the
-URL sees the pane's output as it is, GitHub tokens included.
+session's agent pane in a new tab.
 
-The terminal opens **read-only**, at the pane's own size. A key or a paste is
-not sent, and the page says so. The wheel does nothing while read-only.
+The page opens **read-only**, as the pane mirror (`api/pane/<session>`): the
+pane's screen and the history above it, drawn as text with GitHub tokens
+redacted, wrapped at the window's width. The wheel scrolls back through the
+history. A key or a paste is not sent, and the page says so.
 
-**Type** asks the server to control the pane. The button shows only where the
-server allows it, and the server refuses control unless both of these are on:
+**Type** swaps the mirror for a live terminal (xterm.js on
+`api/term/<session>`, streamed from herdr as the pane draws it) and asks the
+server to control the pane. The live terminal is not redacted: while Type is
+on, the page shows the pane's output as it is, GitHub tokens included. The
+button shows only where `dashboard.terminal_input` is on, and the server
+refuses control unless both of these are on:
 
 - `dashboard.terminal_input` on the server (default `false`), which lets this
   page type at all. Otherwise the page follows the [write rules](#write-rules),
@@ -196,19 +200,25 @@ server allows it, and the server refuses control unless both of these are on:
 - `item_pane_input` for the item's repository (default `false`), decided where
   the factory's configuration is (in the guest, for a factory in a VM).
 
-A refusal is shown on the page, and the terminal stays read-only. While Type is
+A refusal is shown on the page, which goes back to the mirror. While Type is
 on, the pane takes the size of the browser's terminal, and each wheel notch
 scrolls the pane's history, or the app in a full-screen TUI that uses the mouse.
 Shift+Enter sends a newline that does not submit, and a paste is always sent as
-a bracketed paste. Type turns itself off, giving the pane back at its own size,
-when the person turns it off, hides the tab, or types nothing for 30 minutes.
-It never takes a pane that someone else controls. If someone else takes the
-pane, the page says so and goes back to read-only.
+a bracketed paste. Type turns itself off, giving the pane back at its own size
+and showing the mirror again, when the person turns it off, hides the tab,
+types nothing for 30 minutes, or the terminal closes. It never takes a pane
+that someone else controls. If someone else takes the pane, the page says so
+and goes back to the mirror.
+
+The dashboard's header and the terminal page's bar show the build of the
+server serving them, such as `ssf 0.17.0 · abc1234` (its version and git
+commit, or `unknown` for a build from outside a git checkout), so a restart
+onto a new build can be seen to have happened.
 
 When the pane goes away (the harness exited, or it was relaunched in a new pane),
 the terminal looks for it again for about a minute and carries on in the new
-pane. Scratch sessions are unchanged: they run in tmux, and only the extension
-opens a terminal on them.
+pane while Type is on; the mirror finds it again itself. Scratch sessions are
+unchanged: they run in tmux, and only the extension opens a terminal on them.
 
 The startup log line carries the whole URL on every start, so
 `journalctl --user -u ssf.service | grep 'Server web dashboard'` finds it (the
@@ -253,7 +263,7 @@ server's own browser page and its CSS and JavaScript.
 
 | Endpoint | Returns |
 | --- | --- |
-| `GET /<capability>/api/status` | the current snapshot as JSON, or `502` with `{"error": ...}` when the status stream cannot be read |
+| `GET /<capability>/api/status` | the current snapshot as JSON, plus `build` (the serving server's version and commit, e.g. `ssf 0.17.0 · abc1234`), or `502` with `{"error": ...}` when the status stream cannot be read |
 | `GET /<capability>/api/events` | a server-sent events stream of the same snapshots |
 | `GET /<capability>/api/agents` | what `ssf agents --json` prints |
 | `GET /<capability>/api/models/<harness>` | what `ssf models <harness> --json` prints |
@@ -361,7 +371,7 @@ The protocol:
 
 Unlike the mirror, the terminal shows no redaction: it is the session's own
 terminal, as `tmux attach` in a shell on the factory shows it. The Chrome
-extension's floating terminal window uses it for scratch sessions and, as below, item sessions.
+extension's floating terminal window uses it for scratch sessions and, as below, for an item session while Type is on.
 
 An item session's terminal is `ssf __pane control <session> [--observe]` run
 over pipes, which runs `herdr terminal session observe|control` on the pane.

@@ -1,5 +1,5 @@
-// A scratch session's live terminal (#491), and an item session's (runItem,
-// #563, below): xterm.js (vendored, see the
+// A scratch session's live terminal (#491), and an item session's while Type
+// is on (runItem, #563, below): xterm.js (vendored, see the
 // README) attached to the factory's `api/term/<session>` WebSocket through
 // the service worker, on a port (`ssf-term`). What the terminal prints comes
 // as bytes, what is typed goes as bytes, and the terminal is sized to its
@@ -8,7 +8,6 @@
 // resizes the session.
 import { Terminal } from "./vendor/xterm/xterm.mjs";
 import { FitAddon } from "./vendor/xterm/addon-fit.mjs";
-import { factoryUrl } from "./factory-url.js";
 import { fromBase64, resizeMessage, toBase64 } from "./term-wire.js";
 
 /// How long a run of size changes settles before the terminal is fitted.
@@ -142,20 +141,21 @@ const NOTCH_PX = 50;
 /// How long Type stays on with nothing typed: collie's idle pause.
 const IDLE_MS = 30 * 60 * 1000;
 
-/// An item session's live terminal (#563): the same `api/term/<session>`
-/// socket, which for an item streams the pane through herdr, with the
-/// dashboard's terminal logic (dashboard/terminal.js) on the port. It opens
-/// read-only at the pane's own size, and anything typed or pasted then is not
-/// sent: a notice says so. Type asks the factory for control, which it gives
-/// only to this extension and only where `item_pane_input` is on; the port
-/// passes it (and what is typed) only while the factory's Writes switch is on
-/// (term-wire.js). Type turns itself off when the tab is hidden, nothing is
-/// typed for a while, Writes goes off, or the pane is taken over elsewhere
-/// (never taken back: no `--takeover`). herdr keeps the scrollback, so xterm
-/// keeps none, each wheel notch is one scroll, and a paste is always
-/// bracketed.
-export function runItem({ url, session, takesInput, say, box, notice: noticeNode, typeButton, reconnect }) {
-  box.hidden = false;
+/// An item session's terminal while Type is on (#563): the same
+/// `api/term/<session>` socket, which for an item streams the pane through
+/// herdr, with the dashboard's terminal logic (dashboard/terminal.js) on the
+/// port. Read-only, the page shows the pane mirror instead (terminal.js); this
+/// terminal is opened only to type. `enter` connects and asks the factory for
+/// control, which it gives only to this extension and only where
+/// `item_pane_input` is on; the port passes it (and what is typed) only while
+/// the factory's Writes switch is on (term-wire.js). In control the pane takes
+/// this terminal's size. `leave` releases the pane and closes the socket, and
+/// `onLeave(why)` hands the page back to the mirror: Type off, the tab
+/// hidden, nothing typed for a while, Writes off (terminal.js), control
+/// refused or taken over elsewhere (never taken back: no `--takeover`), or the
+/// socket closed. herdr keeps the scrollback, so xterm keeps none, each wheel
+/// notch is one scroll, and a paste is always bracketed.
+export function runItem({ url, session, say, box, notice, onLeave }) {
   const term = new Terminal({
     cursorBlink: true,
     fontFamily:
@@ -167,16 +167,14 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+  box.hidden = false;
   term.open(box);
+  box.hidden = true;
 
   let port = null;
   let control = false;
-  let mayControl = false;
-  let typing = false;
-  let writes = false;
   let lastActivity = Date.now();
   let wheel = 0;
-  let noticeTimer = null;
 
   const post = (message) => {
     try {
@@ -193,20 +191,6 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
       // A box with no size (hidden) has nothing to fit.
     }
   };
-  const canType = () => takesInput && writes && mayControl;
-
-  function notice(text, sticky = false) {
-    clearTimeout(noticeTimer);
-    noticeNode.textContent = text;
-    noticeNode.hidden = !text;
-    if (text && !sticky) noticeTimer = setTimeout(() => (noticeNode.hidden = true), 6000);
-  }
-
-  function shown() {
-    if (port) say(control ? "live · typing" : "live · read-only");
-    typeButton.hidden = !canType();
-    typeButton.setAttribute("aria-pressed", String(typing));
-  }
 
   function sendSize() {
     const size = fit.proposeDimensions();
@@ -214,53 +198,30 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
     if (text && control) post({ type: "resize", data: text });
   }
 
-  /// Bytes typed at the pane, or the read-only notice instead.
+  /// Bytes typed at the pane; nothing is sent until control is given.
   function type(bytes) {
-    if (!control) {
-      notice(
-        typing
-          ? "Nothing was sent: waiting for control of the pane."
-          : canType()
-          ? "Read-only: nothing was sent. Turn on Type to type into this pane."
-          : "Read-only: nothing was sent. " +
-              (!takesInput
-                ? "Comment on the item to speak to its agent."
-                : !writes
-                  ? "Writes are off for this factory on the options page."
-                  : "The factory does not take typing into this pane."),
-      );
-      return;
-    }
+    if (!control) return notice("Nothing was sent: waiting for control of the pane.");
     lastActivity = Date.now();
     post({ type: "input", data: toBase64(bytes) });
   }
 
-  function setTyping(on, why) {
-    if (typing === on) return;
-    typing = on;
-    lastActivity = Date.now();
-    ask({ type: on ? "control" : "release" });
-    if (!on && why) notice(`Type is off: ${why}.`, true);
-    else if (on) notice("");
-    shown();
-  }
-
-  function closed(text) {
+  /// Give the pane back and hand the page to the mirror; `why`, when it was
+  /// not the person who turned Type off, is said.
+  function leave(why) {
+    if (!port) return;
+    ask({ type: "release" });
     const held = port;
     port = null;
-    held?.disconnect();
     control = false;
-    typing = false;
-    shown();
-    say(text, true);
-    reconnect.hidden = false;
-    term.write(`\r\n\x1b[2m[${text}]\x1b[0m\r\n`);
+    held.disconnect();
+    box.hidden = true;
+    onLeave(why);
   }
 
   function heard(message) {
     if (message?.type === "open") {
       term.reset();
-      shown();
+      say("waiting for control of the pane…");
     } else if (message?.type === "data") {
       term.write(fromBase64(message.data));
     } else if (message?.type === "text") {
@@ -272,42 +233,41 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
       }
       if (said.type === "mode") {
         control = said.control === true;
-        mayControl = said.may_control === true;
-        // A stream that came back read-only (the pane was found again) is
-        // asked for control again while Type is on.
-        if (typing && !control && canType()) ask({ type: "control" });
-        if (control) {
+        if (said.may_control !== true) return leave("the factory does not take typing into this pane");
+        // Control is asked for as the stream starts, and again when it
+        // comes back read-only (the pane was found again).
+        if (!control) ask({ type: "control" });
+        else {
           fitted();
           sendSize();
+          say("live · typing");
+          term.focus();
         }
-        shown();
       } else if (said.type === "size" && !control) {
         term.resize(said.cols, said.rows);
       } else if (said.type === "refused") {
-        // Refused, or taken over elsewhere: Type goes off, and stays off.
-        typing = false;
-        shown();
-        notice(`Type is off: ${said.reason}`, true);
+        leave(String(said.reason ?? "the factory refused control"));
       } else if (said.type === "notice") {
         notice(String(said.text ?? ""));
       }
     } else if (message?.type === "closed") {
       const why = message.error ?? (message.reason || null);
-      closed(why ? `the terminal closed (${why})` : "the terminal closed");
+      leave(why ? `the terminal closed (${why})` : "the terminal closed");
     }
   }
 
-  function connect() {
-    port?.disconnect();
-    reconnect.hidden = true;
+  function enter() {
+    if (port) return;
     control = false;
-    typing = false;
+    lastActivity = Date.now();
+    box.hidden = false;
+    fitted();
     say("connecting…");
     const opened = chrome.runtime.connect({ name: "ssf-term" });
     port = opened;
     opened.onMessage.addListener((message) => port === opened && heard(message));
     opened.onDisconnect.addListener(() => {
-      if (port === opened) closed("the terminal closed: the extension's service worker stopped");
+      if (port === opened) leave("the extension's service worker stopped");
     });
     opened.postMessage({ type: "open", url, session });
   }
@@ -354,37 +314,19 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
   new ResizeObserver(() => {
     clearTimeout(timer);
     timer = setTimeout(() => {
-      if (control) fitted();
+      if (!control) return;
+      fitted();
       sendSize();
     }, FIT_MS);
   }).observe(box);
 
-  typeButton.addEventListener("click", () => {
-    setTyping(!typing);
-    term.focus();
-  });
-  reconnect.addEventListener("click", connect);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") setTyping(false, "the tab was hidden");
+    if (document.visibilityState === "hidden") leave("the tab was hidden");
   });
   setInterval(() => {
-    if (typing && Date.now() - lastActivity >= IDLE_MS) setTyping(false, "nothing was typed for a while");
+    if (port && Date.now() - lastActivity >= IDLE_MS) leave("nothing was typed for a while");
   }, 30000);
   setInterval(() => post({ type: "ping" }), PING_MS);
 
-  // The factory's Writes switch, followed as the options page changes it.
-  const readWrites = (factories) => {
-    const item = (factories ?? []).find((one) => factoryUrl(one?.url) === url);
-    writes = item?.writes === true;
-    if (!writes) setTyping(false, "writes were turned off for this factory");
-    shown();
-  };
-  chrome.storage.local.get("factories").then(({ factories }) => {
-    readWrites(factories);
-    connect();
-  });
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && changes.factories) readWrites(changes.factories.newValue);
-  });
-  term.focus();
+  return { enter, leave, typing: () => port !== null };
 }

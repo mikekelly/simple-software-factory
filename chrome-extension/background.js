@@ -14,7 +14,7 @@
 // below rebuilds every stream. Nothing here depends on running continuously.
 //
 // This worker also carries every write -- `api/assign`, `api/handover`,
-// `api/release`, the scratch writes and the pane mirror's input -- the
+// `api/release` and the scratch writes -- the
 // listings the forms' pickers need, and the pane mirror's own stream. A factory
 // accepts a write only from an extension origin (docs/dashboard.md), and a
 // content script running on github.com has none, so these are sent from here;
@@ -328,16 +328,6 @@ async function scratchResume(message) {
   return writeTo(message, "scratch/resume", { session: message.session });
 }
 
-/// `api/pane/input`: what the pane mirror's terminal typed -- herdr key names
-/// as keys, or a paste as text. A write like any other, so the factory's
-/// Writes switch applies to it too.
-async function paneInput(message) {
-  const body = { session: message.session };
-  if (typeof message.text === "string") body.text = message.text;
-  if (Array.isArray(message.keys)) body.keys = message.keys.map(String);
-  return writeTo(message, "pane/input", body);
-}
-
 /// The pane mirror's stream, `api/pane/<session>`, read here for the page on
 /// its port (`ssf-pane`). The page is framed over github.com, where Chrome's
 /// local-network rules can hold a request of its own to a factory on a private
@@ -503,8 +493,8 @@ async function listing(message, path) {
 /// else is routed, and the content script holds no factory fetch of its own.
 /// The item writes are each an `ssf` command for one item, and a message to an
 /// item's agent is a comment on the item (#439); the scratch writes are `ssf
-/// scratch` and a kill. The one input is the pane mirror's terminal, sent from
-/// its own page (#414).
+/// scratch` and a kill. Typing into a pane goes over the live terminal's
+/// port (`ssf-term`), not through here.
 const HANDLERS = {
   "ssf:assign": assign,
   "ssf:handover": handover,
@@ -512,7 +502,6 @@ const HANDLERS = {
   "ssf:scratch": scratch,
   "ssf:scratch-release": scratchRelease,
   "ssf:scratch-resume": scratchResume,
-  "ssf:pane-input": paneInput,
   "ssf:agents": (message) => listing(message, "agents"),
   "ssf:usage": (message) => listing(message, "usage"),
   "ssf:models": (message) =>

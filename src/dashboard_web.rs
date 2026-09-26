@@ -22,6 +22,10 @@ const TERMINAL_CSS: &str = include_str!("../dashboard/terminal.css");
 const XTERM_JS: &str = include_str!("../chrome-extension/vendor/xterm/xterm.mjs");
 const XTERM_FIT_JS: &str = include_str!("../chrome-extension/vendor/xterm/addon-fit.mjs");
 const XTERM_CSS: &str = include_str!("../chrome-extension/vendor/xterm/xterm.css");
+/// The pane mirror's renderer, the terminal page's read-only view: the
+/// extension's own, served as it is.
+const PANE_RENDER_JS: &str = include_str!("../chrome-extension/pane-render.js");
+const PANE_RENDER_CSS: &str = include_str!("../chrome-extension/pane-render.css");
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HEADERS: usize = 8192;
 /// Longest body the endpoint reads: a write carries a handful of fields, and
@@ -408,7 +412,13 @@ async fn read(relative: &str, latest: &mut Latest, client: &Path) -> (u16, &'sta
         "" | "index.html" => (200, "text/html; charset=utf-8", INDEX.to_owned()),
         "dashboard.css" => (200, "text/css; charset=utf-8", CSS.to_owned()),
         "dashboard.js" => (200, "text/javascript; charset=utf-8", JS.to_owned()),
-        "terminal.html" => (200, "text/html; charset=utf-8", TERMINAL_HTML.to_owned()),
+        "terminal.html" => (200, "text/html; charset=utf-8", terminal_html()),
+        "pane-render.js" => (
+            200,
+            "text/javascript; charset=utf-8",
+            PANE_RENDER_JS.to_owned(),
+        ),
+        "pane-render.css" => (200, "text/css; charset=utf-8", PANE_RENDER_CSS.to_owned()),
         "terminal.css" => (200, "text/css; charset=utf-8", TERMINAL_CSS.to_owned()),
         "terminal.js" => (
             200,
@@ -442,7 +452,11 @@ async fn snapshot(latest: &mut Latest) -> (u16, &'static str, String) {
         Err(_) => Err(anyhow::anyhow!("SSF status timed out after 30 seconds")),
     };
     match snapshot {
-        Ok(value) => (200, "application/json", value.to_string()),
+        Ok(mut value) => {
+            // The build serving the page, which the dashboard's header shows.
+            value["build"] = json!(BUILD);
+            (200, "application/json", value.to_string())
+        }
         Err(error) => failure_of(&error),
     }
 }
@@ -1761,6 +1775,25 @@ fn presentation(payload: &Value) -> Result<Value> {
     Ok(dashboard.clone())
 }
 
+/// The terminal page, told the build serving it and whether this server
+/// takes typing from it (`dashboard.terminal_input`), so it offers Type only
+/// then.
+fn terminal_html() -> String {
+    let input = TERMINAL_INPUT.load(std::sync::atomic::Ordering::Relaxed);
+    TERMINAL_HTML
+        .replace("{{build}}", BUILD)
+        .replace("{{terminal_input}}", if input { "true" } else { "false" })
+}
+
+/// The build serving this page, e.g. `ssf 0.17.0 · abc1234`: the dashboard
+/// shows it, so a restart onto a new build can be seen to have happened.
+pub const BUILD: &str = concat!(
+    "ssf ",
+    env!("CARGO_PKG_VERSION"),
+    " \u{b7} ",
+    env!("SSF_COMMIT")
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2120,6 +2153,18 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         }
         assert!(is_json("APPLICATION/JSON"));
         assert!(!is_json("application/jsonx"));
+    }
+
+    /// The terminal page names the build serving it and whether it may
+    /// offer Type, with no placeholder left over; the build is the version
+    /// and a commit.
+    #[test]
+    fn the_terminal_page_is_told_its_build() {
+        let page = terminal_html();
+        assert!(page.contains(BUILD), "{page}");
+        assert!(page.contains("data-terminal-input=\"false\""), "{page}");
+        assert!(!page.contains("{{"), "{page}");
+        assert!(BUILD.starts_with(concat!("ssf ", env!("CARGO_PKG_VERSION"), " \u{b7} ")));
     }
 
     #[test]
