@@ -439,6 +439,27 @@ impl Engine {
         b
     }
 
+    /// A harness that came up at a question ssf does not know, before its
+    /// first message (`herdr::AtQuestion`): the session is recorded as
+    /// blocked on it with the pane as its handle, the item is told once,
+    /// and the pass goes on. `recover` waits on the pane on later passes
+    /// and gives the harness its first message once a person has answered
+    /// (#541).
+    pub(in crate::engine) async fn hold_at_question(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        harness: &str,
+        pane: &str,
+    ) -> Blocked {
+        self.entry(repo, number).terminal_handle = Some(pane.to_string());
+        let b = self
+            .set_blocked_for(repo, number, harness, Blocked::QUESTION, pane.to_string())
+            .await;
+        self.report_blocked(repo, number).await;
+        b
+    }
+
     /// The `blocked` event on the session's item, once per block: why
     /// deliveries are held (the harness is not signed in, or it could not
     /// be started at all) and how to fix it. The record says it has been
@@ -459,6 +480,11 @@ impl Engine {
             )
         } else if b.reason == Blocked::SETUP {
             "setup incomplete".to_string()
+        } else if b.reason == Blocked::QUESTION {
+            format!(
+                "the session is stuck at a harness question ssf does not know, in herdr pane {}",
+                b.detail
+            )
         } else {
             "not signed in".to_string()
         };
@@ -522,53 +548,6 @@ impl Engine {
                 "could not post the event on the item: {e:#}"
             ),
         }
-    }
-
-    /// What a launch for `number` reports when its harness is held at a
-    /// question ssf does not know (see `herdr::ON_HOLD`): a `blocked`
-    /// event on the item naming the pane, posted in the background, as
-    /// [`post_event`](Self::post_event) would, because the launch itself
-    /// waits on the pane until a person has answered it (#541).
-    pub(in crate::engine) fn hold_hook(
-        &self,
-        repo: &RepoConfig,
-        number: u64,
-        harness: &str,
-    ) -> crate::herdr::HoldHook {
-        let enabled = self.cfg.event_comments(repo);
-        let origin = Origin::new(&repo.name, number);
-        let kind = match self.peek(repo, number).and_then(|s| s.kind.as_deref()) {
-            Some("pull_request") => "pull request",
-            _ => "issue",
-        };
-        let gh = self.gh.clone();
-        let repo_name = repo.name.clone();
-        let harness = harness.to_string();
-        std::sync::Arc::new(move |pane: &str| {
-            let Some(origin) = origin.as_ref().filter(|_| enabled) else {
-                return;
-            };
-            let Some((owner, name)) = repo_name.split_once('/') else {
-                return;
-            };
-            let event = Event::Blocked {
-                harness: login::display_name(&harness),
-                reason: format!(
-                    "the session is stuck at a harness question ssf does not know, in herdr pane {pane}"
-                ),
-                fix: format!(
-                    "open the pane (`ssf vm attach` in VM mode, herdr on the host) and answer it; \
-the prompt is sent once it is answered. For a first-run screen, re-run `ssf vm login {harness}`"
-                ),
-            };
-            let body = events::comment(origin, kind, &event);
-            let (gh, owner, name) = (gh.clone(), owner.to_string(), name.to_string());
-            tokio::spawn(async move {
-                if let Err(e) = gh.comment(&owner, &name, number, &body).await {
-                    warn!("could not post the hold event on {owner}/{name}#{number}: {e:#}");
-                }
-            });
-        })
     }
 
     /// What the harness of `number`'s workspace is started with, for an
@@ -696,6 +675,14 @@ the prompt is sent once it is answered. For a first-run screen, re-run `ssf vm l
             Some(t) => age(t) >= retry_wait(b.tell_failures),
         };
         if let Some(h) = &handle {
+            // A question ssf does not know waits for a person, however
+            // long: nothing is typed into it and nothing is restarted.
+            if b.reason == Blocked::QUESTION
+                && self.driver(repo).at_question(h).await.unwrap_or(true)
+            {
+                debug!(session, "still at the harness question; waiting");
+                return;
+            }
             let Ok(screen) = self.driver(repo).screen(h).await else {
                 return;
             };

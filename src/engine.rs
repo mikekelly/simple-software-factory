@@ -103,6 +103,8 @@ impl std::fmt::Display for SessionBlocked {
             "could not be started".to_string()
         } else if self.blocked.reason == Blocked::SETUP {
             "has incomplete setup".to_string()
+        } else if self.blocked.reason == Blocked::QUESTION {
+            format!("is at a question in pane {}", self.blocked.detail)
         } else {
             "has been at its sign-in prompt".to_string()
         };
@@ -128,7 +130,9 @@ fn is_blocked(e: &anyhow::Error) -> bool {
 /// take one.  Nothing is lost in any of those, so the item keeps its place,
 /// its events stay un-seen, and the next pass tries again.
 fn is_held(e: &anyhow::Error) -> bool {
-    is_blocked(e) || crate::delivery_channel::hold(e).is_some()
+    is_blocked(e)
+        || crate::delivery_channel::hold(e).is_some()
+        || crate::herdr::at_question(e).is_some()
 }
 
 pub struct Engine {

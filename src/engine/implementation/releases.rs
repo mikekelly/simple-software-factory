@@ -235,28 +235,46 @@ impl Engine {
             &eff.harness,
             st.prompts_sent + 1,
         );
-        let hold = self.hold_hook(repo, target, &eff.harness);
-        let d = crate::herdr::ON_HOLD
-            .scope(
-                hold,
-                self.driver(repo).deliver(
-                    &worktree_id,
-                    st.terminal_handle.as_deref(),
-                    Relaunch {
-                        command: &relaunch,
-                        resume_command: resume.as_deref(),
-                        harness: &eff.harness,
-                        title: &title,
-                        text: relaunch_text,
-                        first_prompt,
-                        channel: channel
-                            .as_ref()
-                            .map(|(mailbox, sequence)| (mailbox.as_path(), *sequence)),
-                    },
-                    text,
-                ),
+        let d = match self
+            .driver(repo)
+            .deliver(
+                &worktree_id,
+                st.terminal_handle.as_deref(),
+                Relaunch {
+                    command: &relaunch,
+                    resume_command: resume.as_deref(),
+                    harness: &eff.harness,
+                    title: &title,
+                    text: relaunch_text,
+                    first_prompt,
+                    channel: channel
+                        .as_ref()
+                        .map(|(mailbox, sequence)| (mailbox.as_path(), *sequence)),
+                },
+                text,
             )
-            .await?;
+            .await
+        {
+            Ok(d) => d,
+            // A harness started for this delivery came up at a question ssf
+            // does not know: the session is held on it, not failed. (A
+            // message to a session already at work that is at a question
+            // is only held for the next pass: `is_held`.)
+            Err(e) => {
+                if let Some(q) = crate::herdr::at_question(&e).filter(|q| q.first) {
+                    let pane = q.pane.clone();
+                    let b = self
+                        .hold_at_question(repo, target, &eff.harness, &pane)
+                        .await;
+                    return Err(SessionBlocked {
+                        session: session_id(&repo.name, target),
+                        blocked: b,
+                    }
+                    .into());
+                }
+                return Err(e);
+            }
+        };
         if d.relaunched {
             let e = self.entry(repo, target);
             e.launched_at = Some(now_iso());

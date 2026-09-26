@@ -650,7 +650,7 @@ pub struct HandoverNote {
 /// started again to check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Blocked {
-    /// `login`, `start`, or `setup`.
+    /// `login`, `start`, `setup` or `question`.
     pub reason: String,
     /// The harness that showed the prompt, or would not start.
     #[serde(default)]
@@ -689,6 +689,10 @@ impl Blocked {
     pub const LOGIN: &'static str = "login";
     /// The harness could not be started in the workspace at all.
     pub const START: &'static str = "start";
+    /// The harness is at a question ssf does not know (`herdr::AtQuestion`)
+    /// and has not had its first message: held until a person answers it
+    /// in the pane, which `detail` names (#541).
+    pub const QUESTION: &'static str = "question";
 }
 
 /// Follow `shares_workspace_of` to the session that acts on `number`:

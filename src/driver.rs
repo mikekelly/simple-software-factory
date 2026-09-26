@@ -708,6 +708,16 @@ impl Driver {
         }
     }
 
+    /// Is the harness in the terminal at a question ssf does not know
+    /// (`herdr::AtQuestion`)? A session held for one waits on this.
+    pub async fn at_question(&self, handle: &str) -> Result<bool> {
+        match self {
+            Driver::Herdr(d) => d.at_question_now(handle).await,
+            #[cfg(test)]
+            Driver::Stub(d) => Ok(d.with(|s| s.questions.contains(handle))),
+        }
+    }
+
     /// The visible screen of a terminal with its colours (ANSI), for the web
     /// pane mirror.
     pub async fn screen_ansi(&self, handle: &str) -> Result<String> {
@@ -909,6 +919,13 @@ pub struct StubState {
     /// When set, the next `ps` fails with this message: a driver that
     /// cannot say what is in its workspaces at all.
     pub ps_error: Option<String>,
+    /// When set, the next `start` leaves its harness at a question ssf does
+    /// not know: the handle goes into `questions` and `start` reports
+    /// `herdr::AtQuestion`.
+    pub start_at_question: bool,
+    /// Handles whose harness is at a question ssf does not know: a
+    /// delivery to one reports `herdr::AtQuestion` and delivers nothing.
+    pub questions: std::collections::BTreeSet<String>,
     handles: u32,
 }
 
@@ -1018,8 +1035,17 @@ impl StubDriver {
             // What is in the pane from here: the harness that was started,
             // as a driver would report it.
             s.harnesses.insert(worktree_id.into(), harness.into());
-            s.prompts.push(text.to_string());
             s.launches.push(format!("{harness}:{command}"));
+            if std::mem::take(&mut s.start_at_question) {
+                s.questions.insert(h.clone());
+                s.log.push(format!("start-at-question:{worktree_id}"));
+                return Err(crate::herdr::AtQuestion {
+                    pane: h,
+                    first: true,
+                }
+                .into());
+            }
+            s.prompts.push(text.to_string());
             s.log
                 .push(format!("start:{worktree_id}:{}", first_line(text)));
             if let Some(why) = s.start_delivery_error.take() {
@@ -1117,6 +1143,13 @@ impl StubDriver {
                 bail!("{worktree_id}: no such workspace");
             }
             if let Some(h) = s.live.get(worktree_id).cloned() {
+                if s.questions.contains(&h) {
+                    return Err(crate::herdr::AtQuestion {
+                        pane: h,
+                        first: false,
+                    }
+                    .into());
+                }
                 s.prompts.push(text.to_string());
                 s.log
                     .push(format!("deliver:{worktree_id}:{}", first_line(text)));

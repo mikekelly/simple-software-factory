@@ -411,16 +411,28 @@ which harness is running in its workspaces"
             tokens,
         );
         self.entry(repo, number).launched_at = Some(now_iso());
-        let hold = self.hold_hook(repo, number, &eff.harness);
-        let handle = match crate::herdr::ON_HOLD
-            .scope(
-                hold,
-                self.driver(repo)
-                    .start(&wt, &cmd, &title, &eff.harness, &text),
-            )
+        let handle = match self
+            .driver(repo)
+            .start(&wt, &cmd, &title, &eff.harness, &text)
             .await
         {
             Ok(handle) => handle,
+            Err(e) if crate::herdr::at_question(&e).is_some() => {
+                // The new harness is running, at a question ssf does not
+                // know: the handover is carried out, and the session is
+                // held on the question until a person answers it; its
+                // first message (the story, with any note) goes then.
+                let pane = crate::herdr::at_question(&e).unwrap().pane.clone();
+                self.post_event(
+                    repo,
+                    number,
+                    handed_over(&from_launch, &to_launch, &h, summary.is_some(), None),
+                )
+                .await;
+                self.hold_at_question(repo, number, &eff.harness, &pane)
+                    .await;
+                return;
+            }
             Err(e) => {
                 // The handover stands (the item keeps the overrides), but
                 // nothing is running: the item is blocked as it is for a

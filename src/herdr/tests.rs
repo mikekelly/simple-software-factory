@@ -1935,15 +1935,13 @@ LONG-PROMPT-OK and nothing else."
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// A harness at a question ssf does not know is held, past the settle
-/// deadline, until a person answers it; the hold is reported once (#541).
-#[tokio::test]
-async fn an_unknown_question_holds_the_launch_and_reports_once() {
-    let base = std::env::temp_dir().join(format!("ssf-herdr-hold-{}", std::process::id()));
+fn question_herdr(name: &str, blocked_listings: u32) -> (std::path::PathBuf, Herdr) {
+    let base = std::env::temp_dir().join(format!("ssf-herdr-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     let fake = base.join("herdr");
-    // Blocked on a question for the first eight agent listings, then idle
-    // at a composer: a person answered it.
+    // Blocked on a question for the first `blocked_listings` agent
+    // listings, then idle at a composer: a person answered it.
     crate::test_support::write_executable(
         &fake,
         r#"#!/bin/sh
@@ -1953,88 +1951,76 @@ n=$(cat "$d/n" 2>/dev/null || echo 0)
 case "$1 $2" in
   "agent list")
     n=$((n+1)); echo $n > "$d/n"
-    if [ $n -le 8 ]; then st=blocked; else st=idle; fi
+    if [ $n -le LIMIT ]; then st=blocked; else st=idle; fi
     echo "{\"agents\":[{\"agent\":\"claude\",\"agent_status\":\"$st\",\"pane_id\":\"w7:p1\",\"workspace_id\":\"w7\"}]}"
     ;;
   "agent wait")
-    if [ $n -le 8 ]; then st=blocked; else st=idle; fi
-    echo "{\"agent_status\":\"$st\"}"
+    echo '{"agent_status":"blocked"}'
     ;;
   "pane read")
-    if [ $n -le 8 ]; then
+    if [ $n -le LIMIT ]; then
       printf '%s\n' 'Choose the text style that looks best' '❯ 1. Dark mode' '  2. Light mode'
     else
       printf '%s\n' '> Try "fix lint errors"'
     fi
     ;;
+  "agent prompt")
+    echo '[agent_blocked] agent is blocked' >&2; exit 1
+    ;;
 esac
-"#,
+"#
+        .replace("LIMIT", &blocked_listings.to_string()),
     );
     let h = Herdr::new(HerdrConfig {
         command: fake.to_string_lossy().into_owned(),
-        // Shorter than the hold: the deadline must not end a held launch.
-        tui_idle_timeout_ms: 100,
         ..HerdrConfig::default()
     });
-    let reports = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let seen = reports.clone();
-    let hook: HoldHook = std::sync::Arc::new(move |pane: &str| {
-        seen.lock().unwrap().push(pane.to_string());
-    });
-    let state = ON_HOLD
-        .scope(hook, h.settle_harness("w7:p1", "claude"))
-        .await
-        .unwrap();
-    assert_eq!(state, "idle");
-    assert_eq!(*reports.lock().unwrap(), vec!["w7:p1".to_string()]);
+    (base, h)
+}
+
+/// A harness at a question ssf does not know is reported at once as an
+/// `AtQuestion` for its pane, with nothing typed into it: the caller holds
+/// the session, and the launch does not wait on a person (#541).
+#[tokio::test]
+async fn an_unknown_question_is_reported_not_answered_or_waited_on() {
+    let (base, h) = question_herdr("question-settle", 100);
+    let started = std::time::Instant::now();
+    let err = h.settle_harness("w7:p1", "claude").await.unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(
+        at_question(&err),
+        Some(&AtQuestion {
+            pane: "w7:p1".into(),
+            first: true
+        })
+    );
     let calls = std::fs::read_to_string(base.join("calls")).unwrap();
     assert!(!calls.contains("send-keys"), "{calls}");
     assert!(!calls.contains("send-text"), "{calls}");
     std::fs::remove_dir_all(base).unwrap();
 }
 
-/// A prompt herdr refuses because the agent is at a question is held and
-/// sent once the question is answered, never pasted into it (#541).
+/// A prompt herdr refuses because the agent is at a question is never
+/// pasted into it; the refusal is an `AtQuestion`, which the daemon holds.
 #[tokio::test]
 async fn a_blocked_prompt_is_held_not_pasted() {
-    let base = std::env::temp_dir().join(format!("ssf-herdr-hold-prompt-{}", std::process::id()));
-    std::fs::create_dir_all(&base).unwrap();
-    let fake = base.join("herdr");
-    crate::test_support::write_executable(
-        &fake,
-        r#"#!/bin/sh
-d="$(dirname "$0")"
-printf '%s\n' "$*" >> "$d/calls"
-n=$(cat "$d/n" 2>/dev/null || echo 0)
-case "$1 $2" in
-  "agent list")
-    n=$((n+1)); echo $n > "$d/n"
-    if [ $n -le 3 ]; then st=blocked; else st=idle; fi
-    echo "{\"agents\":[{\"agent\":\"claude\",\"agent_status\":\"$st\",\"pane_id\":\"w7:p1\",\"workspace_id\":\"w7\"}]}"
-    ;;
-  "pane read")
-    printf '%s\n' 'Allow this edit?' '❯ 1. Yes' '  2. No'
-    ;;
-  "agent prompt")
-    if [ $n -le 3 ]; then echo '[agent_blocked] agent is blocked' >&2; exit 1; fi
-    ;;
-esac
-"#,
-    );
-    let h = Herdr::new(HerdrConfig {
-        command: fake.to_string_lossy().into_owned(),
-        ..HerdrConfig::default()
-    });
-    let reports = std::sync::Arc::new(std::sync::Mutex::new(0));
-    let seen = reports.clone();
-    let hook: HoldHook = std::sync::Arc::new(move |_: &str| *seen.lock().unwrap() += 1);
-    ON_HOLD
-        .scope(hook, h.send_prompt("w7:p1", "keep going"))
-        .await
-        .unwrap();
-    assert_eq!(*reports.lock().unwrap(), 1);
+    let (base, h) = question_herdr("question-prompt", 100);
+    let err = h.send_prompt("w7:p1", "keep going").await.unwrap_err();
+    assert_eq!(at_question(&err).map(|q| q.first), Some(false));
+    let err = h.send_first_prompt("w7:p1", "the item").await.unwrap_err();
+    assert_eq!(at_question(&err).map(|q| q.first), Some(true));
     let calls = std::fs::read_to_string(base.join("calls")).unwrap();
-    assert_eq!(calls.matches("agent prompt").count(), 2, "{calls}");
     assert!(!calls.contains("send-text"), "{calls}");
+    assert!(!calls.contains("send-keys"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// The held session is looked at again on later passes: at the question
+/// while herdr says blocked and the screen is unknown, not once answered.
+#[tokio::test]
+async fn a_question_is_seen_to_clear() {
+    let (base, h) = question_herdr("question-clear", 1);
+    assert!(h.at_question_now("w7:p1").await.unwrap());
+    assert!(!h.at_question_now("w7:p1").await.unwrap());
     std::fs::remove_dir_all(base).unwrap();
 }

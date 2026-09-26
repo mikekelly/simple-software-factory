@@ -310,21 +310,32 @@ pub fn settle_step(state: &str, screen: &str) -> Settle {
     }
 }
 
-/// How often a held session ([`Settle::Held`]) is looked at again.
-const HOLD_POLL: Duration = if cfg!(test) {
-    Duration::from_millis(50)
-} else {
-    Duration::from_secs(3)
-};
+/// A harness in `pane` is at a question ssf does not know. Nothing was
+/// typed into it: a prompt pasted there is lost to it (#541). `first` is
+/// set when the harness has not had its first prompt yet (a launch, or
+/// the first prompt refused), and not for a message to a session already
+/// at work, which the next pass simply tries again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtQuestion {
+    pub pane: String,
+    pub first: bool,
+}
 
-/// Called once, with the pane id, when a launch is held at a harness
-/// question ssf does not know, so the caller can say so on the item.
-pub type HoldHook = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+impl std::fmt::Display for AtQuestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the harness in pane {} is at a question ssf does not know; held until a person answers it",
+            self.pane
+        )
+    }
+}
 
-tokio::task_local! {
-    /// The [`HoldHook`] for launches made inside its scope. A launch
-    /// outside any scope is held all the same, with a log line only.
-    pub static ON_HOLD: HoldHook;
+impl std::error::Error for AtQuestion {}
+
+/// The [`AtQuestion`] this error is, if it is one.
+pub fn at_question(e: &anyhow::Error) -> Option<&AtQuestion> {
+    e.chain().find_map(|c| c.downcast_ref::<AtQuestion>())
 }
 
 /// The agent states [`Herdr::settle_harness`] waits for: every one but
@@ -906,7 +917,7 @@ impl Herdr {
     /// Enter answers the question and the text is gone -- so the dialog is
     /// answered and the harness waited for again.
     pub async fn settle_harness(&self, pane_id: &str, harness: &str) -> Result<String> {
-        let mut deadline = Instant::now() + Duration::from_millis(self.cfg.tui_idle_timeout_ms);
+        let deadline = Instant::now() + Duration::from_millis(self.cfg.tui_idle_timeout_ms);
         let mut detected = false;
         while Instant::now() < deadline {
             if self.agents().await?.iter().any(|a| a.pane_id == pane_id) {
@@ -959,12 +970,14 @@ impl Herdr {
                 }
                 Settle::Held => {
                     // Some other question: a prompt pasted now is lost to
-                    // it, so hold until a person has answered it.
-                    self.hold(pane_id, harness).await?;
-                    // The hold has no time limit; the wait for what the
-                    // harness does next starts afresh.
-                    deadline = Instant::now() + Duration::from_millis(self.cfg.tui_idle_timeout_ms);
-                    continue;
+                    // it. The caller holds the session until a person has
+                    // answered it, without waiting here.
+                    warn!(pane_id, "{harness} is at a question ssf does not know");
+                    return Err(AtQuestion {
+                        pane: pane_id.to_string(),
+                        first: true,
+                    }
+                    .into());
                 }
                 Settle::Ready => return Ok(state),
             }
@@ -978,40 +991,20 @@ impl Herdr {
         Ok(state)
     }
 
-    /// Hold a harness that is at a question ssf does not know: report it
-    /// once through [`ON_HOLD`], then look again every [`HOLD_POLL`], with
-    /// no time limit, until the pane is no longer blocked on it (answered
-    /// by a person, or become a trust dialog ssf answers itself) or the
-    /// agent has gone.
-    async fn hold(&self, pane_id: &str, harness: &str) -> Result<()> {
-        let mut reported = false;
-        loop {
-            let Some(agent) = self
-                .agents()
-                .await?
-                .into_iter()
-                .find(|a| a.pane_id == pane_id)
-            else {
-                return Ok(());
-            };
-            if let Ok(text) = self.screen(pane_id).await.map(|s| s.join("\n")) {
-                if settle_step(&agent.status, &text) != Settle::Held {
-                    if reported {
-                        info!(pane_id, "{harness} is past the question; going on");
-                    }
-                    return Ok(());
-                }
-                if !reported {
-                    warn!(
-                        pane_id,
-                        "{harness} is at a question ssf does not know; holding the prompt until it is answered"
-                    );
-                    let _ = ON_HOLD.try_with(|hook| hook(pane_id));
-                    reported = true;
-                }
-            }
-            tokio::time::sleep(HOLD_POLL).await;
-        }
+    /// Is the agent in the pane blocked at a question ssf does not know
+    /// ([`Settle::Held`])? `false` once a person has answered it, the
+    /// screen is a trust dialog ssf answers itself, or the agent is gone.
+    pub async fn at_question_now(&self, pane_id: &str) -> Result<bool> {
+        let Some(agent) = self
+            .agents()
+            .await?
+            .into_iter()
+            .find(|a| a.pane_id == pane_id)
+        else {
+            return Ok(false);
+        };
+        let text = self.screen(pane_id).await?.join("\n");
+        Ok(settle_step(&agent.status, &text) == Settle::Held)
     }
 
     /// Answer a trust dialog in the pane with the keys it takes.
@@ -1130,9 +1123,9 @@ impl Herdr {
     }
 
     /// Give the agent in a pane a prompt. `agent prompt` pastes for us; if
-    /// it refuses because the agent is at a question, the prompt is held
-    /// until the question is answered and then sent: text pasted into a
-    /// question is lost to it (#541).
+    /// it refuses because the agent is at a question, nothing is pasted
+    /// (text pasted into a question is lost to it, #541): the error is an
+    /// [`AtQuestion`], and the caller holds the prompt for the next pass.
     pub async fn send_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
         if !fits_one_argument(text) {
             warn!(
@@ -1142,17 +1135,17 @@ impl Herdr {
             );
             return self.paste_prompt(pane_id, text).await;
         }
-        loop {
-            match self
-                .run(&["agent", "prompt", pane_id, text.trim_end()])
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(e) if prompt_failure(&e.to_string()) == PromptFailure::Blocked => {
-                    self.hold(pane_id, "the agent").await?
-                }
-                Err(e) => return Err(e),
+        match self
+            .run(&["agent", "prompt", pane_id, text.trim_end()])
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) if prompt_failure(&e.to_string()) == PromptFailure::Blocked => Err(AtQuestion {
+                pane: pane_id.to_string(),
+                first: false,
             }
+            .into()),
+            Err(e) => Err(e),
         }
     }
 
@@ -1253,7 +1246,13 @@ impl Herdr {
                             self.answer_trust(pane_id, answer).await?;
                             answered_dialog = true;
                         }
-                        _ => self.hold(pane_id, "the harness").await?,
+                        _ => {
+                            return Err(AtQuestion {
+                                pane: pane_id.to_string(),
+                                first: true,
+                            }
+                            .into());
+                        }
                     }
                 }
                 PromptFailure::Stalled => {
