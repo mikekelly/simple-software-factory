@@ -141,6 +141,13 @@ export function run({ url, session, takesInput, say, box, reconnect, resume }) {
 const NOTCH_PX = 50;
 /// How long Type stays on with nothing typed: collie's idle pause.
 const IDLE_MS = 30 * 60 * 1000;
+/// The font's normal size; read-only shrinks it to fit the pane.
+const FONT = 13;
+/// The smallest a read-only font gets.
+const MIN_FONT = 4;
+const FONTS =
+  '"JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
+const THEME = { background: "#0d1117", foreground: "#e6edf3" };
 
 /// An item session's live terminal (#563): the same `api/term/<session>`
 /// socket, which for an item streams the pane through herdr, with the
@@ -153,17 +160,21 @@ const IDLE_MS = 30 * 60 * 1000;
 /// typed for a while, Writes goes off, or the pane is taken over elsewhere
 /// (never taken back: no `--takeover`). herdr keeps the scrollback, so xterm
 /// keeps none, each wheel notch is one scroll, and a paste is always
-/// bracketed.
+/// bracketed. Read-only, the font shrinks (never past its normal size) so the
+/// pane's cells fit the window, and the wheel up, which herdr ignores from an
+/// observer, opens a history view: a second, input-less xterm over this one
+/// with the pane's recent output, read once from the mirror stream
+/// (`api/pane/<session>` on the `ssf-pane` port). It sends nothing; scrolling
+/// it to the bottom, or Esc, goes back to live.
 export function runItem({ url, session, takesInput, say, box, notice: noticeNode, typeButton, reconnect }) {
   box.hidden = false;
   const term = new Terminal({
     cursorBlink: true,
-    fontFamily:
-      '"JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-    fontSize: 13,
+    fontFamily: FONTS,
+    fontSize: FONT,
     macOptionIsMeta: true,
     scrollback: 0,
-    theme: { background: "#0d1117", foreground: "#e6edf3" },
+    theme: THEME,
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -202,8 +213,136 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
     if (text && !sticky) noticeTimer = setTimeout(() => (noticeNode.hidden = true), 6000);
   }
 
+  /// Read-only: the font that fits the pane's cells in the box, at most FONT.
+  /// xterm measures a new font's cells on a later frame, so it is found a step
+  /// a frame.
+  let fontFrame = 0;
+  function fitFont(steps = 12) {
+    cancelAnimationFrame(fontFrame);
+    if (control || steps <= 0) return;
+    // The box's content against the cells as drawn now.
+    const style = getComputedStyle(box);
+    const width = box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const height = box.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+    const screen = term.element?.querySelector(".xterm-screen");
+    if (!screen?.offsetWidth || !screen.offsetHeight || width <= 0 || height <= 0) return;
+    const font = term.options.fontSize;
+    const scale = Math.min(width / screen.offsetWidth, height / screen.offsetHeight);
+    let next = Math.floor(font * scale * 2) / 2;
+    if (scale < 1 && next >= font) next = font - 0.5;
+    next = Math.max(MIN_FONT, Math.min(FONT, next));
+    if (next === font) return;
+    term.options.fontSize = next;
+    fontFrame = requestAnimationFrame(() => fitFont(steps - 1));
+  }
+
+  /// Control: the normal font, and the pane sized to the box.
+  function fitBox() {
+    cancelAnimationFrame(fontFrame);
+    term.options.fontSize = FONT;
+    fitted();
+  }
+
+  // The history view: its own box over the terminal, and its own xterm.
+  const historyBox = document.createElement("div");
+  historyBox.className = "term-history";
+  historyBox.hidden = true;
+  box.append(historyBox);
+  let history = null;
+  let historyPort = null;
+
+  /// Open the history view, filled once from the mirror stream. Nothing is
+  /// sent to the pane.
+  function openHistory() {
+    if (history) return;
+    historyBox.hidden = false;
+    const view = new Terminal({
+      cols: term.cols,
+      rows: term.rows,
+      cursorBlink: false,
+      cursorInactiveStyle: "none",
+      disableStdin: true,
+      fontFamily: FONTS,
+      fontSize: term.options.fontSize,
+      scrollback: 5000,
+      theme: THEME,
+    });
+    history = view;
+    view.open(historyBox);
+    view.write("\x1b[2m[reading the pane's history…]\x1b[0m");
+    view.attachCustomKeyEventHandler((event) => {
+      if (event.key === "Escape" && event.type === "keydown") setTimeout(closeHistory);
+      return false;
+    });
+    view.attachCustomWheelEventHandler((event) => {
+      const buffer = view.buffer.active;
+      if (event.deltaY > 0 && buffer.viewportY >= buffer.baseY) setTimeout(closeHistory);
+      return true;
+    });
+    view.focus();
+    shown();
+    const opened = chrome.runtime.connect({ name: "ssf-pane" });
+    historyPort = opened;
+    let above = null;
+    let drawn = false;
+    const draw = (screen) => {
+      if (drawn || history !== view) return;
+      drawn = true;
+      opened.disconnect();
+      view.reset();
+      view.write(`${above ? `${above}\r\n` : ""}${screen}\x1b[?25l`, () => {
+        if (history !== view) return;
+        view.scrollLines(-3);
+        view.onScroll((top) => top >= view.buffer.active.baseY && setTimeout(closeHistory));
+      });
+    };
+    const field = (data, name) => {
+      try {
+        return String(JSON.parse(data)[name] ?? "");
+      } catch {
+        return "";
+      }
+    };
+    opened.onMessage.addListener((message) => {
+      if (history !== view || drawn) return;
+      if (message?.type === "history") above = field(message.data, "history");
+      else if (message?.type === "screen") {
+        const screen = field(message.data, "screen");
+        // The history comes first; a reader with none yet is not waited on long.
+        if (above !== null) draw(screen);
+        else setTimeout(() => draw(screen), 1500);
+      } else if (message?.type === "refused" || message?.type === "dropped") {
+        drawn = true;
+        opened.disconnect();
+        view.reset();
+        view.write("\x1b[2m[the pane's history could not be read; Esc for live]\x1b[0m");
+      }
+    });
+    opened.postMessage({ type: "watch", url, session });
+  }
+
+  function closeHistory() {
+    if (!history) return;
+    historyPort?.disconnect();
+    historyPort = null;
+    const view = history;
+    history = null;
+    historyBox.hidden = true;
+    view.dispose();
+    shown();
+    term.focus();
+  }
+
   function shown() {
-    if (port) say(control ? "live · typing" : "live · read-only");
+    if (port) {
+      say(
+        control
+          ? "live · typing"
+          : history
+            ? "history · read-only: scroll to the bottom, or Esc, for live"
+            : "live · read-only",
+      );
+    }
     typeButton.hidden = !canType();
     typeButton.setAttribute("aria-pressed", String(typing));
   }
@@ -277,12 +416,14 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
         // asked for control again while Type is on.
         if (typing && !control && canType()) ask({ type: "control" });
         if (control) {
-          fitted();
+          closeHistory();
+          fitBox();
           sendSize();
-        }
+        } else fitFont();
         shown();
       } else if (said.type === "size" && !control) {
         term.resize(said.cols, said.rows);
+        fitFont();
       } else if (said.type === "refused") {
         // Refused, or taken over elsewhere: Type goes off, and stays off.
         typing = false;
@@ -338,7 +479,11 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
     true,
   );
   term.attachCustomWheelEventHandler((event) => {
-    if (!control) return false;
+    // herdr takes no scroll from an observer: the wheel up reads history here.
+    if (!control) {
+      if (event.deltaY < 0) openHistory();
+      return false;
+    }
     // A mouse wheel moves in lines or whole notches; a trackpad in pixels.
     const notches =
       event.deltaMode === 0 ? Math.trunc((wheel += event.deltaY) / NOTCH_PX) : Math.sign(event.deltaY);
@@ -354,7 +499,8 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
   new ResizeObserver(() => {
     clearTimeout(timer);
     timer = setTimeout(() => {
-      if (control) fitted();
+      if (control) fitBox();
+      else fitFont();
       sendSize();
     }, FIT_MS);
   }).observe(box);

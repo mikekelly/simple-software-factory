@@ -10,12 +10,26 @@
 // herdr keeps the scrollback and does not tell the viewer the pane's modes,
 // so xterm keeps no scrollback, each wheel notch is one scroll message, and
 // a paste is always sent as a bracketed paste.
+//
+// Read-only, the font shrinks (never past its normal size) so the pane's
+// cells fit the window, and herdr takes no scroll from an observer: the wheel
+// up opens a history view instead, a second, input-less xterm over this one
+// holding the pane's recent output read once from the mirror stream
+// (`api/pane/<session>`: the history above the screen, and the screen). It
+// sends nothing; scrolling it to the bottom, or Esc, goes back to live.
 import { Terminal } from "./xterm.mjs";
 import { FitAddon } from "./addon-fit.mjs";
 
 const IDLE_MS = 30 * 60 * 1000;
 /// Pixels of a smooth (trackpad) scroll that count as one wheel notch.
 const NOTCH_PX = 50;
+/// The font's normal size; read-only shrinks it to fit the pane.
+const FONT = 13;
+/// The smallest a read-only font gets.
+const MIN_FONT = 4;
+const FONTS =
+  '"JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
+const THEME = { background: "#0d1117", foreground: "#e6edf3" };
 
 const session = new URLSearchParams(location.search).get("session") ?? "";
 const box = document.getElementById("box");
@@ -28,12 +42,11 @@ document.title = `${session} · SSF terminal`;
 
 const term = new Terminal({
   cursorBlink: true,
-  fontFamily:
-    '"JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-  fontSize: 13,
+  fontFamily: FONTS,
+  fontSize: FONT,
   macOptionIsMeta: true,
   scrollback: 0,
-  theme: { background: "#0d1117", foreground: "#e6edf3" },
+  theme: THEME,
 });
 const fit = new FitAddon();
 term.loadAddon(fit);
@@ -56,7 +69,11 @@ function notice(text, sticky = false) {
 }
 
 function shown() {
-  statusNode.textContent = control ? "live · typing" : "live · read-only";
+  statusNode.textContent = control
+    ? "live · typing"
+    : history
+      ? "history · read-only: scroll to the bottom, or Esc, for live"
+      : "live · read-only";
   typeButton.hidden = !mayControl;
   typeButton.setAttribute("aria-pressed", String(typing));
 }
@@ -71,6 +88,132 @@ function sendSize() {
   if (size && size.cols > 0 && size.rows > 0) {
     send(JSON.stringify({ type: "resize", cols: size.cols, rows: size.rows }));
   }
+}
+
+/// Read-only: the font that fits the pane's cells in the box, at most FONT.
+/// xterm measures a new font's cells on a later frame, so it is found a step
+/// a frame.
+let fontFrame = 0;
+function fitFont(steps = 12) {
+  cancelAnimationFrame(fontFrame);
+  if (control || steps <= 0) return;
+  // The box's content against the cells as drawn now.
+  const style = getComputedStyle(box);
+  const width = box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  const height = box.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+  const screen = term.element?.querySelector(".xterm-screen");
+  if (!screen?.offsetWidth || !screen.offsetHeight || width <= 0 || height <= 0) return;
+  const font = term.options.fontSize;
+  const scale = Math.min(width / screen.offsetWidth, height / screen.offsetHeight);
+  let next = Math.floor(font * scale * 2) / 2;
+  if (scale < 1 && next >= font) next = font - 0.5;
+  next = Math.max(MIN_FONT, Math.min(FONT, next));
+  if (next === font) return;
+  term.options.fontSize = next;
+  fontFrame = requestAnimationFrame(() => fitFont(steps - 1));
+}
+
+/// Control: the normal font, and the pane sized to the box.
+function fitBox() {
+  cancelAnimationFrame(fontFrame);
+  term.options.fontSize = FONT;
+  try {
+    fit.fit();
+  } catch {
+    // A box with no size has nothing to fit.
+  }
+}
+
+// The history view: its own box over the terminal, and its own xterm.
+const historyBox = document.createElement("div");
+historyBox.className = "term-history";
+historyBox.hidden = true;
+box.append(historyBox);
+let history = null;
+let historySource = null;
+
+/// Open the history view, filled once from the mirror stream. Nothing is
+/// sent to the pane.
+function openHistory() {
+  if (history) return;
+  historyBox.hidden = false;
+  const view = new Terminal({
+    cols: term.cols,
+    rows: term.rows,
+    cursorBlink: false,
+    cursorInactiveStyle: "none",
+    disableStdin: true,
+    fontFamily: FONTS,
+    fontSize: term.options.fontSize,
+    scrollback: 5000,
+    theme: THEME,
+  });
+  history = view;
+  view.open(historyBox);
+  view.write("\x1b[2m[reading the pane's history…]\x1b[0m");
+  view.attachCustomKeyEventHandler((event) => {
+    if (event.key === "Escape" && event.type === "keydown") setTimeout(closeHistory);
+    return false;
+  });
+  view.attachCustomWheelEventHandler((event) => {
+    const buffer = view.buffer.active;
+    if (event.deltaY > 0 && buffer.viewportY >= buffer.baseY) setTimeout(closeHistory);
+    return true;
+  });
+  view.focus();
+  shown();
+  const base = location.pathname.replace(/[^/]*$/, "");
+  const source = new EventSource(`${base}api/pane/${encodeURIComponent(session)}`);
+  historySource = source;
+  let above = null;
+  let drawn = false;
+  const draw = (screen) => {
+    if (drawn || history !== view) return;
+    drawn = true;
+    source.close();
+    view.reset();
+    view.write(`${above ? `${above}\r\n` : ""}${screen}\x1b[?25l`, () => {
+      if (history !== view) return;
+      view.scrollLines(-3);
+      view.onScroll((top) => top >= view.buffer.active.baseY && setTimeout(closeHistory));
+    });
+  };
+  source.addEventListener("history", (event) => {
+    try {
+      above = String(JSON.parse(event.data).history ?? "");
+    } catch {
+      above = "";
+    }
+  });
+  source.addEventListener("screen", (event) => {
+    let screen = "";
+    try {
+      screen = String(JSON.parse(event.data).screen ?? "");
+    } catch {
+      // Drawn empty.
+    }
+    // The history comes first; a reader that has none yet is not waited on long.
+    if (above !== null) draw(screen);
+    else setTimeout(() => draw(screen), 1500);
+  });
+  source.addEventListener("error", () => {
+    if (drawn || history !== view) return;
+    source.close();
+    view.reset();
+    view.write("\x1b[2m[the pane's history could not be read; Esc for live]\x1b[0m");
+  });
+}
+
+function closeHistory() {
+  if (!history) return;
+  historySource?.close();
+  historySource = null;
+  const view = history;
+  history = null;
+  historyBox.hidden = true;
+  view.dispose();
+  shown();
+  term.focus();
 }
 
 function readOnly() {
@@ -130,17 +273,15 @@ function connect() {
       // is asked for control again while Type is on.
       if (typing && !control && mayControl) send(JSON.stringify({ type: "control" }));
       if (control) {
+        closeHistory();
         notice("");
-        try {
-          fit.fit();
-        } catch {
-          // A box with no size has nothing to fit.
-        }
+        fitBox();
         sendSize();
-      }
+      } else fitFont();
       shown();
     } else if (message.type === "size" && !control) {
       term.resize(message.cols, message.rows);
+      fitFont();
     } else if (message.type === "refused") {
       typing = false;
       shown();
@@ -187,7 +328,11 @@ box.addEventListener(
   true,
 );
 term.attachCustomWheelEventHandler((event) => {
-  if (!control) return false;
+  // herdr takes no scroll from an observer: the wheel up reads history here.
+  if (!control) {
+    if (event.deltaY < 0) openHistory();
+    return false;
+  }
   // A mouse wheel moves in lines or whole notches; a trackpad in pixels.
   const notches =
     event.deltaMode === 0 ? Math.trunc((wheel += event.deltaY) / NOTCH_PX) : Math.sign(event.deltaY);
@@ -203,13 +348,8 @@ let fitTimer = null;
 new ResizeObserver(() => {
   clearTimeout(fitTimer);
   fitTimer = setTimeout(() => {
-    if (control) {
-      try {
-        fit.fit();
-      } catch {
-        // As above.
-      }
-    }
+    if (control) fitBox();
+    else fitFont();
     sendSize();
   }, 100);
 }).observe(box);

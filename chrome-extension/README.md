@@ -478,8 +478,12 @@ detach their terminal when they end.
 An **item**'s window is also a live xterm.js terminal on `api/term/<session>`,
 which for an item streams the agent's herdr pane (`herdr terminal session
 observe|control`; see [docs/dashboard.md](../docs/dashboard.md)). It opens
-**read-only** at the pane's own size: nothing you type or paste is sent, and a
-notice under the title bar says so.
+**read-only** at the pane's own size, the font shrunk (never enlarged) so the
+whole pane fits the window: nothing you type or paste is sent, and a notice
+under the title bar says so. The wheel up opens a read-only history view of the
+pane's recent output (read once from the redacted `api/pane/<session>` stream
+on the `ssf-pane` port) over the live terminal; scrolling it to the bottom, or
+Esc, goes back to live. It sends nothing to the pane.
 
 Where the snapshot says the pane takes typing (`pane_input`: only where the
 factory's `item_pane_input` is on), the factory's Writes switch is on, and the
@@ -492,13 +496,12 @@ hour with nothing typed, when the Writes switch is turned off, or when someone
 else takes the pane over, and the notice says why. herdr keeps the pane's
 scrollback, so the terminal keeps none: while typing, each wheel notch scrolls
 the pane one step, Shift+Enter sends a newline that does not submit (ESC CR),
-and a paste is always sent as a bracketed paste. A read-only view cannot
-scroll back. Speak to an item's agent otherwise by commenting on the item.
+and a paste is always sent as a bracketed paste. Speak to an item's agent otherwise by commenting on the item.
 When the socket closes the terminal says so and offers **Reconnect**.
 
 The older pane mirror (`pane-render.js`, `pane-keys.js`, the mirror half of
-`terminal.js` and `api/pane/<session>`) is no longer opened for any session;
-it is kept until [#564](https://github.com/mikekelly/simple-software-factory/issues/564)
+`terminal.js`) is no longer opened for any session, though the history view
+still reads `api/pane/<session>`; it is kept until [#564](https://github.com/mikekelly/simple-software-factory/issues/564)
 removes it.
 
 ## Reaching a factory on a tailnet

@@ -114,3 +114,7 @@ pre { margin: 0; font-family: "Nerd Font Symbols", "Symbols Nerd Font", "JetBrai
 #notice { flex: none; margin: 0; padding: 4px 12px; background: rgba(210, 153, 34, .15);
   color: #e3b341; }
 #notice[hidden] { display: none; }
+/* An item terminal's read-only history view (#563), over the live one. */
+#xterm { position: relative; }
+.term-history { position: absolute; inset: 0; box-sizing: border-box; padding: 4px 0 0 6px; background: #0d1117; z-index: 10; }
+.term-history[hidden] { display: none; }

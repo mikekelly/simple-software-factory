@@ -184,8 +184,13 @@ session's agent pane in a new tab as a live terminal (xterm.js), streamed from
 herdr as the pane draws it. It is not the redacted pane mirror: anyone with the
 URL sees the pane's output as it is, GitHub tokens included.
 
-The terminal opens **read-only**, at the pane's own size. A key or a paste is
-not sent, and the page says so. The wheel does nothing while read-only.
+The terminal opens **read-only**, at the pane's own size, with the font
+shrunk (never enlarged) so the whole pane fits the window. A key or a paste is
+not sent, and the page says so. herdr does not let an observer scroll the pane,
+so the wheel up opens a read-only **history** view instead: the pane's recent
+output (up to 1000 rows, read once from the redacted
+`api/pane/<session>` mirror stream, below), over the live terminal. It sends nothing
+to the pane. Scrolling it to the bottom, or Esc, goes back to live.
 
 **Type** asks the server to control the pane. The button shows only where the
 server allows it, and the server refuses control unless both of these are on:
