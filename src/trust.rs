@@ -41,18 +41,22 @@ pub fn preregister(repo_root: &Path, worktree: &Path) {
     let Some(home) = dirs::home_dir() else {
         return;
     };
+    // Harnesses key projects by the real path, and a config kept as a
+    // symlink (into dotfiles) is written through, not replaced.
+    let repo_root = &repo_root.canonicalize().unwrap_or(repo_root.to_path_buf());
+    let real = |p: std::path::PathBuf| p.canonicalize().unwrap_or(p);
     for h in HARNESSES {
         let result = match h.trust {
             // Signed in, it has these files; a harness never set up is left
             // alone.
             Trust::ClaudeJson if home.join(".claude.json").is_file() => {
-                claude(&home.join(".claude.json"), repo_root)
+                claude(&real(home.join(".claude.json")), repo_root)
             }
             Trust::CodexToml if home.join(".codex").is_dir() => {
-                codex(&home.join(".codex/config.toml"), repo_root)
+                codex(&real(home.join(".codex/config.toml")), repo_root)
             }
             Trust::CopilotJson if home.join(".copilot/config.json").is_file() => {
-                copilot(&home.join(".copilot/config.json"), repo_root)
+                copilot(&real(home.join(".copilot/config.json")), repo_root)
             }
             Trust::CrushInit if crate::agents::installed(h.id) => crush(repo_root, worktree),
             _ => Ok(()),
