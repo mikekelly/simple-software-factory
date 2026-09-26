@@ -268,6 +268,10 @@ for a in claude codex copilot pi omp opencode grok; do
         su ssf -c "/usr/local/bin/herdr integration install $a" || echo "provision: herdr integration $a failed" >&2
     fi
 done
+# The working-with-ssf skill, for the ssf user's harnesses (after their
+# config directories exist, so the skills CLI links it into each).
+su ssf -c "npx -y skills add mikekelly/simple-software-factory -g -y" \
+    || echo "provision: working-with-ssf skill install failed" >&2
 # Services: seed, sshd, herdr, ssf; under Firecracker also the network
 # (gvforwarder over vsock, instead of the systemd network stack), under
 # lima the image's own network stays.

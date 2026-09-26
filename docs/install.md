@@ -365,10 +365,10 @@ On the machine you are running on:
 npx -y skills add mikekelly/simple-software-factory -g -y
 ```
 
-When the sessions run on a different machine (the VM or a rented host), install it there too, as the Unix user that runs them. Host mode needs only the step above. For a guest on a server, run this from the server, after the resident agent's step above.
+Host mode needs only the step above, and so does a VM: `ssf vm build` installs the skill for the guest's `ssf` user (a failure is reported in the build log, not fatal). When the sessions run on a rented host, install it there too, as the Unix user that runs them:
 
 ```sh
-ssh ssf-default 'npx -y skills add mikekelly/simple-software-factory -g -y'   # or user@host
+ssh user@host 'npx -y skills add mikekelly/simple-software-factory -g -y'
 ```
 
 If `npx` is missing on that machine, install Node.js there first (`mise use -g node`, or the system package). A `✗ PromptScript does not support global skill installation` line in the output is harmless. Expect `working-with-ssf` in `npx skills ls -g` (or `~/.agents/skills/working-with-ssf`) on each machine.
