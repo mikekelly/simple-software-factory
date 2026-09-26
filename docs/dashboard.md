@@ -177,6 +177,39 @@ be read is left as it is, and that run serves a fresh URL; one that cannot be
 stored means the URL will not survive a restart. Either way the log says so and
 the log line below carries the URL actually being served.
 
+### Live terminal for an item's pane
+
+Each card on the browser page has an **Open terminal** link. It opens the
+session's agent pane in a new tab as a live terminal (xterm.js), streamed from
+herdr as the pane draws it. It is not the redacted pane mirror: anyone with the
+URL sees the pane's output as it is, GitHub tokens included.
+
+The terminal opens **read-only**, at the pane's own size. A key or a paste is
+not sent, and the page says so. The wheel does nothing while read-only.
+
+**Type** asks the server to control the pane. The button shows only where the
+server allows it, and the server refuses control unless both of these are on:
+
+- `dashboard.terminal_input` on the server (default `false`), which lets this
+  page type at all. Otherwise the page follows the [write rules](#write-rules),
+  which accept typing only from the Chrome extension's origin.
+- `item_pane_input` for the item's repository (default `false`), decided where
+  the factory's configuration is (in the guest, for a factory in a VM).
+
+A refusal is shown on the page, and the terminal stays read-only. While Type is
+on, the pane takes the size of the browser's terminal, and each wheel notch
+scrolls the pane's history, or the app in a full-screen TUI that uses the mouse.
+Shift+Enter sends a newline that does not submit, and a paste is always sent as
+a bracketed paste. Type turns itself off, giving the pane back at its own size,
+when the person turns it off, hides the tab, or types nothing for 30 minutes.
+It never takes a pane that someone else controls. If someone else takes the
+pane, the page says so and goes back to read-only.
+
+When the pane goes away (the harness exited, or it was relaunched in a new pane),
+the terminal looks for it again for about a minute and carries on in the new
+pane. Scratch sessions are unchanged: they run in tmux, and only the extension
+opens a terminal on them.
+
 The startup log line carries the whole URL on every start, so
 `journalctl --user -u ssf.service | grep 'Server web dashboard'` finds it (the
 unit is `ssf@NAME.service` for a named target).
@@ -226,7 +259,7 @@ server's own browser page and its CSS and JavaScript.
 | `GET /<capability>/api/models/<harness>` | what `ssf models <harness> --json` prints |
 | `GET /<capability>/api/usage` | what `ssf usage --json` prints: each harness's remaining provider allowance |
 | `GET /<capability>/api/pane/<session>` | a server-sent events mirror of a session's agent pane (below) |
-| `GET /<capability>/api/term/<session>` | a WebSocket terminal attached to a scratch session's tmux session ([Terminal](#terminal)) |
+| `GET /<capability>/api/term/<session>` | a WebSocket terminal: a scratch session's tmux session, or an item session's herdr pane ([Terminal](#terminal)) |
 | `GET /<capability>/chrome-extension.zip` | this build's [Chrome extension](#chrome-extension) as a zip download (`ssf-chrome-extension.zip`), which the browser page links to |
 
 `api/events` sends the current snapshot immediately as an `event: status` frame
@@ -306,12 +339,12 @@ from herdr until it is next started.
 that attaches a live terminal to a scratch session's tmux session: the server
 runs `ssf __pane attach <session>` (`tmux attach-session`) in a PTY, through
 the same client transport as the pane mirror, so a factory in a VM is attached
-to in the guest. It takes a scratch session only (`owner%2Fname~id`); an item's
-session, or anything that is not a session, is `400`, as is a request that is
-not a WebSocket upgrade. Since a terminal types at an agent, it is held to a
-write's origin rule on top of the capability: the `Origin` must be a
-`chrome-extension://...` origin, or it is `403`. At most 16 terminals are open
-at once; a seventeenth is `503`.
+to in the guest. For an item's session (`owner%2Fname%2342`) it streams the
+herdr pane instead (below). Anything that is not a session is `400`, as is a
+request that is not a WebSocket upgrade. Since a scratch terminal types at an
+agent, it is held to a write's origin rule on top of the capability: the
+`Origin` must be a `chrome-extension://...` origin, or it is `403`. At most 16
+terminals are open at once; a seventeenth is `503`.
 
 The protocol:
 
@@ -327,9 +360,36 @@ The protocol:
   or when the client closes it.
 
 Unlike the mirror, the terminal shows no redaction: it is the session's own
-terminal, as `tmux attach` in a shell on the factory shows it. The server's
-own browser page has no terminal view; the route is for clients such as the
-Chrome extension, whose floating terminal window uses it for scratch sessions.
+terminal, as `tmux attach` in a shell on the factory shows it. The Chrome
+extension's floating terminal window uses it for scratch sessions.
+
+An item session's terminal is `ssf __pane control <session> [--observe]` run
+over pipes, which runs `herdr terminal session observe|control` on the pane.
+Any reader of the capability may open it view only. Control is given only to
+a request whose `Origin` is a `chrome-extension://...` origin, or the page's
+own origin when `dashboard.terminal_input` is on, and only where
+`item_pane_input` is on for the repository. Control is never a takeover. The
+protocol:
+
+- **binary frames** from the server are what herdr drew. From the client they
+  are typed bytes, sent on only while in control.
+- **text frames** from the client are JSON: `{"type": "control"}` and
+  `{"type": "release"}` ask for control and give it back;
+  `{"type": "resize", "cols": N, "rows": N}` is the client's size, which
+  control starts at and follows; `{"type": "scroll", "direction": "up"}` (or
+  `"down"`) is one wheel notch, sent on only while in control. Anything else is
+  ignored.
+- **text frames** from the server are JSON: `{"type": "mode", "control": bool,
+  "may_control": bool}` each time the stream starts (control once herdr has
+  drawn for it); `{"type": "size", "cols": N, "rows": N}` when the drawn size
+  changes; `{"type": "refused", "reason": "..."}` for control that was not
+  allowed; and `{"type": "notice", "text": "..."}` for anything else, such as
+  a pane being looked for again.
+- A view-only stream follows the pane's size: herdr reports no resize, so the
+  factory reads it every two seconds and starts the stream again when it
+  changes. A stream whose pane went away (`terminal.closed` saying it exited,
+  or was not found) is started again after 1, 2, 4, 8, 10, 10, 10 and 15
+  seconds; one that is taken over by someone else goes back to view only.
 
 ### Snapshot fields a client can rely on
 

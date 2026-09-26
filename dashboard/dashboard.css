@@ -98,6 +98,7 @@ main { padding: 2rem 0 4rem; }
 .issue-title { margin: 1.35rem 0 .35rem; font-size: 1.25rem; letter-spacing: -.02em; overflow-wrap: anywhere; }
 .issue-link { color: var(--green); font: .8rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .issue-link:not([href]) { color: var(--muted); text-decoration: none; }
+.terminal-link { display: block; width: fit-content; margin-top: .45rem; color: #dceae4; font-size: .82rem; }
 
 .facts { margin: 1.4rem 0 0; }
 .facts > div { padding: .85rem 0; border-top: 1px solid var(--line); }

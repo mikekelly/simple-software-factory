@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SSF terminal</title>
+  <link rel="stylesheet" href="dashboard.css">
+  <link rel="stylesheet" href="xterm.css">
+  <link rel="stylesheet" href="terminal.css">
+</head>
+<body>
+  <div class="term-bar">
+    <h1 id="title">Terminal</h1>
+    <span id="status" class="status" aria-live="polite">connecting…</span>
+    <button id="type" type="button" aria-pressed="false" hidden>Type</button>
+    <button id="reconnect" type="button" hidden>Reconnect</button>
+  </div>
+  <p id="notice" class="term-notice" role="status" hidden></p>
+  <div id="box"></div>
+  <script type="module" src="terminal.js"></script>
+</body>
+</html>
