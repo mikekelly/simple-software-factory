@@ -218,7 +218,9 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
   function type(bytes) {
     if (!control) {
       notice(
-        canType()
+        typing
+          ? "Nothing was sent: waiting for control of the pane."
+          : canType()
           ? "Read-only: nothing was sent. Turn on Type to type into this pane."
           : "Read-only: nothing was sent. " +
               (!takesInput
@@ -373,7 +375,7 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
   // The factory's Writes switch, followed as the options page changes it.
   const readWrites = (factories) => {
     const item = (factories ?? []).find((one) => factoryUrl(one?.url) === url);
-    writes = item?.writes !== false;
+    writes = item?.writes === true;
     if (!writes) setTyping(false, "writes were turned off for this factory");
     shown();
   };
