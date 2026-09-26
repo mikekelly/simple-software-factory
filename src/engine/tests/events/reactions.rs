@@ -1,0 +1,300 @@
+use super::*;
+
+// #566: reactions leave `updated_at` alone, so they are found through the
+// timeline's ETag and delivered as one line each: who, which emoji, where.
+
+fn reacted_comment(counts: Value) -> Value {
+    let mut c = comment(2, "alice", "the long comment body");
+    c["reactions"] = counts;
+    c
+}
+
+fn item_with(counts: Value) -> Value {
+    let mut i = assigned_item(5, "alice", "u2");
+    i["reactions"] = counts;
+    i
+}
+
+/// A session on #5 whose follow-up has seen the item once at `u2`, with
+/// alice's 👍 already on comment 2: recorded, not delivered.
+async fn baselined(stub: &GitHubStub) -> (Engine, crate::driver::StubDriver) {
+    let (mut e, d) = blocked_setup(stub, READY_SCREEN);
+    let r = repo();
+    stub.set_issue(5, item_with(json!({"total_count": 0})));
+    stub.set_assigned(vec![item_with(json!({"total_count": 0}))]);
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            reacted_comment(json!({"total_count": 1, "+1": 1})),
+        ],
+    );
+    stub.set_reactions("issues/comments/2", &[("alice", "+1")]);
+    {
+        let st = e.entry(&r, 5);
+        st.seen.insert("assigned:1".into(), String::new());
+        st.seen.insert("commented:2".into(), "t".into());
+    }
+    e.tick_repo(&r).await.unwrap();
+    assert!(
+        d.prompts().is_empty(),
+        "reactions already there are not news"
+    );
+    let st = e.entry(&r, 5).clone();
+    assert_eq!(
+        st.seen.get("reactions:commented:2").map(String::as_str),
+        Some("alice:+1")
+    );
+    assert!(!st.timeline_etags.is_empty());
+    let _ = (d.log(), stub.hits());
+    (e, d)
+}
+
+#[tokio::test]
+async fn a_reaction_is_delivered_and_a_quiet_poll_costs_a_304() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = baselined(&stub).await;
+    let r = repo();
+
+    // Nothing moved: the timeline answers 304 and nothing is fetched or said.
+    e.tick_repo(&r).await.unwrap();
+    assert!(d.prompts().is_empty());
+    let hits = stub.hits();
+    assert!(!hits.iter().any(|h| h == "/repos/o/r/issues/5"), "{hits:?}");
+    assert!(!hits.iter().any(|h| h.contains("reactions")), "{hits:?}");
+
+    // bob adds ❤️: the item's `updated_at` stays, the timeline moves.
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            reacted_comment(json!({"total_count": 2, "+1": 1, "heart": 1})),
+        ],
+    );
+    stub.set_reactions("issues/comments/2", &[("alice", "+1"), ("bob", "heart")]);
+    e.tick_repo(&r).await.unwrap();
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].contains("@bob reacted ❤️ to u2"),
+        "{}",
+        prompts[0]
+    );
+    assert!(
+        !prompts[0].contains("the long comment body"),
+        "{}",
+        prompts[0]
+    );
+    assert!(!prompts[0].contains("@alice"), "{}", prompts[0]);
+
+    // And it is not said twice.
+    e.tick_repo(&r).await.unwrap();
+    assert!(d.prompts().is_empty());
+}
+
+#[tokio::test]
+async fn removals_and_swaps_are_delivered() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = baselined(&stub).await;
+    let r = repo();
+
+    // alice swaps 👍 for 👎.
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            reacted_comment(json!({"total_count": 1, "-1": 1})),
+        ],
+    );
+    stub.set_reactions("issues/comments/2", &[("alice", "-1")]);
+    e.tick_repo(&r).await.unwrap();
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].contains("@alice reacted 👎 to u2"),
+        "{}",
+        prompts[0]
+    );
+    assert!(
+        prompts[0].contains("@alice removed 👍 from u2"),
+        "{}",
+        prompts[0]
+    );
+
+    // And takes it back.
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            reacted_comment(json!({"total_count": 0})),
+        ],
+    );
+    stub.set_reactions("issues/comments/2", &[]);
+    e.tick_repo(&r).await.unwrap();
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].contains("@alice removed 👎 from u2"),
+        "{}",
+        prompts[0]
+    );
+}
+
+#[tokio::test]
+async fn refused_logins_and_the_bot_s_own_reactions_are_recorded_not_delivered() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = baselined(&stub).await;
+    let r = repo();
+    e.cfg.daemon.allowed_users = Some(vec!["alice".into()]);
+
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            reacted_comment(json!({"total_count": 3, "+1": 1, "eyes": 1, "rocket": 1})),
+        ],
+    );
+    stub.set_reactions(
+        "issues/comments/2",
+        &[("alice", "+1"), ("mallory", "eyes"), ("bot", "rocket")],
+    );
+    e.tick_repo(&r).await.unwrap();
+    assert!(d.prompts().is_empty());
+    assert_eq!(
+        e.entry(&r, 5)
+            .seen
+            .get("reactions:commented:2")
+            .map(String::as_str),
+        Some("alice:+1 bot:rocket mallory:eyes")
+    );
+}
+
+#[tokio::test]
+async fn reactions_can_be_ignored_like_any_event() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = baselined(&stub).await;
+    let r = repo();
+    e.cfg.daemon.ignored_events.push("reacted".into());
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            reacted_comment(json!({"total_count": 2, "+1": 1, "heart": 1})),
+        ],
+    );
+    stub.set_reactions("issues/comments/2", &[("alice", "+1"), ("bob", "heart")]);
+    e.tick_repo(&r).await.unwrap();
+    assert!(d.prompts().is_empty());
+}
+
+/// A reaction on the body moves neither `updated_at` nor the timeline,
+/// only the listing, whose item carries the body's counts.
+#[tokio::test]
+async fn a_reaction_on_the_body_is_delivered_from_the_listing() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = baselined(&stub).await;
+    let r = repo();
+    let reacted = item_with(json!({"total_count": 1, "hooray": 1}));
+    stub.set_issue(5, reacted.clone());
+    stub.set_assigned(vec![reacted]);
+    stub.set_reactions("issues/5", &[("carol", "hooray")]);
+    e.tick_repo(&r).await.unwrap();
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].contains("@carol reacted 🎉 to https://gh/5"),
+        "{}",
+        prompts[0]
+    );
+    e.tick_repo(&r).await.unwrap();
+    assert!(d.prompts().is_empty(), "not said twice");
+}
+
+/// An item that does not carry the body's counts (the `/pulls` listing
+/// builds one) neither triggers a look nor wipes the body's record.
+#[tokio::test]
+async fn an_item_without_body_counts_leaves_the_body_record_alone() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = baselined(&stub).await;
+    let r = repo();
+    e.entry(&r, 5)
+        .seen
+        .insert("reactions:body".into(), "carol:hooray".into());
+    // The same item, without `reactions`, from both the listing and the
+    // item endpoint (the listing's baseline had them); the timeline moves (bob's ❤️) so the follow-up runs.
+    stub.set_issue(5, assigned_item(5, "alice", "u2"));
+    stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            reacted_comment(json!({"total_count": 2, "+1": 1, "heart": 1})),
+        ],
+    );
+    stub.set_reactions("issues/comments/2", &[("alice", "+1"), ("bob", "heart")]);
+    e.tick_repo(&r).await.unwrap();
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(!prompts[0].contains("carol"), "{}", prompts[0]);
+    assert_eq!(
+        e.entry(&r, 5)
+            .seen
+            .get("reactions:body")
+            .map(String::as_str),
+        Some("carol:hooray")
+    );
+    let hits = stub.hits();
+    assert!(
+        !hits
+            .iter()
+            .any(|h| h == "/repos/o/r/issues/5/reactions?per_page=100"),
+        "{hits:?}"
+    );
+}
+
+/// Rebuilding `seen` from the timeline alone (a reactivation, a
+/// handover's story) keeps the reaction records.
+#[test]
+fn replacing_seen_keeps_the_reaction_records() {
+    let mut st = IssueState::default();
+    st.seen.insert("commented:2".into(), "t".into());
+    st.seen
+        .insert("reactions:commented:2".into(), "alice:+1".into());
+    st.replace_seen(BTreeMap::from([(
+        "commented:3".to_string(),
+        "t".to_string(),
+    )]));
+    assert_eq!(
+        st.seen.keys().collect::<Vec<_>>(),
+        ["commented:3", "reactions:commented:2"]
+    );
+}
+
+/// A session whose mailbox has no live bridge is left to the listings:
+/// the sweep does not refetch its timeline every pass.
+#[tokio::test]
+async fn a_held_mailbox_is_not_swept() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = baselined(&stub).await;
+    let r = repo();
+    e.channel_lost.insert((r.name.clone(), 5));
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            reacted_comment(json!({"total_count": 2, "+1": 1, "heart": 1})),
+        ],
+    );
+    // The sweep on its own: a listing that changed would settle the hold.
+    e.watch_reactions(&r, "o", "r").await;
+    assert!(d.prompts().is_empty());
+    let hits = stub.hits();
+    assert!(!hits.iter().any(|h| h.contains("/timeline")), "{hits:?}");
+}

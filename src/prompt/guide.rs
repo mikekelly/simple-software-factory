@@ -39,7 +39,8 @@ Screenshots and wireframes need a place to live: `gh` cannot attach an image to 
 commit it on the branch and link the raw file.\n\n\
 ## Messages you receive\n\n\
 - `[ssf] New activity on ...`: comments, reviews, label changes, renames, linked PRs and the \
-like on your item. Your own posts are not echoed back here; a session started again is shown \
+like on your item, and emoji reactions added to or removed from its posts (who, which emoji, \
+which post). Your own posts are not echoed back here; a session started again is shown \
 the item's story, its own posts included -- the newest events, on a busy item, with a note \
 saying how much it left out and where to read the rest.\n\
 - `[ssf] Now tracking ...`: a pull request you opened or one on your branch has been bound \

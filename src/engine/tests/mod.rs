@@ -256,6 +256,8 @@ struct GitHubStub {
     accepted_invitations: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
     rejected_invitations: std::sync::Arc<std::sync::Mutex<BTreeSet<u64>>>,
     identity: std::sync::Arc<std::sync::Mutex<RepositoryIdentity>>,
+    /// Reactions by what they are on (`issues/5`, `issues/comments/2`).
+    reactions: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Vec<Value>>>>,
 }
 
 impl GitHubStub {
@@ -303,6 +305,8 @@ impl GitHubStub {
         let accepted = accepted_invitations.clone();
         let rejected = rejected_invitations.clone();
         let ri = identity.clone();
+        let reactions: Arc<Mutex<BTreeMap<String, Vec<Value>>>> = Arc::default();
+        let rx = reactions.clone();
         tokio::spawn(async move {
             let other_etags = AtomicU32::new(1);
             loop {
@@ -463,11 +467,32 @@ impl GitHubStub {
                     .and_then(|rest| rest.strip_suffix("/timeline"))
                     .and_then(|n| n.parse::<u64>().ok())
                 {
-                    let events = t.lock().unwrap().get(&n).cloned().unwrap_or_default();
+                    // The ETag follows the content, as GitHub's does, and is
+                    // honoured: a reaction moves it, and asking again with
+                    // it answers 304.
+                    let events =
+                        Value::Array(t.lock().unwrap().get(&n).cloned().unwrap_or_default())
+                            .to_string();
+                    let etag = {
+                        use std::hash::{Hash, Hasher};
+                        let mut hsh = std::collections::hash_map::DefaultHasher::new();
+                        events.hash(&mut hsh);
+                        format!("\"t{:x}\"", hsh.finish())
+                    };
+                    if if_none_match.as_deref() == Some(etag.as_str()) {
+                        ("304 Not Modified", etag, String::new())
+                    } else {
+                        ("200 OK", etag, events)
+                    }
+                } else if let Some(on) = path
+                    .strip_prefix("/repos/o/r/")
+                    .and_then(|rest| rest.strip_suffix("/reactions"))
+                {
+                    let list = rx.lock().unwrap().get(on).cloned().unwrap_or_default();
                     (
                         "200 OK",
-                        "\"t\"".to_string(),
-                        Value::Array(events).to_string(),
+                        "\"r\"".to_string(),
+                        Value::Array(list).to_string(),
                     )
                 } else {
                     (
@@ -503,7 +528,18 @@ impl GitHubStub {
             accepted_invitations,
             rejected_invitations,
             identity,
+            reactions,
         }
+    }
+
+    /// Who reacted with what on `on` (`issues/5`, `issues/comments/2`),
+    /// as `(login, content)`.
+    fn set_reactions(&self, on: &str, list: &[(&str, &str)]) {
+        let list = list
+            .iter()
+            .map(|(l, c)| json!({"user": {"login": l}, "content": c, "created_at": "2026-01-01T10:00:00Z"}))
+            .collect();
+        self.reactions.lock().unwrap().insert(on.into(), list);
     }
 
     fn set_identity(&self, name: &str) {

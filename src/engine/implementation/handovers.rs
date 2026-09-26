@@ -473,7 +473,7 @@ which harness is running in its workspaces"
             // The story told the new session everything on the item, so
             // the pass that follows has nothing to deliver again (an
             // onboarding records the same two things for its session).
-            e.seen = story.seen;
+            e.replace_seen(story.seen);
             e.updated_at = Some(story.updated_at);
         }
         // Nothing is owed to the session that is gone.

@@ -378,7 +378,7 @@ impl Engine {
             });
             e.github_state = Some(github_state(&issue, None, false));
             e.updated_at = Some(issue.updated_at.clone());
-            e.seen = seen;
+            e.replace_seen(seen);
             e.subscriber_only = true;
             e.active = false;
             info!(

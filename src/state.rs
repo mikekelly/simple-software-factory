@@ -298,6 +298,11 @@ pub struct IssueState {
     /// Delivered timeline events: key -> updated_at marker (for edit detection).
     #[serde(default)]
     pub seen: BTreeMap<String, String>,
+    /// ETag of each timeline page when `seen` was last brought up to date,
+    /// so a pass can ask cheaply whether anything moved that leaves
+    /// `updated_at` alone (a reaction).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timeline_etags: Vec<String>,
     /// The initial prompt has been delivered.
     #[serde(default)]
     pub seeded: bool,
@@ -414,6 +419,18 @@ pub struct IssueState {
 }
 
 impl IssueState {
+    /// Take `seen` from a diff of the timeline alone, keeping the reaction
+    /// records (`reactions:*`) it does not carry, so a reaction made across
+    /// a reactivation or handover is still news at the next follow-up.
+    pub fn replace_seen(&mut self, mut seen: BTreeMap<String, String>) {
+        for (k, v) in &self.seen {
+            if k.starts_with("reactions:") && !seen.contains_key(k) {
+                seen.insert(k.clone(), v.clone());
+            }
+        }
+        self.seen = seen;
+    }
+
     /// Whether this record answers to nothing: no session of its own, no
     /// subscriber, no workspace, no prompt ever sent or attempted, and
     /// nothing waiting on it.

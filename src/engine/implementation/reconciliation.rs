@@ -288,6 +288,7 @@ impl Engine {
             && matches!(created, Conditional::NotModified)
         {
             debug!(repo = repo.name, "nothing changed");
+            self.watch_reactions(repo, owner, name).await;
             return self.watch_subscribed(repo, owner, name).await;
         }
 
@@ -535,6 +536,7 @@ impl Engine {
             rs.pulls_etag = None;
             rs.created_etag = None;
         }
+        self.watch_reactions(repo, owner, name).await;
         self.watch_subscribed(repo, owner, name).await
     }
 

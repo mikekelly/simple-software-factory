@@ -16,7 +16,7 @@ pub use guide::{VM_GUEST_LINE, guide};
 pub use timeline::state_change;
 #[cfg(test)]
 use timeline::today_utc;
-pub use timeline::{Rendered, actor_of, event_key, render_event};
+pub use timeline::{Rendered, actor_of, event_key, render_event, render_reaction};
 use timeline::{fmt_when, quote, quote_lines};
 
 #[cfg(not(test))]
