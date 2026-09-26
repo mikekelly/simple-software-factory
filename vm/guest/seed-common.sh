@@ -27,6 +27,15 @@ seed_from() {
     # The home directory: on the data disk, seeded from the image's on first use.
     if [ ! -d /var/lib/ssf/home ]; then
         cp -a /home/ssf /var/lib/ssf/home
+    elif ! findmnt -n /home/ssf >/dev/null; then
+        # A rebuilt image's working-with-ssf skill (provision.sh) and its
+        # harness links, for a home kept from an earlier image.
+        for n in .agents/skills .claude/skills .grok/skills .pi/agent/skills; do
+            n=$n/working-with-ssf
+            if [ -e "/home/ssf/$n" ] && [ ! -e "/var/lib/ssf/home/$n" ] && [ ! -L "/var/lib/ssf/home/$n" ]; then
+                (cd /home/ssf && cp -a --parents "$n" /var/lib/ssf/home/) || echo "seed: copying ~/$n failed" >&2
+            fi
+        done
     fi
     findmnt -n /home/ssf >/dev/null || mount --bind /var/lib/ssf/home /home/ssf
     install -d -o ssf -g ssf /var/lib/ssf/state /var/lib/ssf/projects /home/ssf/.config /home/ssf/.ssh
