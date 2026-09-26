@@ -834,11 +834,10 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             PaneCommand::Attach { session } => crate::pane::attach(&session).await,
             PaneCommand::Control {
                 session,
-                observe,
                 cols,
                 rows,
             } => {
-                if let Some(why) = crate::pane::control(&session, observe, cols.zip(rows)).await? {
+                if let Some(why) = crate::pane::control(&session, cols.zip(rows)).await? {
                     eprintln!("{why}");
                     std::process::exit(crate::pane::INPUT_REFUSED);
                 }

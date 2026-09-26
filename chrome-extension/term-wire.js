@@ -28,14 +28,13 @@ export function resizeMessage(cols, rows) {
 }
 
 /// The requests an item's live terminal (#563) sends as JSON text, besides
-/// `resize`: every one but `release` is a write.
-const ASKS = new Set(["control", "release", "scroll"]);
+/// `resize`: who is watching (`hello`) and a wheel notch (`scroll`).
+const ASKS = new Set(["hello", "scroll"]);
 
 /// What a page's message to the terminal sends down the socket: the typed
 /// bytes of `input`, the JSON text of `resize` or of an item terminal's `ask`
-/// (control, release, scroll), or null -- for anything else, and for all but a
-/// release while the factory's Writes switch (`writes`) is off, since a
-/// view-only terminal neither types, resizes nor takes the pane.
+/// (hello, scroll), or null -- for anything else, and for everything while
+/// the factory's Writes switch (`writes`) is off.
 export function termSend(message, writes) {
   if (message?.type === "ask") {
     let ask;
@@ -44,7 +43,7 @@ export function termSend(message, writes) {
     } catch {
       return null;
     }
-    if (!ASKS.has(ask?.type) || (!writes && ask.type !== "release")) return null;
+    if (!ASKS.has(ask?.type) || !writes) return null;
     return String(message.data);
   }
   if (!writes) return null;

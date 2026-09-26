@@ -20,7 +20,6 @@ const TERMINAL_HTML: &str = include_str!("../dashboard/terminal.html");
 const TERMINAL_JS: &str = include_str!("../dashboard/terminal.js");
 const TERMINAL_CSS: &str = include_str!("../dashboard/terminal.css");
 const XTERM_JS: &str = include_str!("../chrome-extension/vendor/xterm/xterm.mjs");
-const XTERM_FIT_JS: &str = include_str!("../chrome-extension/vendor/xterm/addon-fit.mjs");
 const XTERM_CSS: &str = include_str!("../chrome-extension/vendor/xterm/xterm.css");
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HEADERS: usize = 8192;
@@ -314,8 +313,8 @@ async fn handle(
                 host,
                 TERMINAL_INPUT.load(std::sync::atomic::Ordering::Relaxed),
             ) {
-                Ok((session, key, may_control)) => {
-                    crate::dashboard_term::serve(stream, &session, &key, client, may_control).await;
+                Ok((session, key)) => {
+                    crate::dashboard_term::serve(stream, &session, &key, client).await;
                     return;
                 }
                 Err(answer) => answer,
@@ -416,11 +415,6 @@ async fn read(relative: &str, latest: &mut Latest, client: &Path) -> (u16, &'sta
             TERMINAL_JS.to_owned(),
         ),
         "xterm.mjs" => (200, "text/javascript; charset=utf-8", XTERM_JS.to_owned()),
-        "addon-fit.mjs" => (
-            200,
-            "text/javascript; charset=utf-8",
-            XTERM_FIT_JS.to_owned(),
-        ),
         "xterm.css" => (200, "text/css; charset=utf-8", XTERM_CSS.to_owned()),
         "api/agents" => agents(client).await,
         "api/usage" => match ask(client, &["usage", "--json"], LISTING_TIMEOUT).await {
@@ -840,22 +834,20 @@ fn pane_session(encoded: &str) -> std::result::Result<String, (u16, &'static str
         .ok_or_else(|| bad("the pane route takes a session, owner/repo#N or owner/repo~id"))
 }
 
-/// A terminal route's session, its WebSocket key, and whether the terminal
-/// may take control of an item's pane; or the answer that refuses it. It is
-/// a WebSocket upgrade or nothing.
+/// A terminal route's session and its WebSocket key, or the answer that
+/// refuses it. It is a WebSocket upgrade or nothing.
 ///
-/// A scratch session's terminal types at an agent, so it is held to a
-/// write's origin rule -- a Chrome extension's own -- on top of the
-/// capability every route has. An item's (#563) opens view only for any
-/// reader, and may take control only from an extension's origin (the write
-/// rule) or, where `dashboard.terminal_input` is on, from this page's own;
-/// the factory's `item_pane_input` is asked as well, when control is.
+/// Every terminal types at an agent, so it is held to a write's origin rule
+/// -- a Chrome extension's own -- on top of the capability every route has.
+/// An item's (#563) is also opened from this page's own origin where
+/// `dashboard.terminal_input` is on; the factory's `item_pane_input` is
+/// asked as well, where the config is, when its stream starts.
 fn term_request(
     request: &str,
     encoded: &str,
     host: &str,
     terminal_input: bool,
-) -> std::result::Result<(String, String, bool), (u16, &'static str, String)> {
+) -> std::result::Result<(String, String), (u16, &'static str, String)> {
     let decoded = percent_decode(encoded).filter(|session| session.len() <= MAX_SESSION);
     let scratch = decoded
         .as_deref()
@@ -882,12 +874,17 @@ fn term_request(
     let extension =
         header("origin").is_some_and(|origin| origin.starts_with("chrome-extension://"));
     let own = header("origin") == Some(format!("http://{host}").as_str());
-    if scratch.is_some() && !extension {
+    if !(extension || (scratch.is_none() && own && terminal_input)) {
+        let error = if scratch.is_some() {
+            "the terminal takes typing, so only an extension's origin may open it"
+        } else {
+            "the terminal takes typing, so only an extension's origin, or this page's where \
+             dashboard.terminal_input is on, may open it"
+        };
         return Err((
             403,
             "application/json",
-            json!({"error": "the terminal takes typing, so only an extension's origin may open it"})
-                .to_string(),
+            json!({ "error": error }).to_string(),
         ));
     }
     let upgrade = header("upgrade").is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
@@ -897,11 +894,7 @@ fn term_request(
         })
         && header("sec-websocket-version") == Some("13");
     match header("sec-websocket-key") {
-        Some(key) if upgrade && !key.is_empty() => Ok((
-            session,
-            key.to_string(),
-            scratch.is_none() && (extension || (own && terminal_input)),
-        )),
+        Some(key) if upgrade && !key.is_empty() => Ok((session, key.to_string())),
         _ => Err(bad(
             "the terminal route is a WebSocket (version 13) upgrade",
         )),
@@ -1753,13 +1746,28 @@ async fn respond_with(
     Ok(())
 }
 
+/// The dashboard's snapshot, with what this server adds: the build serving
+/// the page (the header shows it) and whether this page may open an item's
+/// terminal (`dashboard.terminal_input`).
 fn presentation(payload: &Value) -> Result<Value> {
     let dashboard = &payload["dashboard"];
     if !dashboard["cards"].is_array() {
         bail!("SSF returned status without canonical dashboard data; update ssf-server");
     }
-    Ok(dashboard.clone())
+    let mut dashboard = dashboard.clone();
+    dashboard["build"] = json!(BUILD);
+    dashboard["terminal_input"] = json!(TERMINAL_INPUT.load(std::sync::atomic::Ordering::Relaxed));
+    Ok(dashboard)
 }
+
+/// The build serving this page, e.g. `ssf 0.17.0 · abc1234`: the dashboard
+/// shows it, so a restart onto a new build can be seen to have happened.
+pub const BUILD: &str = concat!(
+    "ssf ",
+    env!("CARGO_PKG_VERSION"),
+    " \u{b7} ",
+    env!("SSF_COMMIT")
+);
 
 #[cfg(test)]
 mod tests {
@@ -1779,10 +1787,7 @@ mod tests {
         let term =
             |origin: &str, session: &str| term_request(&upgrade(origin), session, "h", false);
         let ok = term("chrome-extension://abc", "o%2Fr~ab12").unwrap();
-        assert_eq!(
-            ok,
-            ("o/r~ab12".into(), "dGhlIHNhbXBsZSBub25jZQ==".into(), false)
-        );
+        assert_eq!(ok, ("o/r~ab12".into(), "dGhlIHNhbXBsZSBub25jZQ==".into()));
         assert_eq!(
             term("chrome-extension://abc", "nonsense").unwrap_err().0,
             400
@@ -1795,11 +1800,11 @@ mod tests {
         );
     }
 
-    /// An item's live terminal (#563) opens view only for any reader, and
-    /// may take control only from an extension (the write rule) or, with
-    /// `dashboard.terminal_input` on, from this page's own origin.
+    /// An item's live terminal (#563) takes typing, so it opens only from an
+    /// extension (the write rule) or, with `dashboard.terminal_input` on,
+    /// from this page's own origin; anyone else is refused.
     #[test]
-    fn an_items_terminal_takes_control_only_where_the_server_allows_it() {
+    fn an_items_terminal_opens_only_where_the_server_allows_typing() {
         let upgrade = |origin: Option<&str>| {
             let origin = origin.map_or(String::new(), |o| format!("Origin: {o}\r\n"));
             format!(
@@ -1808,17 +1813,26 @@ mod tests {
                  Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: k\r\n\r\n"
             )
         };
-        let may_control = |origin: Option<&str>, terminal_input: bool| {
-            let (session, _, may) =
-                term_request(&upgrade(origin), "o%2Fr%2342", "h", terminal_input).unwrap();
-            assert_eq!(session, "o/r#42");
-            may
+        let opens = |origin: Option<&str>, terminal_input: bool| match term_request(
+            &upgrade(origin),
+            "o%2Fr%2342",
+            "h",
+            terminal_input,
+        ) {
+            Ok((session, _)) => {
+                assert_eq!(session, "o/r#42");
+                true
+            }
+            Err((status, _, _)) => {
+                assert_eq!(status, 403);
+                false
+            }
         };
-        assert!(!may_control(Some("http://h"), false));
-        assert!(may_control(Some("http://h"), true));
-        assert!(may_control(Some("chrome-extension://abc"), false));
-        assert!(!may_control(None, true));
-        assert!(!may_control(Some("http://elsewhere"), true));
+        assert!(!opens(Some("http://h"), false));
+        assert!(opens(Some("http://h"), true));
+        assert!(opens(Some("chrome-extension://abc"), false));
+        assert!(!opens(None, true));
+        assert!(!opens(Some("http://elsewhere"), true));
     }
     use std::os::unix::fs::PermissionsExt;
 
@@ -2125,10 +2139,14 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
     #[test]
     fn serves_canonical_model_without_reinterpreting_ownership() {
         let dashboard = json!({"cards":[{"owner":"r#1"}],"warning":"VM stopped","refreshed_at":42});
+        let mut served = dashboard.clone();
+        served["build"] = json!(BUILD);
+        served["terminal_input"] = json!(false);
         assert_eq!(
             presentation(&json!({"dashboard":dashboard})).unwrap(),
-            dashboard
+            served
         );
+        assert!(BUILD.starts_with(concat!("ssf ", env!("CARGO_PKG_VERSION"), " \u{b7} ")));
         assert!(presentation(&json!({"sessions":[]})).is_err());
         assert!(!JS.contains("innerHTML"));
     }
@@ -3321,7 +3339,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         assert!(headers.contains("X-Content-Type-Options: nosniff"));
         // The first frame is the current snapshot, without waiting for a change.
         assert!(
-            headers.contains("event: status\ndata: {\"cards\":[]}\n\n"),
+            headers.contains("event: status\ndata: {\"build\":"),
             "{headers}"
         );
         tx.send(Some(Ok(json!({"dashboard":{"cards":[{"owner":"r#1"}]}}))))
@@ -3400,7 +3418,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         assert!(first.contains("Cache-Control: no-cache"));
         assert!(first.contains("X-Content-Type-Options: nosniff"));
         assert!(
-            first.contains("event: status\ndata: {\"cards\":[]}\n\n"),
+            first.contains("event: status\ndata: {\"build\":"),
             "{first}"
         );
         // An idle tick is a comment line, never the snapshot over again.

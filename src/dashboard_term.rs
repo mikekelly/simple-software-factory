@@ -14,12 +14,14 @@
 //!   be attached to: what it said is the last output), or the client goes.
 //!
 //! An item session's pane (#563) is herdr's, and is bridged instead to `ssf
-//! __pane control <session> [--observe]` over pipes: `herdr terminal session`
-//! NDJSON both ways. It opens view only (`observe`), and takes control only
-//! when the client asks (`{"type":"control"}`) and this server allows it
-//! (`may_control`, decided from the request) and the factory does
-//! (`item_pane_input`, decided where the config is); `{"type":"release"}`
-//! gives it back. See [`bridge_item`] for the messages.
+//! __pane control <session>` over pipes: `herdr terminal session control`
+//! NDJSON both ways. herdr lets one client control a pane, so this server
+//! holds one control stream per pane and shares it among every viewer, like
+//! a shared tmux session: each sees the output, and each one's typing,
+//! paste and wheel reaches the pane, which takes the size of whoever last
+//! typed or resized. Only a request allowed to type opens one at all
+//! (decided from the request by the caller, and by `item_pane_input` where
+//! the config is). See [`bridge_item`] for the messages.
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -86,13 +88,7 @@ impl Drop for Slot {
 
 /// Answer the upgrade and bridge the socket and the attach until either
 /// ends.
-pub(crate) async fn serve(
-    mut stream: TcpStream,
-    session: &str,
-    key: &str,
-    client: &Path,
-    may_control: bool,
-) {
+pub(crate) async fn serve(mut stream: TcpStream, session: &str, key: &str, client: &Path) {
     let Some(_slot) = Slot::take() else {
         let body = serde_json::json!({
             "error": format!("{MAX_TERMS} terminals are already open; close one and try again")
@@ -119,7 +115,7 @@ pub(crate) async fn serve(
     let mut ws = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
     tracing::debug!(session, "web API terminal opened");
     let bridged = if crate::origin::Origin::parse(session).is_some() {
-        bridge_item(&mut ws, session, client, may_control).await
+        bridge_item(&mut ws, session, client).await
     } else {
         bridge(&mut ws, session, client).await
     };
@@ -308,26 +304,30 @@ async fn bridge(ws: &mut WebSocketStream<TcpStream>, session: &str, client: &Pat
 /// the app as one wheel event.
 const SCROLL_LINES: u64 = 3;
 
-/// How long a pane that went away is looked for again, one wait after
-/// another: a relaunch records its new pane in the state within seconds.
-const RELOCATE_WAITS: [u64; 8] = [1, 2, 4, 8, 10, 10, 10, 15];
+/// How long a pane that went away, or that someone outside holds, is tried
+/// again, one wait after another: a relaunch records its new pane in the
+/// state within seconds.
+const RETRY_WAITS: [u64; 8] = [1, 2, 4, 8, 10, 10, 10, 15];
+
+/// How long a new viewer has to say who it is before it is named for it.
+const HELLO_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What a client's message asks of an item's terminal.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Ask {
-    /// A line for `herdr terminal session control`'s stdin: typed bytes, a
-    /// resize or a scroll. Only ever written while in control.
+    /// A line for `herdr terminal session control`'s stdin: typed bytes or
+    /// a scroll.
     Herdr(String),
-    /// The browser's size, which control starts at.
+    /// The viewer's size, which the pane takes: the latest to ask wins.
     Size(u16, u16),
-    Control,
-    Release,
+    /// Who the viewer is (display only, see [`viewer_name`]), and its size.
+    Hello(String, Option<(u16, u16)>),
     Nothing,
 }
 
 /// What a client's WebSocket message asks: binary frames are typed bytes;
-/// text frames are JSON, `resize`, `scroll` (one wheel notch, `up` or
-/// `down`), `control` or `release`.
+/// text frames are JSON, `hello` (`name`, and `cols`/`rows`), `resize` or
+/// `scroll` (one wheel notch, `up` or `down`).
 pub(crate) fn ask_of(message: &Message) -> Ask {
     use base64::Engine;
     let line = |command: serde_json::Value| Ask::Herdr(format!("{command}\n"));
@@ -348,8 +348,14 @@ pub(crate) fn ask_of(message: &Message) -> Ask {
         return Ask::Nothing;
     };
     match value.get("type").and_then(|t| t.as_str()) {
-        Some("control") => Ask::Control,
-        Some("release") => Ask::Release,
+        Some("hello") => {
+            let name = value.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let size = resize_of(
+                &serde_json::json!({"type": "resize", "cols": value.get("cols"), "rows": value.get("rows")})
+                    .to_string(),
+            );
+            Ask::Hello(viewer_name(name), size)
+        }
         Some("scroll") => match value.get("direction").and_then(|d| d.as_str()) {
             Some(direction @ ("up" | "down")) => line(serde_json::json!({
                 "type": "terminal.scroll",
@@ -362,7 +368,27 @@ pub(crate) fn ask_of(message: &Message) -> Ask {
     }
 }
 
-/// What one NDJSON line from herdr means for the socket.
+/// The name a viewer is shown by: `@login` for a GitHub login (at most 39
+/// of `A-Za-z0-9-`), `dashboard` or `extension`, and `viewer` for anything
+/// else. It is for display only: nothing is allowed by it.
+pub(crate) fn viewer_name(raw: &str) -> String {
+    match raw {
+        "dashboard" | "extension" => raw.to_string(),
+        _ => match raw.strip_prefix('@') {
+            Some(login)
+                if (1..=39).contains(&login.len())
+                    && login
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-') =>
+            {
+                raw.to_string()
+            }
+            _ => "viewer".to_string(),
+        },
+    }
+}
+
+/// What one NDJSON line from herdr means for the viewers.
 #[derive(Debug, PartialEq)]
 pub(crate) enum HerdrLine {
     /// Terminal bytes to draw, at the size herdr drew them.
@@ -406,116 +432,197 @@ pub(crate) fn herdr_line(line: &str) -> HerdrLine {
     }
 }
 
-/// Whether a stream that ended for `reason` is worth starting again: the
-/// harness exited, or the pane is gone, and a relaunch has a new one. A pane
-/// taken over by someone else is not: this view does not take it back.
-pub(crate) fn relocatable(reason: &str) -> bool {
-    reason.contains("exited") || reason.contains("not found") || reason.contains("no agent")
+/// What a pane's shared stream sends every viewer.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Out {
+    /// Terminal bytes.
+    Bytes(Vec<u8>),
+    /// A JSON message: `size`, `viewers` or `notice`.
+    Text(String),
+    /// The stream is over, and why.
+    End(String),
 }
 
-/// Why this server gives a terminal no control.
-const NO_CONTROL: &str = "this server takes typing into an item's pane only from the Chrome \
-                          extension, or from its own page where dashboard.terminal_input is on";
+/// What a viewer asks of the stream.
+#[derive(Debug)]
+enum In {
+    Line(String),
+    Size(u16, u16),
+    /// Draw the whole screen again, for a viewer that joined late.
+    Redraw,
+}
+
+/// Starts `ssf __pane control` for a pane, at a size or the pane's own.
+pub(crate) type Spawn =
+    std::sync::Arc<dyn Fn(Option<(u16, u16)>) -> Result<tokio::process::Command> + Send + Sync>;
+
+/// One pane's control stream (#563), shared by every viewer of it: herdr
+/// lets one client control a pane, so this server holds one and fans it out.
+/// It is released when the last viewer goes (its input channel closes).
+pub(crate) struct Stream {
+    input: tokio::sync::mpsc::UnboundedSender<In>,
+    output: tokio::sync::broadcast::Sender<Out>,
+    viewers: std::sync::Mutex<Vec<(u64, String)>>,
+}
+
+impl Stream {
+    fn tell_viewers(&self) {
+        let names: Vec<String> = self
+            .viewers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, n)| n.clone())
+            .collect();
+        let _ = self.output.send(Out::Text(
+            serde_json::json!({"type": "viewers", "names": names}).to_string(),
+        ));
+    }
+}
+
+type Streams = std::collections::HashMap<String, std::sync::Weak<Stream>>;
+static STREAMS: std::sync::LazyLock<std::sync::Mutex<Streams>> =
+    std::sync::LazyLock::new(Default::default);
+static VIEWER_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// One viewer of a shared stream; going (drop) takes it off the list.
+pub(crate) struct Viewer {
+    stream: std::sync::Arc<Stream>,
+    id: u64,
+}
+
+impl Viewer {
+    fn ask(&self, ask: In) {
+        let _ = self.stream.input.send(ask);
+    }
+}
+
+impl Drop for Viewer {
+    fn drop(&mut self) {
+        self.stream
+            .viewers
+            .lock()
+            .unwrap()
+            .retain(|(id, _)| *id != self.id);
+        self.stream.tell_viewers();
+    }
+}
+
+/// Join `session`'s shared stream as `name`, starting it (at `size`) if no
+/// one else is watching. The receiver hears everything from now on; the
+/// viewer asks for the screen to be drawn again, so it starts with it.
+pub(crate) fn join(
+    session: &str,
+    name: String,
+    size: Option<(u16, u16)>,
+    spawn: Spawn,
+) -> (Viewer, tokio::sync::broadcast::Receiver<Out>) {
+    let mut streams = STREAMS.lock().unwrap();
+    let stream = match streams.get(session).and_then(std::sync::Weak::upgrade) {
+        Some(stream) => stream,
+        None => {
+            let (input, asks) = tokio::sync::mpsc::unbounded_channel();
+            let (output, _) = tokio::sync::broadcast::channel(256);
+            let stream = std::sync::Arc::new(Stream {
+                input,
+                output: output.clone(),
+                viewers: Default::default(),
+            });
+            let weak = std::sync::Arc::downgrade(&stream);
+            streams.insert(session.to_string(), weak.clone());
+            tokio::spawn(pump(session.to_string(), weak, asks, output, size, spawn));
+            stream
+        }
+    };
+    let receiver = stream.output.subscribe();
+    let id = VIEWER_IDS.fetch_add(1, Ordering::SeqCst);
+    stream.viewers.lock().unwrap().push((id, name));
+    drop(streams);
+    stream.tell_viewers();
+    let _ = stream.input.send(In::Redraw);
+    (Viewer { stream, id }, receiver)
+}
 
 /// How one run of `ssf __pane control` ended.
 enum End {
-    /// The client went.
+    /// Every viewer went.
     Gone,
-    /// The client asked to control (`true`) or release (`false`).
-    Switch(bool),
-    /// herdr's `terminal.closed`, or what the command said when it stopped.
+    /// herdr's `terminal.closed`, or what the command said when it stopped:
+    /// the pane went, or someone outside holds it.
     Closed(String),
-    /// Control was refused where the factory's config is.
+    /// The factory keeps the pane view-only (`item_pane_input`).
     Refused(String),
 }
 
-async fn say(ws: &mut WebSocketStream<TcpStream>, message: serde_json::Value) -> bool {
-    ws.send(Message::text(message.to_string())).await.is_ok()
+/// Run the pane's control, again after it ends while viewers remain (with
+/// [`RETRY_WAITS`]), until the last viewer goes, the factory refuses it, or
+/// the pane does not come back. Every viewer hears what it says.
+async fn pump(
+    session: String,
+    stream: std::sync::Weak<Stream>,
+    mut asks: tokio::sync::mpsc::UnboundedReceiver<In>,
+    output: tokio::sync::broadcast::Sender<Out>,
+    mut size: Option<(u16, u16)>,
+    spawn: Spawn,
+) {
+    let reason = run_pump(&mut asks, &output, &mut size, &spawn).await;
+    // Off the list first, and under its lock, so a viewer joining now
+    // either hears the end or starts a stream of its own.
+    let mut streams = STREAMS.lock().unwrap();
+    if streams
+        .get(&session)
+        .is_some_and(|held| held.ptr_eq(&stream))
+    {
+        streams.remove(&session);
+    }
+    if let Some(reason) = reason {
+        let _ = output.send(Out::End(reason));
+    }
 }
 
-/// Bridge the socket to an item's pane (#563), through `ssf __pane control`
-/// run by the factory's client (so a factory in a VM streams from the
-/// guest). Text frames to the client are JSON:
-///
-/// - `{"type":"mode","control":bool,"may_control":bool}` when the stream
-///   (re)starts (control once herdr has drawn for it): whether it is control,
-///   and whether this server would let it be;
-/// - `{"type":"size","cols":N,"rows":N}` when herdr's frames change size;
-/// - `{"type":"refused","reason":"…"}` for control that was not allowed;
-/// - `{"type":"notice","text":"…"}` for anything else worth saying.
-///
-/// Typed bytes, resizes and scrolls are written only while in control, so a
-/// view-only terminal is view only whatever its page sends.
-async fn bridge_item(
-    ws: &mut WebSocketStream<TcpStream>,
-    session: &str,
-    client: &Path,
-    may_control: bool,
-) -> Result<()> {
+/// [`pump`]'s loop: `None` once every viewer went, or why it stopped.
+async fn run_pump(
+    asks: &mut tokio::sync::mpsc::UnboundedReceiver<In>,
+    output: &tokio::sync::broadcast::Sender<Out>,
+    size: &mut Option<(u16, u16)>,
+    spawn: &Spawn,
+) -> Option<String> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-    let mut control = false;
-    let mut size: Option<(u16, u16)> = None;
-    let mut waits = RELOCATE_WAITS.iter();
+    let say = |message: serde_json::Value| {
+        let _ = output.send(Out::Text(message.to_string()));
+    };
+    let mut waits = RETRY_WAITS.iter();
     loop {
-        let mut args = vec!["__pane".to_string(), "control".into(), session.to_string()];
-        if !control {
-            args.push("--observe".into());
-        } else if let Some((cols, rows)) = size {
-            args.extend([
-                "--cols".into(),
-                cols.to_string(),
-                "--rows".into(),
-                rows.to_string(),
-            ]);
-        }
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let mut command = crate::dashboard_transport::local_client_command(
-            client,
-            &args,
-            crate::server_catalog::service_local_context(),
-            crate::server_catalog::selected_vm_context()?.as_ref(),
-            crate::server_catalog::selected_target_identity()?.as_ref(),
-        );
-        command
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = command.spawn().context("starting the pane stream")?;
-        let mut stdin = child.stdin.take().context("the pane stream's stdin")?;
-        let mut lines =
-            BufReader::new(child.stdout.take().context("the pane stream's stdout")?).lines();
-        let mut stderr = child.stderr.take().context("the pane stream's stderr")?;
-        let mode =
-            serde_json::json!({"type": "mode", "control": control, "may_control": may_control});
-        // Control is said once herdr has drawn for it: until then it may
-        // yet be refused.
-        let mut announced = !control;
-        if announced && !say(ws, mode.clone()).await {
-            return Ok(());
-        }
+        let started = spawn(*size).and_then(|mut command| {
+            command
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
+            command.spawn().context("starting the pane stream")
+        });
+        let mut child = match started {
+            Ok(child) => child,
+            Err(error) => return Some(format!("{error:#}")),
+        };
+        let (Some(mut stdin), Some(stdout), Some(mut stderr)) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take())
+        else {
+            return Some("the pane stream has no pipes".into());
+        };
+        let mut lines = BufReader::new(stdout).lines();
         let mut drawn: Option<(u64, u64)> = None;
         let end = loop {
             tokio::select! {
                 line = lines.next_line() => match line {
                     Ok(Some(line)) => match herdr_line(&line) {
                         HerdrLine::Frame { bytes, size: at } => {
-                            waits = RELOCATE_WAITS.iter();
-                            if !announced {
-                                announced = true;
-                                if !say(ws, mode.clone()).await {
-                                    break End::Gone;
-                                }
-                            }
+                            waits = RETRY_WAITS.iter();
                             if let Some((cols, rows)) = at.filter(|at| Some(*at) != drawn) {
                                 drawn = at;
-                                if !say(ws, serde_json::json!({"type": "size", "cols": cols, "rows": rows})).await {
-                                    break End::Gone;
-                                }
+                                say(serde_json::json!({"type": "size", "cols": cols, "rows": rows}));
                             }
-                            if ws.send(Message::binary(bytes)).await.is_err() {
-                                break End::Gone;
-                            }
+                            let _ = output.send(Out::Bytes(bytes));
                         }
                         HerdrLine::Closed(reason) => break End::Closed(reason),
                         HerdrLine::Other => {}
@@ -525,7 +632,7 @@ async fn bridge_item(
                         let _ = stderr.read_to_string(&mut said).await;
                         let status = child.wait().await.ok().and_then(|s| s.code());
                         let said = said.trim().to_string();
-                        break if control && status == Some(crate::pane::INPUT_REFUSED) {
+                        break if status == Some(crate::pane::INPUT_REFUSED) {
                             End::Refused(said)
                         } else if said.is_empty() {
                             End::Closed("the pane stream ended".into())
@@ -534,37 +641,30 @@ async fn bridge_item(
                         };
                     }
                 },
-                message = ws.next() => match message {
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break End::Gone,
-                    Some(Ok(message)) => match ask_of(&message) {
-                        Ask::Control if !control && !may_control => {
-                            if !say(ws, serde_json::json!({"type": "refused", "reason": NO_CONTROL})).await {
-                                break End::Gone;
-                            }
+                ask = asks.recv() => {
+                    let line = match ask {
+                        None => break End::Gone,
+                        Some(In::Line(line)) => line,
+                        Some(In::Size(cols, rows)) => {
+                            *size = Some((cols, rows));
+                            format!("{}\n", serde_json::json!({"type": "terminal.resize", "cols": cols, "rows": rows}))
                         }
-                        Ask::Control if !control => break End::Switch(true),
-                        Ask::Release if control => break End::Switch(false),
-                        Ask::Size(cols, rows) => {
-                            size = Some((cols, rows));
-                            if control {
-                                let line = serde_json::json!({"type": "terminal.resize", "cols": cols, "rows": rows});
-                                if stdin.write_all(format!("{line}\n").as_bytes()).await.is_err() {
-                                    break End::Closed("the pane stream stopped taking input".into());
-                                }
-                            }
-                        }
-                        Ask::Herdr(line)
-                            if control && stdin.write_all(line.as_bytes()).await.is_err() =>
-                        {
-                            break End::Closed("the pane stream stopped taking input".into());
-                        }
-                        _ => {}
-                    },
-                },
+                        // The same size again draws the whole screen, which
+                        // is what a new viewer needs; before the first frame
+                        // there is nothing to draw again: that one is whole.
+                        Some(In::Redraw) => match drawn.take() {
+                            Some((cols, rows)) => format!("{}\n", serde_json::json!({"type": "terminal.resize", "cols": cols, "rows": rows})),
+                            None => continue,
+                        },
+                    };
+                    if stdin.write_all(line.as_bytes()).await.is_err() {
+                        break End::Closed("the pane stream stopped taking input".into());
+                    }
+                }
             }
         };
-        // Closing stdin detaches a controller cleanly, which gives the pane
-        // back its own size; an observer takes that as its cue to stop.
+        // Closing stdin detaches the controller cleanly, which gives the
+        // pane back its own size.
         drop(stdin);
         if tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
             .await
@@ -573,58 +673,104 @@ async fn bridge_item(
             let _ = child.start_kill();
             let _ = child.wait().await;
         }
-        match end {
-            End::Gone => return Ok(()),
-            End::Switch(wanted) => control = wanted,
-            End::Refused(reason) => {
-                control = false;
-                if !say(ws, serde_json::json!({"type": "refused", "reason": reason})).await {
-                    return Ok(());
-                }
+        let reason = match end {
+            End::Gone => return None,
+            End::Refused(reason) => return Some(reason),
+            End::Closed(reason) => reason,
+        };
+        let Some(&wait) = waits.next() else {
+            return Some(format!("{reason}; the pane did not come back"));
+        };
+        say(
+            serde_json::json!({"type": "notice", "text": format!("{reason}; trying the pane again in {wait}s")}),
+        );
+        // Viewers may go, or resize, meanwhile; what they type is dropped.
+        let pause = tokio::time::sleep(std::time::Duration::from_secs(wait));
+        tokio::pin!(pause);
+        loop {
+            tokio::select! {
+                _ = &mut pause => break,
+                ask = asks.recv() => match ask {
+                    None => return None,
+                    Some(In::Size(cols, rows)) => *size = Some((cols, rows)),
+                    Some(_) => {}
+                },
             }
-            End::Closed(reason) if relocatable(&reason) => {
-                let Some(&wait) = waits.next() else {
-                    anyhow::bail!("{reason}; the pane did not come back");
-                };
-                let text = format!("{reason}; looking for the pane again in {wait}s");
-                if !say(ws, serde_json::json!({"type": "notice", "text": text})).await {
-                    return Ok(());
-                }
-                // The client may go, or change its mind, meanwhile.
-                let pause = tokio::time::sleep(std::time::Duration::from_secs(wait));
-                tokio::pin!(pause);
-                loop {
-                    tokio::select! {
-                        _ = &mut pause => break,
-                        message = ws.next() => match message {
-                            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return Ok(()),
-                            Some(Ok(message)) => match ask_of(&message) {
-                                Ask::Control => control = may_control,
-                                Ask::Release => control = false,
-                                Ask::Size(cols, rows) => size = Some((cols, rows)),
-                                _ => {}
-                            },
-                        },
+        }
+    }
+}
+
+/// Bridge the socket to an item's pane (#563) as one viewer of its shared
+/// stream: `ssf __pane control` run by the factory's client (so a factory
+/// in a VM streams from the guest). The client says `hello` first (its
+/// name, and size); text frames to it are JSON:
+///
+/// - `{"type":"size","cols":N,"rows":N}` when the pane's size changes (and
+///   once on joining);
+/// - `{"type":"viewers","names":[…]}` whenever a viewer joins or goes;
+/// - `{"type":"notice","text":"…"}` for anything else worth saying.
+async fn bridge_item(
+    ws: &mut WebSocketStream<TcpStream>,
+    session: &str,
+    client: &Path,
+) -> Result<()> {
+    let (name, size) = match tokio::time::timeout(HELLO_WAIT, ws.next()).await {
+        Ok(Some(Ok(message))) => match ask_of(&message) {
+            Ask::Hello(name, size) => (name, size),
+            _ => (viewer_name(""), None),
+        },
+        Ok(_) => return Ok(()),
+        Err(_) => (viewer_name(""), None),
+    };
+    let vm = crate::server_catalog::selected_vm_context()?;
+    let identity = crate::server_catalog::selected_target_identity()?;
+    let (client, owned) = (client.to_path_buf(), session.to_string());
+    let spawn: Spawn = std::sync::Arc::new(move |size: Option<(u16, u16)>| {
+        let mut args = vec!["__pane".to_string(), "control".into(), owned.clone()];
+        if let Some((cols, rows)) = size {
+            args.extend([
+                "--cols".into(),
+                cols.to_string(),
+                "--rows".into(),
+                rows.to_string(),
+            ]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        Ok(crate::dashboard_transport::local_client_command(
+            &client,
+            &args,
+            crate::server_catalog::service_local_context(),
+            vm.as_ref(),
+            identity.as_ref(),
+        ))
+    });
+    let (viewer, mut heard) = join(session, name, size, spawn);
+    loop {
+        tokio::select! {
+            out = heard.recv() => match out {
+                Ok(Out::Bytes(bytes)) => {
+                    if ws.send(Message::binary(bytes)).await.is_err() {
+                        return Ok(());
                     }
                 }
-            }
-            End::Closed(reason) => {
-                // Taken over elsewhere, or a failure: say so, and go on
-                // watching rather than take the pane back.
-                // A client that was typing is told as a refusal, which turns
-                // its Type off, so it does not ask for the pane straight back.
-                let kind = if control { "refused" } else { "notice" };
-                let key = if control { "reason" } else { "text" };
-                control = false;
-                let text = format!("{reason}; watching the pane again");
-                if !say(ws, serde_json::json!({"type": kind, key: text})).await {
-                    return Ok(());
+                Ok(Out::Text(text)) => {
+                    if ws.send(Message::text(text)).await.is_err() {
+                        return Ok(());
+                    }
                 }
-                let Some(&wait) = waits.next() else {
-                    anyhow::bail!("{reason}");
-                };
-                tokio::time::sleep(std::time::Duration::from_secs(wait.min(2))).await;
-            }
+                Ok(Out::End(reason)) => anyhow::bail!("{reason}"),
+                // Fell behind: what it missed is drawn again whole.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => viewer.ask(In::Redraw),
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+            },
+            message = ws.next() => match message {
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return Ok(()),
+                Some(Ok(message)) => match ask_of(&message) {
+                    Ask::Herdr(line) => viewer.ask(In::Line(line)),
+                    Ask::Size(cols, rows) => viewer.ask(In::Size(cols, rows)),
+                    Ask::Hello(..) | Ask::Nothing => {}
+                },
+            },
         }
     }
 }
@@ -682,16 +828,18 @@ mod tests {
             Ask::Nothing
         );
         assert_eq!(
-            ask_of(&Message::text(r#"{"type":"control"}"#)),
-            Ask::Control
+            ask_of(&Message::text(
+                r#"{"type":"hello","name":"@mikekelly","cols":100,"rows":30}"#
+            )),
+            Ask::Hello("@mikekelly".into(), Some((100, 30)))
         );
         assert_eq!(
-            ask_of(&Message::text(r#"{"type":"release"}"#)),
-            Ask::Release
+            ask_of(&Message::text(r#"{"type":"hello"}"#)),
+            Ask::Hello("viewer".into(), None)
         );
         // Nothing a client says becomes a takeover or a raw herdr command.
         assert_eq!(
-            ask_of(&Message::text(r#"{"type":"terminal.release"}"#)),
+            ask_of(&Message::text(r#"{"type":"control"}"#)),
             Ask::Nothing
         );
         assert_eq!(
@@ -700,13 +848,154 @@ mod tests {
         );
     }
 
+    /// A viewer's name is for display: a login, or one of the fixed names,
+    /// and nothing else gets through as it was sent.
     #[test]
-    fn only_a_pane_that_went_away_is_looked_for_again() {
-        assert!(relocatable("terminal term_1 exited"));
-        assert!(relocatable("terminal target w1:p1 not found"));
-        assert!(relocatable("no agent is running in o/r#1's workspace"));
-        assert!(!relocatable("terminal attach taken over"));
-        assert!(!relocatable("detached"));
+    fn viewer_names_are_sanitized() {
+        assert_eq!(viewer_name("@mikekelly"), "@mikekelly");
+        assert_eq!(viewer_name("@a-b-1"), "@a-b-1");
+        assert_eq!(viewer_name("dashboard"), "dashboard");
+        assert_eq!(viewer_name("extension"), "extension");
+        for bad in [
+            "",
+            "@",
+            "mikekelly",
+            "@<script>",
+            "@a b",
+            "@\u{1b}[31m",
+            &format!("@{}", "a".repeat(40)),
+        ] {
+            assert_eq!(viewer_name(bad), "viewer", "{bad:?}");
+        }
+        assert_eq!(viewer_name(&format!("@{}", "a".repeat(39))).len(), 40);
+    }
+
+    /// A stand-in for `ssf __pane control`: a frame saying it started (at
+    /// the size it was given), then every stdin line back as a frame, and a
+    /// mark in `gone` when its stdin closes (the pane released).
+    fn fake_pane(gone: &Path) -> Spawn {
+        let gone = gone.to_path_buf();
+        std::sync::Arc::new(move |size: Option<(u16, u16)>| {
+            let size = size.map_or("none".to_string(), |(c, r)| format!("{c}x{r}"));
+            let script = format!(
+                r#"frame() {{ printf '{{"type":"terminal.frame","bytes":"%s","width":80,"height":24}}\n' "$(printf '%s' "$1" | base64 -w0)"; }}
+frame "started {size}"
+while IFS= read -r line; do frame "$line"; done
+echo released > '{}'"#,
+                gone.display()
+            );
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", &script]);
+            Ok(command)
+        })
+    }
+
+    /// The next bytes a viewer is sent, skipping JSON messages.
+    async fn next_bytes(heard: &mut tokio::sync::broadcast::Receiver<Out>) -> String {
+        loop {
+            let out = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+                .await
+                .expect("a frame in time")
+                .expect("the stream is open");
+            if let Out::Bytes(bytes) = out {
+                return String::from_utf8_lossy(&bytes).into_owned();
+            }
+        }
+    }
+
+    /// The next list of viewers a viewer is sent.
+    async fn next_viewers(heard: &mut tokio::sync::broadcast::Receiver<Out>) -> Vec<String> {
+        loop {
+            let out = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+                .await
+                .expect("a message in time")
+                .expect("the stream is open");
+            if let Out::Text(text) = out {
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if value["type"] == "viewers" {
+                    return serde_json::from_value(value["names"].clone()).unwrap();
+                }
+            }
+        }
+    }
+
+    /// Two viewers share one stream: both see its output, what either types
+    /// reaches the pane (and both see what it draws), a late joiner has the
+    /// screen drawn again, everyone hears who is watching, and the pane is
+    /// released only when the last one goes.
+    #[tokio::test]
+    async fn viewers_share_one_stream_until_the_last_goes() {
+        let gone = std::env::temp_dir().join(format!("ssf-shared-{}", std::process::id()));
+        let _ = std::fs::remove_file(&gone);
+        let session = "o/shared#1";
+        let (a, mut heard_a) = join(session, "@alice".into(), Some((100, 30)), fake_pane(&gone));
+        assert_eq!(next_viewers(&mut heard_a).await, ["@alice"]);
+        assert_eq!(next_bytes(&mut heard_a).await, "started 100x30");
+        // The second viewer joins the same stream (no second start), and
+        // asks for the screen again: a same-size resize, drawn to both.
+        let (b, mut heard_b) = join(
+            session,
+            "dashboard".into(),
+            Some((50, 10)),
+            fake_pane(&gone),
+        );
+        assert_eq!(next_viewers(&mut heard_a).await, ["@alice", "dashboard"]);
+        assert_eq!(next_viewers(&mut heard_b).await, ["@alice", "dashboard"]);
+        let redraw = next_bytes(&mut heard_b).await;
+        assert!(
+            redraw.contains("terminal.resize") && redraw.contains("\"cols\":80"),
+            "{redraw}"
+        );
+        assert_eq!(next_bytes(&mut heard_a).await, redraw);
+        for (viewer, text) in [(&a, "from a"), (&b, "from b")] {
+            viewer.ask(In::Line(format!("{text}\n")));
+            assert_eq!(next_bytes(&mut heard_a).await, text);
+            assert_eq!(next_bytes(&mut heard_b).await, text);
+        }
+        // The latest resize is the pane's.
+        b.ask(In::Size(120, 40));
+        assert!(next_bytes(&mut heard_a).await.contains("\"cols\":120"));
+        drop(a);
+        assert_eq!(next_viewers(&mut heard_b).await, ["dashboard"]);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!gone.exists(), "released while a viewer remained");
+        drop(b);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !gone.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the pane is released when the last viewer goes");
+        // The next viewer starts a stream of its own.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let (_c, mut heard_c) = join(session, "extension".into(), None, fake_pane(&gone));
+        assert_eq!(next_viewers(&mut heard_c).await, ["extension"]);
+        assert_eq!(next_bytes(&mut heard_c).await, "started none");
+        let _ = std::fs::remove_file(&gone);
+    }
+
+    /// A pane the factory keeps view-only ends the stream for every viewer
+    /// with the factory's words, and is not tried again.
+    #[tokio::test]
+    async fn a_refused_pane_ends_the_stream_for_its_viewers() {
+        let refused: Spawn = std::sync::Arc::new(|_| {
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", "echo \"o/r#7's pane is view-only\" >&2; exit 2"]);
+            Ok(command)
+        });
+        let (_a, mut heard) = join("o/refused#7", "@a".into(), None, refused);
+        let end = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                Out::End(reason) => break reason,
+                _ => continue,
+            }
+        };
+        assert!(end.contains("view-only"), "{end}");
     }
 
     #[test]

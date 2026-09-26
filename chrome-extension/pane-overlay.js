@@ -225,7 +225,15 @@ button.ssf-pane-open.ssf-pane-show:hover:not(:disabled) {
     }
     await loaded;
     if (windows.has(key)) return show(factoryUrl, session, input, opener);
-    const query = new URLSearchParams({ factory: factoryUrl, session, input: input ? "1" : "0" });
+    // Who is watching, for the terminal's viewer list only (#563): the GitHub
+    // login this page is signed in as.
+    const login = document.querySelector('meta[name="user-login"]')?.content?.trim();
+    const query = new URLSearchParams({
+      factory: factoryUrl,
+      session,
+      input: input ? "1" : "0",
+      viewer: login ? `@${login}` : "extension",
+    });
     const host = element("div");
     host.dataset.ssfPane = session;
     const shadow = host.attachShadow({ mode: "open" });

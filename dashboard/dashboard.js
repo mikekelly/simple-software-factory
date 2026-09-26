@@ -5,7 +5,11 @@ const statusNode = document.querySelector("#refresh-status");
 const monitoredNode = document.querySelector("#monitored");
 const refreshButton = document.querySelector("#refresh");
 const template = document.querySelector("#card-template");
+const buildNode = document.querySelector("#build");
 let loading = false;
+/// Whether this server takes typing from this page (`dashboard.terminal_input`):
+/// an item's terminal is offered only where it can be typed into.
+let terminalInput = false;
 
 // The cards and monitored rows on screen, by the issue each is about. The poll
 // redraws the list from every answer it gets, and what is already there is
@@ -127,11 +131,12 @@ function cardNode(card) {
   fill(article.querySelector(".harness"), stackLabel(card));
   fill(article.querySelector(".issue-title"), card.origin.title);
   issueLink(article.querySelector(".issue-link"), card.origin);
-  // The session's pane as a live terminal (#563), read-only unless this
-  // server and the factory let the page type.
+  // The session's pane as a live, shared terminal (#563), offered only where
+  // this server and the factory let the page type into it.
   const terminal = `terminal.html?session=${encodeURIComponent(card.owner || card.origin.id)}`;
   const terminalLink = article.querySelector(".terminal-link");
   if (terminalLink.getAttribute("href") !== terminal) terminalLink.href = terminal;
+  show(terminalLink, terminalInput && card.pane_input === true);
   // The card, not just its time: with no time to show, the model's own reason
   // for that is what belongs in the row (#439).
   fill(article.querySelector(".activity"), activityLabel(card));
@@ -194,6 +199,8 @@ async function refresh() {
     const response = await fetch("api/status", {cache: "no-store"});
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || `status request failed (${response.status})`);
+    terminalInput = body.terminal_input === true;
+    fill(buildNode, body.build || "");
     render(body.cards, body.monitored_items || []);
     if (body.warning) show(emptyNode, false);
     fill(noticeNode, body.warning ? `Status may be incomplete: ${body.warning}` : "");

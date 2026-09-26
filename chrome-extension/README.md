@@ -467,8 +467,7 @@ A **scratch session**'s window is a live terminal: [xterm.js](https://xtermjs.or
 attached to the session's tmux session through the factory's `api/term/<session>`
 WebSocket (`ws://`, or `wss://` for an `https://` factory URL). It is sized to
 the window, and the tmux session follows its size; everything the terminal
-takes (keys, paste, mouse) goes straight to the session, so there is no Type
-button. On a factory whose Writes switch is off it is view-only. When the
+takes (keys, paste, mouse) goes straight to the session. On a factory whose Writes switch is off it is view-only. When the
 socket closes — the session ended (its harness exited, or it was killed), the
 factory went away, or the extension's service worker stopped — the terminal
 says so and offers **Reconnect**, and **Resume** to start a session that ended
@@ -476,28 +475,29 @@ again. The terminal never moves on to another session: ssf's tmux sessions
 detach their terminal when they end.
 
 An **item**'s window is also a live xterm.js terminal on `api/term/<session>`,
-which for an item streams the agent's herdr pane (`herdr terminal session
-observe|control`; see [docs/dashboard.md](../docs/dashboard.md)). It opens
-**read-only** at the pane's own size: nothing you type or paste is sent, and a
-notice under the title bar says so.
+which for an item is one viewer of the agent's herdr pane (`herdr terminal
+session control`, shared by the factory among everyone watching; see
+[docs/dashboard.md](../docs/dashboard.md)). **Show agent** appears only where
+the snapshot says the pane takes typing (`pane_input`: where the factory's
+`item_pane_input` is on) and the factory's Writes switch is on; the worker
+refuses to open an item's terminal while Writes is off, and turning Writes off
+closes it.
 
-Where the snapshot says the pane takes typing (`pane_input`: only where the
-factory's `item_pane_input` is on), the factory's Writes switch is on, and the
-factory gives this extension control, the terminal has a **Type** button. With
-Type on, the terminal asks for control of the pane, takes it at the window's
-size, and everything typed goes straight to the pane; the factory checks
-`item_pane_input` again and never takes the pane over from someone else. Type
-turns itself off, giving the pane back, when the tab is hidden, after half an
-hour with nothing typed, when the Writes switch is turned off, or when someone
-else takes the pane over, and the notice says why. herdr keeps the pane's
-scrollback, so the terminal keeps none: while typing, each wheel notch scrolls
-the pane one step, Shift+Enter sends a newline that does not submit (ESC CR),
-and a paste is always sent as a bracketed paste. A read-only view cannot
-scroll back. Speak to an item's agent otherwise by commenting on the item.
-When the socket closes the terminal says so and offers **Reconnect**.
+It is a full terminal, like a shared tmux session: everything you type or
+paste goes to the pane, and so does whatever anyone else watching types. The
+pane takes the size of whoever last typed or resized their window; the others
+see it at that size with the font shrunk to fit. The terminal's header lists
+who is watching: you as `@login` (the GitHub login this page is signed in as,
+or `extension`), the server page as `dashboard`. The factory never takes the
+pane over from someone else; while someone else holds it, a notice says so and
+it tries again. herdr keeps the pane's scrollback, so the terminal keeps none:
+each wheel notch scrolls the pane one step, Shift+Enter sends a newline that
+does not submit (ESC CR), and a paste is always sent as a bracketed paste.
+Half an hour with nothing typed disconnects it. When the socket closes the
+terminal says so and offers **Reconnect**.
 
-The older pane mirror (`pane-render.js`, `pane-keys.js`, the mirror half of
-`terminal.js` and `api/pane/<session>`) is no longer opened for any session;
+The older pane mirror (`pane-render.js`, `pane-keys.js`, the worker's
+`ssf-pane` port and `api/pane/<session>`) is no longer opened for any session;
 it is kept until [#564](https://github.com/mikekelly/simple-software-factory/issues/564)
 removes it.
 

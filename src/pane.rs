@@ -6,7 +6,7 @@
 //! The mirror (`watch`, `send`, and the extension's `pane-render.js`) is to be
 //! removed once the extension moves over to the live terminal the server web
 //! dashboard already uses for an item's pane (#563): `ssf __pane control`,
-//! which streams `herdr terminal session observe|control`.
+//! which streams `herdr terminal session control`.
 //!
 //! These run where the sessions run, as every factory command does: the web
 //! endpoint starts them through the same client transport as its status
@@ -358,185 +358,51 @@ pub(crate) async fn attach(session: &str) -> Result<()> {
     Err(anyhow::Error::new(error).context("running tmux attach"))
 }
 
-/// How often an observed pane's size is read (#563): herdr says nothing
-/// when a pane is resized, and an observer draws at the size it started
-/// with, so it is started again at the new one.
-const OBSERVE_SIZE_EVERY: Duration = Duration::from_secs(2);
-
-/// `ssf __pane control` (#563): stream an item session's herdr pane as
-/// `herdr terminal session` NDJSON over stdin and stdout (pipes, never a
-/// PTY): `observe` (view only) or `control` (typing, and the pane takes this
-/// terminal's size). `Ok(Some(why))` is control of a pane the configuration
-/// keeps view-only (`item_pane_input`); nothing is started.
+/// `ssf __pane control` (#563): control an item session's herdr pane as
+/// `herdr terminal session control` NDJSON over stdin and stdout (pipes,
+/// never a PTY): typing, and the pane takes this stream's size. The web
+/// endpoint holds one per pane and shares it among every viewer.
+/// `Ok(Some(why))` is a pane the configuration keeps view-only
+/// (`item_pane_input`); nothing is started.
 ///
-/// Control is never `--takeover`: a pane someone else controls ends this one
-/// with herdr's own `terminal.closed`.
-pub(crate) async fn control(
-    session: &str,
-    observe: bool,
-    size: Option<(u16, u16)>,
-) -> Result<Option<String>> {
+/// Control is never `--takeover`: a pane someone else controls refuses this
+/// one, and one taken over ends it, with herdr's own words.
+pub(crate) async fn control(session: &str, size: Option<(u16, u16)>) -> Result<Option<String>> {
     if Origin::parse(session).is_none() {
         bail!("{session}: only an item session (owner/repo#N) has a live terminal");
     }
     let cfg = Config::load()?;
-    if !observe && let Some(why) = input_refusal(&cfg, session) {
+    if let Some(why) = input_refusal(&cfg, session) {
         return Ok(Some(why));
     }
     let state = State::load()?;
     let Target::Driver(Driver::Herdr(herdr), pane) = locate(&cfg, &state, session).await? else {
         bail!("{session} has no herdr pane");
     };
-    let session_command = |mode: &str| {
-        let mut command =
-            tokio::process::Command::new(crate::config::herdr_command_path(herdr.command()));
-        command.args(["terminal", "session", mode, &pane]);
-        for name in [
-            "HERDR_WORKSPACE_ID",
-            "HERDR_TAB_ID",
-            "HERDR_PANE_ID",
-            "HERDR_ENV",
-        ] {
-            command.env_remove(name);
-        }
-        command
-    };
-    if !observe {
-        // Control is the stream alone: stdin is its commands, and closing it
-        // releases the pane.
-        let mut command = session_command("control");
-        if let Some((cols, rows)) = size {
-            command.args(["--cols", &cols.to_string(), "--rows", &rows.to_string()]);
-        }
-        use std::os::unix::process::CommandExt;
-        let error = command.as_std_mut().exec();
-        return Err(anyhow::Error::new(error).context("running herdr terminal session control"));
+    let mut command =
+        tokio::process::Command::new(crate::config::herdr_command_path(herdr.command()));
+    command.args(["terminal", "session", "control", &pane]);
+    for name in [
+        "HERDR_WORKSPACE_ID",
+        "HERDR_TAB_ID",
+        "HERDR_PANE_ID",
+        "HERDR_ENV",
+    ] {
+        command.env_remove(name);
     }
-    observe_pane(&herdr, &pane, || {
-        let mut command = session_command("observe");
-        command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        // The observer goes with this process however it ends, SIGKILL
-        // included, which `kill_on_drop` cannot see.
-        #[cfg(target_os = "linux")]
-        // SAFETY: prctl is async-signal-safe and touches only this child.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        command
-    })
-    .await
-    .map(|()| None)
-}
-
-/// Run the observer, and start it again whenever the pane's size changes,
-/// until it ends (herdr's `terminal.closed` is the last line it passed on) or
-/// whoever reads this goes. Its lines are passed on whole, so a restart never
-/// cuts one. An observer takes no input, and never ends at its stdin's end:
-/// that end is this process's cue to stop it.
-async fn observe_pane(
-    herdr: &crate::herdr::Herdr,
-    pane: &str,
-    command: impl Fn() -> tokio::process::Command,
-) -> Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
-    let mut input = tokio::io::stdin();
-    let mut out = tokio::io::stdout();
-    let mut sink = [0u8; 256];
-    loop {
-        let size = pane_size(herdr, pane).await;
-        let mut command = command();
-        if let Some((cols, rows)) = size {
-            command.args(["--cols", &cols.to_string(), "--rows", &rows.to_string()]);
-        }
-        let mut child = command
-            .spawn()
-            .context("starting herdr terminal session observe")?;
-        let mut lines =
-            tokio::io::BufReader::new(child.stdout.take().context("the observer's stdout")?)
-                .lines();
-        let mut tick = tokio::time::interval(OBSERVE_SIZE_EVERY);
-        tick.tick().await;
-        let resized = loop {
-            tokio::select! {
-                line = lines.next_line() => match line? {
-                    Some(line) => {
-                        out.write_all(format!("{line}\n").as_bytes()).await?;
-                        out.flush().await?;
-                    }
-                    None => {
-                        let _ = child.wait().await;
-                        return Ok(());
-                    }
-                },
-                read = input.read(&mut sink) => {
-                    if matches!(read, Ok(0) | Err(_)) {
-                        return Ok(());
-                    }
-                },
-                _ = tick.tick() => {
-                    if size.is_some() && pane_size(herdr, pane).await.is_some_and(|now| Some(now) != size) {
-                        break true;
-                    }
-                }
-            }
-        };
-        if resized {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-        }
+    if let Some((cols, rows)) = size {
+        command.args(["--cols", &cols.to_string(), "--rows", &rows.to_string()]);
     }
-}
-
-/// The pane's size, as near as herdr 0.9 tells it: its width in its tab's
-/// layout (`pane layout`), and its terminal's rows (`pane get`), which the
-/// layout does not follow while a controller has resized the pane.
-async fn pane_size(herdr: &crate::herdr::Herdr, pane: &str) -> Option<(u64, u64)> {
-    let layout = herdr.run(&["pane", "layout", "--pane", pane]).await.ok()?;
-    let info = herdr.run(&["pane", "get", pane]).await.ok()?;
-    pane_size_of(&layout, &info, pane)
-}
-
-fn pane_size_of(
-    layout: &serde_json::Value,
-    info: &serde_json::Value,
-    pane: &str,
-) -> Option<(u64, u64)> {
-    let rect = layout
-        .pointer("/layout/panes")?
-        .as_array()?
-        .iter()
-        .find(|p| p.get("pane_id").and_then(|id| id.as_str()) == Some(pane))?
-        .get("rect")?;
-    let rows = info
-        .pointer("/pane/scroll/viewport_rows")
-        .and_then(|rows| rows.as_u64())
-        .or_else(|| rect.get("height")?.as_u64())?;
-    Some((rect.get("width")?.as_u64()?, rows)).filter(|&(cols, rows)| cols > 0 && rows > 0)
+    // Control is the stream alone: stdin is its commands, and closing it
+    // releases the pane.
+    use std::os::unix::process::CommandExt;
+    let error = command.as_std_mut().exec();
+    Err(anyhow::Error::new(error).context("running herdr terminal session control"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_panes_size_is_its_layout_width_and_terminal_rows() {
-        let layout = json!({"layout": {"panes": [
-            {"pane_id": "w1:p1", "rect": {"width": 80, "height": 24, "x": 0, "y": 0}},
-            {"pane_id": "w1:p2", "rect": {"width": 40, "height": 24, "x": 80, "y": 0}},
-        ]}});
-        let info = json!({"pane": {"scroll": {"viewport_rows": 30}}});
-        assert_eq!(pane_size_of(&layout, &info, "w1:p2"), Some((40, 30)));
-        assert_eq!(pane_size_of(&layout, &json!({}), "w1:p2"), Some((40, 24)));
-        assert_eq!(pane_size_of(&layout, &info, "w1:p3"), None);
-    }
 
     #[test]
     fn a_line_is_said_once_until_it_changes() {
@@ -613,7 +479,7 @@ mod tests {
     }
 
     /// Control of an item's pane is refused where `item_pane_input` is off,
-    /// before any pane is looked for; observing it is not.
+    /// before any pane is looked for.
     #[tokio::test]
     async fn control_is_refused_where_item_pane_input_is_off() {
         let sandbox = crate::config::test_support::sandbox();
@@ -623,13 +489,10 @@ mod tests {
             "[[repo]]\nname = \"o/r\"\nharness = \"claude\"\n",
         )
         .unwrap();
-        let why = control("o/r#7", false, None).await.unwrap().unwrap();
+        let why = control("o/r#7", None).await.unwrap().unwrap();
         assert!(why.contains("view-only"), "{why}");
-        // Observing goes on to look for the pane, which is not there.
-        let error = control("o/r#7", true, None).await.unwrap_err();
-        assert!(format!("{error:#}").contains("o/r#7"), "{error:#}");
         // A scratch session has no live terminal of this kind.
-        assert!(control("o/r~ab12", true, None).await.is_err());
+        assert!(control("o/r~ab12", None).await.is_err());
     }
 
     #[tokio::test]

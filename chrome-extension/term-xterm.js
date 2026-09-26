@@ -1,6 +1,5 @@
 // A scratch session's live terminal (#491), and an item session's (runItem,
-// #563, below): xterm.js (vendored, see the
-// README) attached to the factory's `api/term/<session>` WebSocket through
+// #563, below): xterm.js (vendored, see the README) attached to the factory's `api/term/<session>` WebSocket through
 // the service worker, on a port (`ssf-term`). What the terminal prints comes
 // as bytes, what is typed goes as bytes, and the terminal is sized to its
 // window: every change of size (debounced) is fitted and sent as a resize,
@@ -139,41 +138,43 @@ export function run({ url, session, takesInput, say, box, reconnect, resume }) {
 
 /// Pixels of a smooth (trackpad) scroll that count as one wheel notch.
 const NOTCH_PX = 50;
-/// How long Type stays on with nothing typed: collie's idle pause.
+/// How long the terminal stays connected with nothing typed: collie's idle
+/// pause.
 const IDLE_MS = 30 * 60 * 1000;
+/// The font size the terminal draws at when the pane fits, and the smallest
+/// it shrinks to for a pane larger than the window.
+const FONT_PX = 13;
+const MIN_FONT_PX = 4;
 
 /// An item session's live terminal (#563): the same `api/term/<session>`
-/// socket, which for an item streams the pane through herdr, with the
-/// dashboard's terminal logic (dashboard/terminal.js) on the port. It opens
-/// read-only at the pane's own size, and anything typed or pasted then is not
-/// sent: a notice says so. Type asks the factory for control, which it gives
-/// only to this extension and only where `item_pane_input` is on; the port
-/// passes it (and what is typed) only while the factory's Writes switch is on
-/// (term-wire.js). Type turns itself off when the tab is hidden, nothing is
-/// typed for a while, Writes goes off, or the pane is taken over elsewhere
-/// (never taken back: no `--takeover`). herdr keeps the scrollback, so xterm
-/// keeps none, each wheel notch is one scroll, and a paste is always
-/// bracketed.
-export function runItem({ url, session, takesInput, say, box, notice: noticeNode, typeButton, reconnect }) {
+/// socket, which for an item is one viewer of the pane's control stream that
+/// the factory shares among everyone watching, like a shared tmux session:
+/// what anyone types, pastes or scrolls reaches the pane, which takes the
+/// size of whoever last typed or resized; everyone else sees it at that
+/// size, the font shrunk to fit. `name` (`@login`, or `extension`) is how
+/// this viewer is listed in `viewers`, the list of who is watching. It is
+/// opened only where the factory takes typing into the pane and this
+/// factory's Writes switch is on; Writes going off closes it, as does half
+/// an hour with nothing typed. herdr keeps the scrollback, so xterm keeps
+/// none, each wheel notch is one scroll, and a paste is always bracketed.
+export function runItem({ url, session, name, say, box, notice: noticeNode, viewers, reconnect }) {
   box.hidden = false;
   const term = new Terminal({
     cursorBlink: true,
     fontFamily:
       '"JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-    fontSize: 13,
+    fontSize: FONT_PX,
     macOptionIsMeta: true,
     scrollback: 0,
     theme: { background: "#0d1117", foreground: "#e6edf3" },
   });
-  const fit = new FitAddon();
-  term.loadAddon(fit);
   term.open(box);
 
   let port = null;
-  let control = false;
-  let mayControl = false;
-  let typing = false;
+  let connected = false;
   let writes = false;
+  /// The pane's size, as the factory last said it.
+  let pane = null;
   let lastActivity = Date.now();
   let wheel = 0;
   let noticeTimer = null;
@@ -186,14 +187,6 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
     }
   };
   const ask = (message) => post({ type: "ask", data: JSON.stringify(message) });
-  const fitted = () => {
-    try {
-      fit.fit();
-    } catch {
-      // A box with no size (hidden) has nothing to fit.
-    }
-  };
-  const canType = () => takesInput && writes && mayControl;
 
   function notice(text, sticky = false) {
     clearTimeout(noticeTimer);
@@ -202,56 +195,60 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
     if (text && !sticky) noticeTimer = setTimeout(() => (noticeNode.hidden = true), 6000);
   }
 
-  function shown() {
-    if (port) say(control ? "live · typing" : "live · read-only");
-    typeButton.hidden = !canType();
-    typeButton.setAttribute("aria-pressed", String(typing));
+  /// The room the box has for the terminal, and a cell's size at FONT_PX.
+  function measure() {
+    const style = getComputedStyle(box);
+    const px = (key) => parseFloat(style.getPropertyValue(key)) || 0;
+    const w = box.clientWidth - px("padding-left") - px("padding-right");
+    const h = box.clientHeight - px("padding-top") - px("padding-bottom");
+    const cell = term._core?._renderService?.dimensions?.css?.cell;
+    if (!cell?.width || !cell?.height || w <= 0 || h <= 0) return null;
+    const k = FONT_PX / term.options.fontSize;
+    return { w, h, cw: cell.width * k, ch: cell.height * k };
   }
 
-  function sendSize() {
-    const size = fit.proposeDimensions();
+  /// The size this window would give the pane, in cells at FONT_PX.
+  function mySize() {
+    const m = measure();
+    if (!m) return null;
+    const cols = Math.max(1, Math.min(1000, Math.floor(m.w / m.cw)));
+    const rows = Math.max(1, Math.min(1000, Math.floor(m.h / m.ch)));
+    return { cols, rows };
+  }
+
+  /// Draw the pane at its size, the font shrunk until it fits the window.
+  function fitPane() {
+    if (!pane) return;
+    if (term.cols !== pane.cols || term.rows !== pane.rows) term.resize(pane.cols, pane.rows);
+    const m = measure();
+    if (!m) return;
+    const scale = Math.min(m.w / (pane.cols * m.cw), m.h / (pane.rows * m.ch));
+    const font = Math.max(MIN_FONT_PX, Math.min(FONT_PX, Math.floor(FONT_PX * scale)));
+    if (term.options.fontSize !== font) term.options.fontSize = font;
+  }
+
+  /// Give the pane this window's size: it is the latest to type or resize.
+  function claimSize() {
+    const size = mySize();
     const text = size && resizeMessage(size.cols, size.rows);
-    if (text && control) post({ type: "resize", data: text });
-  }
-
-  /// Bytes typed at the pane, or the read-only notice instead.
-  function type(bytes) {
-    if (!control) {
-      notice(
-        typing
-          ? "Nothing was sent: waiting for control of the pane."
-          : canType()
-          ? "Read-only: nothing was sent. Turn on Type to type into this pane."
-          : "Read-only: nothing was sent. " +
-              (!takesInput
-                ? "Comment on the item to speak to its agent."
-                : !writes
-                  ? "Writes are off for this factory on the options page."
-                  : "The factory does not take typing into this pane."),
-      );
-      return;
+    if (text && connected && (size.cols !== pane?.cols || size.rows !== pane?.rows)) {
+      post({ type: "resize", data: text });
     }
-    lastActivity = Date.now();
-    post({ type: "input", data: toBase64(bytes) });
   }
 
-  function setTyping(on, why) {
-    if (typing === on) return;
-    typing = on;
+  function type(bytes) {
+    if (!connected) return;
     lastActivity = Date.now();
-    ask({ type: on ? "control" : "release" });
-    if (!on && why) notice(`Type is off: ${why}.`, true);
-    else if (on) notice("");
-    shown();
+    claimSize();
+    post({ type: "input", data: toBase64(bytes) });
   }
 
   function closed(text) {
     const held = port;
     port = null;
+    connected = false;
     held?.disconnect();
-    control = false;
-    typing = false;
-    shown();
+    viewers.textContent = "";
     say(text, true);
     reconnect.hidden = false;
     term.write(`\r\n\x1b[2m[${text}]\x1b[0m\r\n`);
@@ -259,8 +256,14 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
 
   function heard(message) {
     if (message?.type === "open") {
+      connected = true;
+      lastActivity = Date.now();
       term.reset();
-      shown();
+      say("live");
+      // The name is for the viewer list only; the size is the pane's only if
+      // no one else is watching it yet.
+      ask({ type: "hello", name, ...(mySize() ?? {}) });
+      term.focus();
     } else if (message?.type === "data") {
       term.write(fromBase64(message.data));
     } else if (message?.type === "text") {
@@ -270,24 +273,11 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
       } catch {
         return;
       }
-      if (said.type === "mode") {
-        control = said.control === true;
-        mayControl = said.may_control === true;
-        // A stream that came back read-only (the pane was found again) is
-        // asked for control again while Type is on.
-        if (typing && !control && canType()) ask({ type: "control" });
-        if (control) {
-          fitted();
-          sendSize();
-        }
-        shown();
-      } else if (said.type === "size" && !control) {
-        term.resize(said.cols, said.rows);
-      } else if (said.type === "refused") {
-        // Refused, or taken over elsewhere: Type goes off, and stays off.
-        typing = false;
-        shown();
-        notice(`Type is off: ${said.reason}`, true);
+      if (said.type === "size") {
+        pane = { cols: said.cols, rows: said.rows };
+        fitPane();
+      } else if (said.type === "viewers") {
+        viewers.textContent = (Array.isArray(said.names) ? said.names : []).map(String).join(", ");
       } else if (said.type === "notice") {
         notice(String(said.text ?? ""));
       }
@@ -300,8 +290,12 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
   function connect() {
     port?.disconnect();
     reconnect.hidden = true;
-    control = false;
-    typing = false;
+    connected = false;
+    notice("");
+    if (!writes) {
+      closed("writes are off for this factory on the options page");
+      return;
+    }
     say("connecting…");
     const opened = chrome.runtime.connect({ name: "ssf-term" });
     port = opened;
@@ -338,7 +332,6 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
     true,
   );
   term.attachCustomWheelEventHandler((event) => {
-    if (!control) return false;
     // A mouse wheel moves in lines or whole notches; a trackpad in pixels.
     const notches =
       event.deltaMode === 0 ? Math.trunc((wheel += event.deltaY) / NOTCH_PX) : Math.sign(event.deltaY);
@@ -346,38 +339,39 @@ export function runItem({ url, session, takesInput, say, box, notice: noticeNode
     for (let i = 0; i < Math.abs(notches); i += 1) {
       ask({ type: "scroll", direction: notches < 0 ? "up" : "down" });
     }
-    lastActivity = Date.now();
+    if (notches) lastActivity = Date.now();
     return false;
   });
 
+  // A resize of this window is a resize of the pane; the first call is the
+  // observer starting, not a resize.
   let timer = null;
+  let observed = false;
   new ResizeObserver(() => {
     clearTimeout(timer);
     timer = setTimeout(() => {
-      if (control) fitted();
-      sendSize();
+      if (!observed) {
+        observed = true;
+        return;
+      }
+      claimSize();
+      fitPane();
     }, FIT_MS);
   }).observe(box);
 
-  typeButton.addEventListener("click", () => {
-    setTyping(!typing);
-    term.focus();
-  });
   reconnect.addEventListener("click", connect);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") setTyping(false, "the tab was hidden");
-  });
   setInterval(() => {
-    if (typing && Date.now() - lastActivity >= IDLE_MS) setTyping(false, "nothing was typed for a while");
+    if (port && Date.now() - lastActivity >= IDLE_MS) {
+      closed("disconnected: nothing was typed for a while");
+    }
   }, 30000);
   setInterval(() => post({ type: "ping" }), PING_MS);
 
   // The factory's Writes switch, followed as the options page changes it.
   const readWrites = (factories) => {
     const item = (factories ?? []).find((one) => factoryUrl(one?.url) === url);
-    writes = item?.writes === true;
-    if (!writes) setTyping(false, "writes were turned off for this factory");
-    shown();
+    writes = item !== undefined && item.writes !== false;
+    if (!writes && port) closed("writes were turned off for this factory");
   };
   chrome.storage.local.get("factories").then(({ factories }) => {
     readWrites(factories);
