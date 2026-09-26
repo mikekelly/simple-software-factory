@@ -441,8 +441,9 @@ async function readPane(message, signal, tell) {
 ///
 /// The page sends `open` to connect, `input` (base64 bytes) and `resize`
 /// (the factory's own JSON text), and for an item's pane (#563) `ask` (JSON
-/// text: control, release, scroll), all but a release dropped while the
-/// factory's Writes switch is off; this worker sends `open` once connected,
+/// text: hello, scroll), all dropped while the factory's Writes switch is
+/// off; an item's terminal takes typing, so it is not opened at all then.
+/// This worker sends `open` once connected,
 /// `data` (base64 bytes), `text` (the factory's JSON text frames) and, once,
 /// `closed` with why. Closing the port closes
 /// the socket.
@@ -469,8 +470,13 @@ function termStream(port) {
         tell({ type: "closed", error: "this terminal names no configured factory" });
         return;
       }
+      const session = String(message.session ?? "");
+      if (!session.includes("~") && factories.get(url)?.writes !== true) {
+        tell({ type: "closed", error: "writes are turned off for this factory on the options page" });
+        return;
+      }
       factory = url;
-      const mine = new WebSocket(termUrl(url, String(message.session ?? "")));
+      const mine = new WebSocket(termUrl(url, session));
       socket = mine;
       mine.binaryType = "arraybuffer";
       mine.onopen = () => socket === mine && tell({ type: "open" });

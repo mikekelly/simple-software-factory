@@ -1250,14 +1250,14 @@
     // through one factory, and an agent is that factory's, so two factories
     // with a session each are two sessions to act on and each needs its own.
     for (const match of matches.filter((one) => one.kind === "agent")) {
-      // Show agent leads the row: the agent's own terminal, over the page.
+      // Show agent leads the row: the agent's own live terminal, over the
+      // page, offered only where it can be typed into (#563): the factory
+      // takes typing into the pane and this extension's Writes are on.
       const session = match.item.owner ?? match.item.origin?.id;
-      const open = globalThis.ssfPane?.button(
-        match.factory.url,
-        session,
-        match.item.pane_input === true,
-        "Show agent",
-      );
+      const typable = match.item.pane_input === true && match.factory.writes !== false;
+      const open =
+        typable &&
+        globalThis.ssfPane?.button(match.factory.url, session, true, "Show agent");
       const row = globalThis.ssfWrites?.renderActions({
         factories: [match.factory],
         repo,

@@ -80,8 +80,10 @@ whenever the daemon is reachable — however it was started:
 
 `service_active` and `service_enabled` are still in the top level of
 `ssf status --json`, as the service manager's own view of its unit — the HTTP
-API's `api/status` serves the `dashboard` presentation alone, so they are not
-part of it — and `ssf ui service status` reports exactly that. They say
+API's `api/status` serves the `dashboard` presentation alone (plus `build`,
+the version and commit serving it, which the page's header shows, and
+`terminal_input`, whether this page may open an item's terminal), so they are
+not part of it — and `ssf ui service status` reports exactly that. They say
 nothing about a daemon started outside the unit, which is the supported shape
 for
 [containers, other supervisors and foreground `ssf-server`](#running-without-systemd).
@@ -179,35 +181,43 @@ the log line below carries the URL actually being served.
 
 ### Live terminal for an item's pane
 
-Each card on the browser page has an **Open terminal** link. It opens the
-session's agent pane in a new tab as a live terminal (xterm.js), streamed from
-herdr as the pane draws it. It is not the redacted pane mirror: anyone with the
-URL sees the pane's output as it is, GitHub tokens included.
+Where this page may type into an item's pane, its card has an **Open
+terminal** link. It opens the session's agent pane in a new tab as a live
+terminal (xterm.js), streamed from herdr as the pane draws it. It is not the
+redacted pane mirror: anyone who opens it sees the pane's output as it is,
+GitHub tokens included.
 
-The terminal opens **read-only**, at the pane's own size. A key or a paste is
-not sent, and the page says so. The wheel does nothing while read-only.
-
-**Type** asks the server to control the pane. The button shows only where the
-server allows it, and the server refuses control unless both of these are on:
+The terminal is a full terminal: keys, paste and the wheel all reach the pane.
+The link shows, and the server opens the terminal, only where both of these are
+on:
 
 - `dashboard.terminal_input` on the server (default `false`), which lets this
   page type at all. Otherwise the page follows the [write rules](#write-rules),
-  which accept typing only from the Chrome extension's origin.
+  which accept a terminal only from the Chrome extension's origin.
 - `item_pane_input` for the item's repository (default `false`), decided where
-  the factory's configuration is (in the guest, for a factory in a VM).
+  the factory's configuration is (in the guest, for a factory in a VM). Where
+  it is off, the terminal closes with the factory's reason.
 
-A refusal is shown on the page, and the terminal stays read-only. While Type is
-on, the pane takes the size of the browser's terminal, and each wheel notch
-scrolls the pane's history, or the app in a full-screen TUI that uses the mouse.
-Shift+Enter sends a newline that does not submit, and a paste is always sent as
-a bracketed paste. Type turns itself off, giving the pane back at its own size,
-when the person turns it off, hides the tab, or types nothing for 30 minutes.
-It never takes a pane that someone else controls. If someone else takes the
-pane, the page says so and goes back to read-only.
+herdr lets one client control a pane, so the server holds **one control
+stream per pane** and shares it among everyone who has the terminal open, from
+this page or the extension, like a shared tmux session. Everyone sees the
+same screen, and what anyone types reaches the pane. The pane takes the size
+of whoever last typed or resized their window; everyone else sees it at that
+size, the font shrunk to fit (13px down to 4px). A viewer who joins late is
+sent the whole screen. The title bar lists who is watching (`@login` for the
+extension, `dashboard` for this page); the names are for display only.
+
+Each wheel notch scrolls the pane's history, or the app in a full-screen TUI
+that uses the mouse. Shift+Enter sends a newline that does not submit, and a
+paste is always sent as a bracketed paste. A page with nothing typed for 30
+minutes disconnects and offers **Reconnect**. The stream, and so the pane, is
+released when the last viewer leaves, which gives the pane back at its own
+size. It never takes a pane over: while someone else (a herdr client, say)
+controls it, the page says so and tries again.
 
 When the pane goes away (the harness exited, or it was relaunched in a new pane),
-the terminal looks for it again for about a minute and carries on in the new
-pane. Scratch sessions are unchanged: they run in tmux, and only the extension
+or someone else holds it, the terminal tries it again for about a minute and
+carries on. Scratch sessions are unchanged: they run in tmux, and only the extension
 opens a terminal on them.
 
 The startup log line carries the whole URL on every start, so
@@ -363,33 +373,40 @@ Unlike the mirror, the terminal shows no redaction: it is the session's own
 terminal, as `tmux attach` in a shell on the factory shows it. The Chrome
 extension's floating terminal window uses it for scratch sessions and, as below, item sessions.
 
-An item session's terminal is `ssf __pane control <session> [--observe]` run
-over pipes, which runs `herdr terminal session observe|control` on the pane.
-Any reader of the capability may open it view only. Control is given only to
-a request whose `Origin` is a `chrome-extension://...` origin, or the page's
-own origin when `dashboard.terminal_input` is on, and only where
-`item_pane_input` is on for the repository. Control is never a takeover. The
-protocol:
+An item session's terminal is one viewer of the pane's shared stream: `ssf
+__pane control <session>` run over pipes, which runs `herdr terminal session
+control` on the pane (never `--takeover`). The server starts it for the pane's
+first viewer and stops it, releasing the pane, when the last one goes. It is
+opened only for a request whose `Origin` is a `chrome-extension://...` origin,
+or the page's own origin when `dashboard.terminal_input` is on (`403`
+otherwise), and only where `item_pane_input` is on for the repository (the
+socket closes with the reason otherwise). The protocol:
 
 - **binary frames** from the server are what herdr drew. From the client they
-  are typed bytes, sent on only while in control.
-- **text frames** from the client are JSON: `{"type": "control"}` and
-  `{"type": "release"}` ask for control and give it back;
-  `{"type": "resize", "cols": N, "rows": N}` is the client's size, which
-  control starts at and follows; `{"type": "scroll", "direction": "up"}` (or
-  `"down"`) is one wheel notch, sent on only while in control. Anything else is
-  ignored.
-- **text frames** from the server are JSON: `{"type": "mode", "control": bool,
-  "may_control": bool}` each time the stream starts (control once herdr has
-  drawn for it); `{"type": "size", "cols": N, "rows": N}` when the drawn size
-  changes; `{"type": "refused", "reason": "..."}` for control that was not
-  allowed; and `{"type": "notice", "text": "..."}` for anything else, such as
-  a pane being looked for again.
-- A view-only stream follows the pane's size: herdr reports no resize, so the
-  factory reads it every two seconds and starts the stream again when it
-  changes. A stream whose pane went away (`terminal.closed` saying it exited,
-  or was not found) is started again after 1, 2, 4, 8, 10, 10, 10 and 15
-  seconds; one that is taken over by someone else goes back to view only.
+  are typed bytes.
+- **text frames** from the client are JSON: first `{"type": "hello", "name":
+  "@login", "cols": N, "rows": N}`, the viewer's display name (`@` and a
+  GitHub login, `dashboard` or `extension`; anything else is shown as
+  `viewer`) and size, which a stream that is just starting takes;
+  `{"type": "resize", "cols": N, "rows": N}` resizes the pane (the latest
+  resize wins); `{"type": "scroll", "direction": "up"}` (or `"down"`) is one
+  wheel notch. Anything else is ignored.
+- **text frames** from the server are JSON: `{"type": "size", "cols": N,
+  "rows": N}` when the pane's size changes (and on joining);
+  `{"type": "viewers", "names": [...]}` whenever a viewer joins or leaves; and
+  `{"type": "notice", "text": "..."}` for anything else, such as a pane being
+  tried again.
+- A viewer that joins is sent the whole screen: the server asks herdr to draw
+  it again. A stream whose pane went away, or that someone else controls, is
+  started again after 1, 2, 4, 8, 10, 10, 10 and 15 seconds, and then the
+  sockets close.
+- `item_pane_input` is checked (`ssf __pane input-check`) as each viewer
+  joins and every minute while the stream runs; found off, the stream ends
+  for every viewer with the reason.
+- The server pings each viewer every 20 seconds and drops one that has sent
+  nothing, a pong included, for 60 seconds. When the viewer whose size the
+  pane has leaves, the pane takes the size of the latest viewer left that
+  sent one.
 
 ### Snapshot fields a client can rely on
 

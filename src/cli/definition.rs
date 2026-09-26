@@ -627,19 +627,22 @@ pub(super) enum PaneCommand {
         session: String,
     },
     /// Stream an item session's herdr pane as `herdr terminal session`
-    /// NDJSON over stdin/stdout (pipes, not a PTY): control, or with
-    /// --observe view only. Control of a view-only pane exits 2.
+    /// control NDJSON over stdin/stdout (pipes, not a PTY). A pane the
+    /// factory keeps view-only (item_pane_input) exits 2.
     Control {
         /// The item session, as owner/repo#N.
         session: String,
-        /// View only: never types, never resizes the pane.
-        #[arg(long)]
-        observe: bool,
         /// The size control starts at.
         #[arg(long, requires = "rows")]
         cols: Option<u16>,
         #[arg(long, requires = "cols")]
         rows: Option<u16>,
+    },
+    /// Whether the session's pane takes typing: exits 2, saying why, where
+    /// the factory keeps it view-only (item_pane_input).
+    InputCheck {
+        /// The session, as owner/repo#N or owner/repo~id.
+        session: String,
     },
 }
 

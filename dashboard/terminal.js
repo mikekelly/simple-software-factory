@@ -1,27 +1,32 @@
 // An item session's live terminal (#563): xterm.js on the server's
-// `api/term/<session>` WebSocket, which streams the pane through `herdr
-// terminal session observe|control`. It opens read-only at the pane's own
-// size. Type asks the server for control, which it gives only where it and
-// the factory allow typing (`dashboard.terminal_input`, `item_pane_input`);
-// in control the pane takes this terminal's size. Type turns itself off when
-// the tab is hidden or nothing is typed for a while, which gives the pane
-// back.
+// `api/term/<session>` WebSocket. The server holds one `herdr terminal session
+// control` stream per pane and shares it among every viewer, like a shared
+// tmux session: everyone sees the pane, and what anyone types, pastes or
+// scrolls reaches it. The pane takes the size of whoever last typed or
+// resized; everyone else sees it at that size, the font shrunk to fit. The
+// title bar lists who is watching. The page is offered only where this server
+// and the factory take typing from it (`dashboard.terminal_input`,
+// `item_pane_input`), and the server refuses it otherwise. Half an hour with
+// nothing typed here closes this page's connection (Reconnect opens it again).
 //
 // herdr keeps the scrollback and does not tell the viewer the pane's modes,
 // so xterm keeps no scrollback, each wheel notch is one scroll message, and
 // a paste is always sent as a bracketed paste.
 import { Terminal } from "./xterm.mjs";
-import { FitAddon } from "./addon-fit.mjs";
 
 const IDLE_MS = 30 * 60 * 1000;
 /// Pixels of a smooth (trackpad) scroll that count as one wheel notch.
 const NOTCH_PX = 50;
+/// The font size this page draws at when the pane fits, and the smallest it
+/// shrinks to for a pane larger than the window.
+const FONT_PX = 13;
+const MIN_FONT_PX = 4;
 
 const session = new URLSearchParams(location.search).get("session") ?? "";
 const box = document.getElementById("box");
 const statusNode = document.getElementById("status");
+const viewersNode = document.getElementById("viewers");
 const noticeNode = document.getElementById("notice");
-const typeButton = document.getElementById("type");
 const reconnectButton = document.getElementById("reconnect");
 document.getElementById("title").textContent = session;
 document.title = `${session} · SSF terminal`;
@@ -30,20 +35,17 @@ const term = new Terminal({
   cursorBlink: true,
   fontFamily:
     '"JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-  fontSize: 13,
+  fontSize: FONT_PX,
   macOptionIsMeta: true,
   scrollback: 0,
   theme: { background: "#0d1117", foreground: "#e6edf3" },
 });
-const fit = new FitAddon();
-term.loadAddon(fit);
 term.open(box);
 
 const encoder = new TextEncoder();
 let ws = null;
-let control = false;
-let mayControl = false;
-let typing = false;
+/// The pane's size, as the server last said it.
+let pane = null;
 let lastActivity = Date.now();
 let wheel = 0;
 let noticeTimer = null;
@@ -55,48 +57,55 @@ function notice(text, sticky = false) {
   if (text && !sticky) noticeTimer = setTimeout(() => (noticeNode.hidden = true), 6000);
 }
 
-function shown() {
-  statusNode.textContent = control ? "live · typing" : "live · read-only";
-  typeButton.hidden = !mayControl;
-  typeButton.setAttribute("aria-pressed", String(typing));
-}
-
 function send(message) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(message);
 }
 
-/// The size this page would give the pane: the box's, in cells.
-function sendSize() {
-  const size = fit.proposeDimensions();
-  if (size && size.cols > 0 && size.rows > 0) {
-    send(JSON.stringify({ type: "resize", cols: size.cols, rows: size.rows }));
+/// The room the box has for the terminal, and a cell's size at FONT_PX.
+function measure() {
+  const style = getComputedStyle(box);
+  const px = (name) => parseFloat(style.getPropertyValue(name)) || 0;
+  const w = box.clientWidth - px("padding-left") - px("padding-right");
+  const h = box.clientHeight - px("padding-top") - px("padding-bottom");
+  const cell = term._core?._renderService?.dimensions?.css?.cell;
+  if (!cell?.width || !cell?.height || w <= 0 || h <= 0) return null;
+  const k = FONT_PX / term.options.fontSize;
+  return { w, h, cw: cell.width * k, ch: cell.height * k };
+}
+
+/// The size this page would give the pane: the box's, in cells at FONT_PX.
+function mySize() {
+  const m = measure();
+  if (!m) return null;
+  const cols = Math.max(1, Math.min(1000, Math.floor(m.w / m.cw)));
+  const rows = Math.max(1, Math.min(1000, Math.floor(m.h / m.ch)));
+  return { cols, rows };
+}
+
+/// Draw the pane at its size, the font shrunk until it fits the box.
+function fitPane() {
+  if (!pane) return;
+  if (term.cols !== pane.cols || term.rows !== pane.rows) term.resize(pane.cols, pane.rows);
+  const m = measure();
+  if (!m) return;
+  const scale = Math.min(m.w / (pane.cols * m.cw), m.h / (pane.rows * m.ch));
+  const font = Math.max(MIN_FONT_PX, Math.min(FONT_PX, Math.floor(FONT_PX * scale)));
+  if (term.options.fontSize !== font) term.options.fontSize = font;
+}
+
+/// Give the pane this page's size: it is the latest to type or resize.
+function claimSize() {
+  const size = mySize();
+  if (size && (size.cols !== pane?.cols || size.rows !== pane?.rows)) {
+    send(JSON.stringify({ type: "resize", ...size }));
   }
 }
 
-function readOnly() {
-  notice(
-    typing
-      ? "Nothing was sent: waiting for control of the pane."
-      : mayControl
-      ? "Read-only: nothing was sent. Turn on Type to type into this pane."
-      : "Read-only: nothing was sent. This server does not take typing from this page.",
-  );
-}
-
-/// Bytes typed at the pane, or the read-only notice instead.
 function type(bytes) {
-  if (!control) return readOnly();
+  if (ws?.readyState !== WebSocket.OPEN) return;
   lastActivity = Date.now();
+  claimSize();
   send(bytes);
-}
-
-function setTyping(on, why) {
-  if (typing === on) return;
-  typing = on;
-  lastActivity = Date.now();
-  send(JSON.stringify({ type: on ? "control" : "release" }));
-  if (!on && why) notice(`Type is off: ${why}.`);
-  shown();
 }
 
 function connect() {
@@ -107,9 +116,13 @@ function connect() {
   const socket = new WebSocket(`${scheme}://${location.host}${base}api/term/${encodeURIComponent(session)}`);
   socket.binaryType = "arraybuffer";
   ws = socket;
+  lastActivity = Date.now();
   socket.onopen = () => {
     term.reset();
-    sendSize();
+    statusNode.textContent = "live";
+    // The name is for the viewer list only; the size is the pane's only if
+    // no one else is watching it yet.
+    send(JSON.stringify({ type: "hello", name: "dashboard", ...(mySize() ?? {}) }));
   };
   socket.onmessage = (event) => {
     if (ws !== socket) return;
@@ -123,28 +136,11 @@ function connect() {
     } catch {
       return;
     }
-    if (message.type === "mode") {
-      control = message.control === true;
-      mayControl = message.may_control === true;
-      // A stream that came back as read-only (the pane was found again)
-      // is asked for control again while Type is on.
-      if (typing && !control && mayControl) send(JSON.stringify({ type: "control" }));
-      if (control) {
-        notice("");
-        try {
-          fit.fit();
-        } catch {
-          // A box with no size has nothing to fit.
-        }
-        sendSize();
-      }
-      shown();
-    } else if (message.type === "size" && !control) {
-      term.resize(message.cols, message.rows);
-    } else if (message.type === "refused") {
-      typing = false;
-      shown();
-      notice(`Not typing: ${message.reason}`, true);
+    if (message.type === "size") {
+      pane = { cols: message.cols, rows: message.rows };
+      fitPane();
+    } else if (message.type === "viewers") {
+      viewersNode.textContent = (message.names ?? []).join(", ");
     } else if (message.type === "notice") {
       notice(message.text);
     }
@@ -152,9 +148,7 @@ function connect() {
   socket.onclose = () => {
     if (ws !== socket) return;
     ws = null;
-    control = false;
-    typing = false;
-    shown();
+    viewersNode.textContent = "";
     statusNode.textContent = "disconnected";
     reconnectButton.hidden = false;
     term.write("\r\n\x1b[2m[the terminal closed]\x1b[0m\r\n");
@@ -187,7 +181,6 @@ box.addEventListener(
   true,
 );
 term.attachCustomWheelEventHandler((event) => {
-  if (!control) return false;
   // A mouse wheel moves in lines or whole notches; a trackpad in pixels.
   const notches =
     event.deltaMode === 0 ? Math.trunc((wheel += event.deltaY) / NOTCH_PX) : Math.sign(event.deltaY);
@@ -195,38 +188,32 @@ term.attachCustomWheelEventHandler((event) => {
   for (let i = 0; i < Math.abs(notches); i += 1) {
     send(JSON.stringify({ type: "scroll", direction: notches < 0 ? "up" : "down" }));
   }
-  lastActivity = Date.now();
+  if (notches) lastActivity = Date.now();
   return false;
 });
 
+// A resize of this window is a resize of the pane; the first call is the
+// observer starting, not a resize.
 let fitTimer = null;
+let observed = false;
 new ResizeObserver(() => {
   clearTimeout(fitTimer);
   fitTimer = setTimeout(() => {
-    if (control) {
-      try {
-        fit.fit();
-      } catch {
-        // As above.
-      }
+    if (!observed) {
+      observed = true;
+      return;
     }
-    sendSize();
+    claimSize();
+    fitPane();
   }, 100);
 }).observe(box);
-term.onResize(({ cols, rows }) => {
-  if (control) send(JSON.stringify({ type: "resize", cols, rows }));
-});
 
-typeButton.addEventListener("click", () => {
-  setTyping(!typing);
-  term.focus();
-});
 reconnectButton.addEventListener("click", connect);
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") setTyping(false, "the tab was hidden");
-});
 setInterval(() => {
-  if (typing && Date.now() - lastActivity >= IDLE_MS) setTyping(false, "nothing was typed for a while");
+  if (ws && Date.now() - lastActivity >= IDLE_MS) {
+    notice("Disconnected: nothing was typed for a while.", true);
+    ws.close();
+  }
 }, 30000);
 
 if (session) connect();
