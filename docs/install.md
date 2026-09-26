@@ -316,7 +316,7 @@ Do this step with the person, one harness at a time, through herdr. In VM mode r
    herdr pane run PANE claude     # PANE: result.root_pane.pane_id in the JSON printed above
    ```
 
-2. **Clear the first-run screens.** Read the pane with `herdr pane read PANE` and answer with `herdr pane send-keys PANE KEY...`. Take the default on preference screens, or ask the person in one line if the choice matters; for Claude Code's "Try the new fullscreen renderer?" pick **Not now**. Accept folder trust. Read again after every key: screens change with every harness release.
+2. **Clear the first-run screens.** Read the pane with `herdr pane read PANE` and answer with `herdr pane send-keys PANE KEY...`. Take the default on preference screens, or ask the person in one line if the choice matters; for Claude Code's "Try the new fullscreen renderer?" pick **Not now**; finish Oh My Pi's setup wizard here too, since it is kept per user and covers every later repository. Accept folder trust. Read again after every key: screens change with every harness release.
 
 3. **Start the harness's own sign-in** (for example `/login`, typed with `herdr pane run PANE /login`), read the link off the screen and give it to the person as a clickable link. If the harness wants a code pasted back, the person gives it to you and you type it into the pane with `herdr pane send-text` and `send-keys PANE enter`. Tell them the code passes through this chat and expires within minutes. A sign-in that needs the browser to reach a `localhost` callback on the factory machine (OMP's loopback OAuth) cannot finish from the person's browser: pick a method that takes a pasted code or redirect URL, or an API key.
 
