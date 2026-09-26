@@ -157,7 +157,7 @@ factory's items from anywhere, but its pane focus is scoped to the herdr
 server it runs on.
 
 A VM factory reached from its own host already works this way: `ssf vm
-ssh-config` prints the `~/.ssh/config` entry that `herdr --remote ssf-server`
+ssh-config` prints the `~/.ssh/config` entry that `herdr --remote ssf-default`
 uses.
 
 ## Platform enrolment
