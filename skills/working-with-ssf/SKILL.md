@@ -22,7 +22,8 @@ locally, in a VM, or over SSH. Linux and macOS are supported.
    (raw:
    `https://raw.githubusercontent.com/mikekelly/simple-software-factory/master/docs/install.md`).
    It opens with a resource check that decides, with the person, between a
-   local VM, host mode and a rented host, then runs to the first issue. Once
+   local VM, a guest on a server (with laptop and resident-agent access),
+   host mode and a rented host, then runs to the first issue. Once
    `ssf` is installed, continue from `ssf skill setup`, which is the same
    document at the installed version.
 3. If you're an ssf agent session that ssf itself started on an issue (`SSF_SESSION` will be set)

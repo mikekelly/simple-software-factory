@@ -69,7 +69,8 @@ command -v gh herdr tmux
 | Linux, `/dev/kvm` readable and writable, `systemctl --user` answers, resources allow a VM | **Local VM** (the default). Section 3.1, then 4 and 5. |
 | macOS, resources allow a VM | **Homebrew + lima VM**. Section 3.2, then 4 and 5. |
 | Linux without KVM or a systemd user session, or a Mac too small for a VM, with enough CPU/RAM for the sessions, and the person accepts that agents see this user's files | **Host mode on this machine**. Section 3.1, 3.2 or 3.3, then 5 (host mode). |
-| Too few resources here, or the person does not want agents on this machine | **A rented host** runs the factory; this machine only drives it. Section 3.3 on the host, 3.4 here. |
+| This machine is a dedicated server or VPS (you are its resident agent), or the factory should go on one | **A guest on a server** (Firecracker, else Incus; host mode only as the fallback). [A server: guest first](#a-server-guest-first), then [5.1](#51-a-guest-on-a-server-access-for-the-resident-agent-and-the-laptop). |
+| Too few resources here, or the person does not want agents on this machine | **A server** runs the factory; this machine only drives it. [A server: guest first](#a-server-guest-first); section 3.4 here. |
 | A factory already runs somewhere else | **Client only**. Section 3.4. |
 
 ### Is a VM reasonable here
@@ -84,11 +85,32 @@ Rule of thumb for judging "reasonable": each parallel agent session wants about 
 
 Say to the person, in one line each, what the options cost them: the VM keeps agents away from their files but takes half the machine; host mode takes only what the sessions use but the agents run as their user with permission prompts bypassed; a rented host costs money and puts the factory on a machine they administer over SSH.
 
-### The rented-host option
+### A server: guest first
 
-If this machine cannot host the factory, the factory can live on a server the person rents and this machine talks to it over SSH. Suitable hosts include the dedicated server that comes with a Grok Bot account, or a VPS from Hetzner, Linode, OVH or a similar provider. Requirements: Linux, a non-root user, outbound HTTPS, and enough RAM for the sessions by the rule above. KVM is not required, because that host runs in host mode.
+The most common real deployment is a person's laptop, a dedicated server or VPS that already runs a long-lived agent (Hermes, OpenClaw, Grok Bot, Meta Muse, …), and the factory in a guest on that server:
 
-Renting costs money: get explicit consent before proposing a specific product, and do not create the account for them.
+```
+laptop  ──ssh──▶  server (resident agent)  ──▶  ssf guest (Firecracker, or Incus without KVM)
+```
+
+Suitable servers include the dedicated server that comes with a Grok Bot account, or a VPS from Hetzner, Linode, OVH or a similar provider. Requirements: Linux, a non-root user, outbound HTTPS, and enough RAM for the sessions by the rule above. Renting costs money: get explicit consent before proposing a specific product, and do not create the account for them.
+
+On a server, put the agents in a guest, so they are kept away from the resident agent and its files. Run the probes of this section on the server, then:
+
+| On the server | Path |
+|---|---|
+| `/dev/kvm` usable (bare-metal servers usually; some VPSes offer nested virtualisation) | **Firecracker guest**: section 3.1, 4, then 5 (the VM). |
+| No usable `/dev/kvm` | **Incus guest**: set Incus up first ([platform-specifics.md#incus](platform-specifics.md#incus)), then 3.1, 4 and 5. Tell the person in one line: an Incus guest is a system container sharing the server's kernel, weaker isolation than a VM but still separate from the resident agent's files. |
+| No KVM and Incus cannot be set up (no root at all, or an unsupported kernel), or no distribution package fits | **Host mode**, the fallback: a dedicated factory account, standalone binaries (3.3), [platform-specifics.md#rented-hosts](platform-specifics.md#rented-hosts). |
+
+Incus, and the package install in 3.1, need root once. Give the person the exact commands from [platform-specifics.md#incus](platform-specifics.md#incus) to run over SSH on the server, or, when the installing agent already has non-interactive root there (`sudo -n true` succeeds), run them yourself. Then `ssf config set vm.backend incus` before `ssf vm build`.
+
+**Who installs.** Two entry points reach the same end state; follow the one that is you:
+
+- **A. An agent on the person's laptop installs**, driving the server over SSH: run every server-side command below as `ssh user@server '<command>'` (or in an SSH session), and the laptop-side steps locally. At the end, give the resident agent (if there is one) its own access, section 5.1 step 1, run over SSH as the resident agent's user.
+- **B. The resident agent on the server installs**: run the server-side commands locally. Before anything else after section 5, give yourself working access (section 5.1 step 1) and confirm it; then **offer** the person direct access from their own device (5.1 step 2), producing the exact steps for them or for their laptop's agent.
+
+Either way the end state is: the resident agent and the person's laptop each have `ssf` CLI, SSH and herdr access to the guest.
 
 ## 3. Install
 
@@ -243,6 +265,70 @@ Expect `Remote server is ready.` If it stops at a prompt instead (a version mism
 
 Root: agents in a VM or on a rented server should be able to `sudo` without a password, so they can install what their work needs without stopping. The guest's `ssf` user already has it. On a rented host the person grants it to the factory account; give them the exact commands ([Rented hosts](platform-specifics.md#rented-hosts)). Never grant it on the person's own machine in host mode: there, the agents are already running as the person.
 
+### 5.1 A guest on a server: access for the resident agent and the laptop
+
+Only when the guest runs on a server ([A server: guest first](#a-server-guest-first)). The guest's SSH listens on the server's loopback (`127.0.0.1:<vm.ssh_port>`, 2222 by default), so nothing is published on the internet: the laptop reaches it with `ProxyJump` through the server, and the server's own user reaches it directly.
+
+**Step 1. The server's user (the resident agent).** On the server, as the user that ran `ssf setup`:
+
+```sh
+ssf status                                    # the ssf CLI reaches the guest daemon
+grep -q '^Host ssf-default$' ~/.ssh/config 2>/dev/null || {
+  mkdir -p ~/.ssh && chmod 700 ~/.ssh
+  ssf vm ssh-config >> ~/.ssh/config && chmod 600 ~/.ssh/config
+}
+ssh ssf-default true
+herdr machine add ssf-default --label factory </dev/null
+herdr machine list
+```
+
+Good: `ssf status` names the account and repositories (or none yet), `ssh ssf-default true` returns silently, `herdr machine list` shows `ssf-default`. If `herdr machine add` stops at a prompt, handle it as in section 5.
+
+**Step 2. The person's laptop.** In entry point B, offer this to the person first ("Shall I set up access from your laptop?"); in A, do it.
+
+1. **The ssf client** on the laptop: package, Homebrew or bare binary, as in 3.4. No `ssf setup`, no daemon.
+2. **A key of the laptop's own.** On the laptop, `ssh-keygen -t ed25519 -f ~/.ssh/ssf-factory -N ''` (skip if it exists), and get the contents of `~/.ssh/ssf-factory.pub`. Never copy the server's private key to the laptop.
+3. **Authorise it in the guest.** On the server, append that public key line to the guest `ssf` user's `authorized_keys`, idempotently:
+
+   ```sh
+   KEY='ssh-ed25519 AAAA... laptop'            # the laptop's .pub line
+   ssf vm ssh -- "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && { grep -qxF '$KEY' ~/.ssh/authorized_keys || echo '$KEY' >> ~/.ssh/authorized_keys; }"
+   ```
+
+   The laptop must also reach the server itself over SSH as `user@server` (the person's usual login).
+4. **The SSH entry** on the laptop, appended to `~/.ssh/config` (skip if `grep -q '^Host ssf-factory$' ~/.ssh/config` finds it); use the port `ssf config get vm.ssh_port` prints on the server:
+
+   ```
+   Host ssf-factory
+     HostName 127.0.0.1
+     Port 2222
+     User ssf
+     ProxyJump user@server
+     IdentityFile ~/.ssh/ssf-factory
+     IdentitiesOnly yes
+   ```
+
+   Then `ssh ssf-factory true`. The first connection asks to trust the guest's host key; that is expected.
+5. **herdr** on the laptop, so the person opens the agents' terminals in their own herdr and agents on the laptop reach running sessions:
+
+   ```sh
+   herdr machine add ssf-factory --label factory </dev/null
+   herdr machine list
+   ```
+
+6. **The server catalog** on the laptop, so `ssf status` and `ssf doctor` reach the factory without `--server`:
+
+   ```sh
+   ssh ssf-factory 'command -v ssf-server'    # /usr/local/bin/ssf-server: on the non-interactive PATH
+   ssf server add factory --ssh ssf-factory
+   ssf status
+   ```
+
+   The destination is the SSH alias, so the jump and key from step 4 apply.
+7. **Optionally Tailscale** instead of the jump, for a person already on a tailnet: `ssf vm tailscale` on the server enrolls the guest (section 10); the laptop's SSH entry then uses the guest's tailnet name as `HostName`, port 22, and no `ProxyJump`.
+
+**Skills.** Install the `working-with-ssf` skill (`npx skills add mikekelly/simple-software-factory -g`) on the laptop for its agents, on the server for the resident agent; the guest's agents get SSF's guidance from ssf itself.
+
 ## 6. The bot account
 
 The factory acts on GitHub as an account of its own. Every agent post carries a byline naming the session and what it runs, and a post from the bot *without* a byline is read as typed by a person, so sharing the person's own account confuses who said what. The bot is a default, not a security boundary: agents run as a Unix user and the account only bounds what `gh` does by default.
@@ -367,7 +453,7 @@ ssf doctor
 ssf status
 ```
 
-Also check `herdr machine list` shows the factory machine (section 5). Healthy looks like: the token belongs to the bot; the driver is reachable and ready; the harness is installed and signed in where sessions run; each repository shows its GitHub identity, its allowed users, the commit identity, and its SSF agent guidance. `ssf status` names the configured account, then the repositories and their tracked items with no last error.
+Also check `herdr machine list` shows the factory machine (section 5). For a guest on a server, run from the laptop: `ssh ssf-factory true`, `herdr machine list` shows `ssf-factory`, and `ssf status` answers; and from the resident agent on the server: `ssh ssf-default true`, `herdr machine list` shows `ssf-default`, and `ssf status` answers. Healthy looks like: the token belongs to the bot; the driver is reachable and ready; the harness is installed and signed in where sessions run; each repository shows its GitHub identity, its allowed users, the commit identity, and its SSF agent guidance. `ssf status` names the configured account, then the repositories and their tracked items with no last error.
 
 Two lines are expected to fail before the first issue and need no action: the repository's checkout (cloned when the first session starts) and the `gh`, `git` and `ssf` command links (written when the first agent starts). Anything else, work through [troubleshooting.md](troubleshooting.md) (`ssf skill troubleshoot`).
 
@@ -387,6 +473,8 @@ Upgrade by installing the next release's package the same way it was installed; 
 - [ ] `ssf setup` complete and the service enabled (package and Homebrew paths).
 - [ ] `ssf vm status` reports a running VM, or herdr is reachable in host mode.
 - [ ] VM or rented host: reachable over SSH, agents have passwordless `sudo`, and it is saved in the person's herdr (`herdr machine add`, shown by `herdr machine list`).
+- [ ] Server: the agents run in a guest (Firecracker, else Incus), or host mode was chosen as the fallback with the reason said to the person.
+- [ ] Guest on a server: the resident agent (if any) and the person's laptop each pass `ssh <entry> true`, show the factory in `herdr machine list`, and get an answer from `ssf status`; the laptop uses its own key through `ProxyJump`; `working-with-ssf` is installed on both.
 - [ ] The person was asked about reaching the factory from other devices; Tailscale enrolled if yes.
 - [ ] Bot account created; `ssf auth status` names it.
 - [ ] Bot has Write on the repository, verified with `push: true`, and board access if there is a board.
