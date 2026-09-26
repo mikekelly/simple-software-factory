@@ -1,113 +1,64 @@
 use super::*;
 
-/// How a harness signs in inside the guest: the flow that works from a
-/// terminal with no browser next to it (a URL and a code to paste back, or
-/// a device code), the file it writes under the guest home, and a status
-/// command where it has one. `ssf vm login` runs `argv` over ssh with a
-/// tty; `ssf vm status` (and `doctor`) use `check()` to say who is logged
-/// in. Most harnesses use device codes or pasted replies; OMP can instead
-/// use a loopback callback, which `ssf vm login omp` forwards over SSH.
+/// Where a harness keeps its sign-in inside the guest: the file it writes
+/// under the guest home. `ssf vm status` (and `doctor`) use `check()` to say
+/// who is logged in. Signing in is the harness's own flow, run in a herdr
+/// pane or over `ssf vm ssh` (docs/install.md, "Sign in the harness").
 #[derive(Debug, Clone, Copy)]
 pub struct Login {
     pub harness: &'static str,
-    /// The login command line, run in the guest home with a tty.
-    pub argv: &'static [&'static str],
     /// The credential file, relative to the guest home.
     pub credential: &'static str,
     /// The file only counts when it contains this (Copilot's config file
     /// exists before any login).
     pub must_contain: Option<&'static str>,
-    /// A status command to show after the login, when the harness has one.
-    pub status: &'static [&'static str],
-    /// Whether ssf may open the first URL the login prints in the host
-    /// browser: only the plain-text flows; a full-screen TUI wraps its URL
-    /// across lines and the person drives it anyway.
-    pub open_url: bool,
-    /// What the person does once it starts.
-    pub hint: &'static str,
 }
 
 pub const LOGINS: &[Login] = &[
     Login {
         harness: "claude",
-        argv: &["claude", "auth", "login"],
         credential: ".claude/.credentials.json",
         must_contain: None,
-        status: &["claude", "auth", "status"],
-        open_url: true,
-        hint: "sign in on the page, then paste the code it shows back here",
     },
     Login {
         harness: "codex",
-        argv: &["codex", "login", "--device-auth"],
         credential: ".codex/auth.json",
         must_contain: None,
-        status: &["codex", "login", "status"],
-        open_url: true,
-        hint: "enter the one-time code on the page",
     },
     Login {
         harness: "gemini",
-        argv: &["env", "NO_BROWSER=true", "gemini"],
         credential: ".gemini/oauth_creds.json",
         must_contain: None,
-        status: &[],
-        open_url: false,
-        hint: "Gemini starts: pick \"Sign in with Google\" (or an API key), open the URL it prints, paste the code back, then /quit",
     },
     Login {
         harness: "copilot",
-        argv: &["copilot", "login", "--device-code"],
         credential: ".copilot/config.json",
         must_contain: Some("token"),
-        status: &[],
-        open_url: true,
-        hint: "enter the one-time code on the page",
     },
     Login {
         harness: "opencode",
-        argv: &["opencode", "auth", "login"],
         credential: ".local/share/opencode/auth.json",
         must_contain: None,
-        status: &["opencode", "auth", "list"],
-        open_url: false,
-        hint: "pick the provider and method; OAuth methods print a URL and take the code back, API keys are pasted",
     },
     Login {
         harness: "pi",
-        argv: &["pi"],
         credential: ".pi/agent/auth.json",
         must_contain: None,
-        status: &[],
-        open_url: false,
-        hint: "Pi starts: type /login, pick the method and provider, open the URL it prints, paste the code or the redirect URL back, then ctrl+d",
     },
     Login {
         harness: "omp",
-        argv: &["omp"],
         credential: ".omp/agent/agent.db",
         must_contain: None,
-        status: &[],
-        open_url: false,
-        hint: "Oh My Pi starts: type /login and pick the provider; for loopback OAuth wait for ssf forwarding, open the short /launch URL, authorize in your browser, then exit OMP",
     },
     Login {
         harness: "grok",
-        argv: &["grok", "login", "--device-auth"],
         credential: ".grok/auth.json",
         must_contain: None,
-        status: &[],
-        open_url: true,
-        hint: "confirm the code on the page",
     },
     Login {
         harness: "crush",
-        argv: &["crush", "login", "copilot"],
         credential: ".config/github-copilot/apps.json",
         must_contain: None,
-        status: &[],
-        open_url: true,
-        hint: "press Enter, then enter the one-time code on the page",
     },
 ];
 

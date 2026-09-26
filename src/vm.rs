@@ -110,7 +110,6 @@ pub const FORWARDED: [&str; 21] = [
 mod firecracker;
 mod guest;
 mod incus;
-mod oauth;
 mod support;
 mod types;
 

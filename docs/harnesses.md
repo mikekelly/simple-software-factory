@@ -349,7 +349,7 @@ account and may cost money.
 
 - A new factory: the sign-in step of [install.md](install.md#8-sign-in-the-harness).
 - In VM mode the sessions run in the guest, so the sign-in belongs there
-  (`ssf vm login`, see [Harness logins](vm.md#harness-logins)). Copying a
+  (`ssf vm ssh` and the harness's own sign-in, see [Harness logins](vm.md#harness-logins)). Copying a
   host credential file in with `vm.files` shares one session between host
   and guest, so a logout in either place signs out both.
 - Anything a particular harness needs on a particular platform or vendor
