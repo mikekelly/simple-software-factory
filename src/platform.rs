@@ -378,14 +378,14 @@ pub fn service_active() -> bool {
             Err(_) => false,
         };
     }
-    let mut cmd = Command::new("systemctl");
-    if !crate::vm::in_guest() {
-        cmd.arg("--user");
+    let unit = service_unit();
+    let probe = ["is-active", "--quiet", &unit];
+    if crate::vm::in_guest() {
+        systemctl(&probe)
+    } else {
+        systemctl_user(&probe)
     }
-    cmd.args(["is-active", "--quiet", &service_unit()])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    .is_ok_and(|output| output.status.success())
 }
 
 /// `launchctl print` output for a service that runs has `state = running`.
@@ -591,15 +591,19 @@ const SYSTEMCTL_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// `systemctl --user args` with its output, killed and reported as an error
 /// once it has run for [`SYSTEMCTL_PROBE_TIMEOUT`].
 pub fn systemctl_user(args: &[&str]) -> Result<std::process::Output> {
+    systemctl(&[&["--user"], args].concat())
+}
+
+/// `systemctl args`, bounded like [`systemctl_user`].
+fn systemctl(args: &[&str]) -> Result<std::process::Output> {
     use std::io::Read;
     let mut child = Command::new("systemctl")
-        .arg("--user")
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("running systemctl --user {}", args.join(" ")))?;
+        .with_context(|| format!("running systemctl {}", args.join(" ")))?;
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -621,7 +625,7 @@ pub fn systemctl_user(args: &[&str]) -> Result<std::process::Output> {
             let _ = child.wait();
             // The readers are not joined: they end when the pipes close.
             bail!(
-                "systemctl --user {} did not finish within {}s",
+                "systemctl {} did not finish within {}s",
                 args.join(" "),
                 SYSTEMCTL_PROBE_TIMEOUT.as_secs()
             );
