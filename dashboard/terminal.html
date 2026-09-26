@@ -6,15 +6,7 @@
   <title>SSF terminal</title>
   <link rel="stylesheet" href="dashboard.css">
   <link rel="stylesheet" href="xterm.css">
-  <style>
-    body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-    .term-bar { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; padding: .8rem 1rem; border-bottom: 1px solid var(--line); font-size: .85rem; }
-    .term-bar h1 { font-size: 1rem; letter-spacing: 0; margin: 0; }
-    .term-bar .status { color: var(--muted); }
-    .term-bar button[aria-pressed="true"] { border-color: var(--green); color: var(--green); }
-    .term-notice { margin: 0; padding: .5rem 1rem; background: rgba(255, 202, 110, .12); color: var(--amber); font-size: .85rem; }
-    #box { flex: 1; min-height: 0; padding: .5rem; background: #0d1117; overflow: auto; }
-  </style>
+  <link rel="stylesheet" href="terminal.css">
 </head>
 <body>
   <div class="term-bar">

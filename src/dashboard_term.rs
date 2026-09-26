@@ -611,9 +611,13 @@ async fn bridge_item(
             End::Closed(reason) => {
                 // Taken over elsewhere, or a failure: say so, and go on
                 // watching rather than take the pane back.
+                // A client that was typing is told as a refusal, which turns
+                // its Type off, so it does not ask for the pane straight back.
+                let kind = if control { "refused" } else { "notice" };
+                let key = if control { "reason" } else { "text" };
                 control = false;
                 let text = format!("{reason}; watching the pane again");
-                if !say(ws, serde_json::json!({"type": "notice", "text": text})).await {
+                if !say(ws, serde_json::json!({"type": kind, key: text})).await {
                     return Ok(());
                 }
                 let Some(&wait) = waits.next() else {

@@ -418,6 +418,18 @@ pub(crate) async fn control(
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .kill_on_drop(true);
+        // The observer goes with this process however it ends, SIGKILL
+        // included, which `kill_on_drop` cannot see.
+        #[cfg(target_os = "linux")]
+        // SAFETY: prctl is async-signal-safe and touches only this child.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
         command
     })
     .await

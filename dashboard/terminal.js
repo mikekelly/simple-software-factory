@@ -128,6 +128,7 @@ function connect() {
       // is asked for control again while Type is on.
       if (typing && !control && mayControl) send(JSON.stringify({ type: "control" }));
       if (control) {
+        notice("");
         try {
           fit.fit();
         } catch {

@@ -18,6 +18,7 @@ const JS: &str = include_str!("../dashboard/dashboard.js");
 /// extension's vendored copy, served as it is.
 const TERMINAL_HTML: &str = include_str!("../dashboard/terminal.html");
 const TERMINAL_JS: &str = include_str!("../dashboard/terminal.js");
+const TERMINAL_CSS: &str = include_str!("../dashboard/terminal.css");
 const XTERM_JS: &str = include_str!("../chrome-extension/vendor/xterm/xterm.mjs");
 const XTERM_FIT_JS: &str = include_str!("../chrome-extension/vendor/xterm/addon-fit.mjs");
 const XTERM_CSS: &str = include_str!("../chrome-extension/vendor/xterm/xterm.css");
@@ -295,6 +296,10 @@ async fn handle(
         Ok(Ok(request)) => classify(request, host, token),
         _ => Err(400),
     };
+    let security = match &routed {
+        Ok(Routed::Read(relative)) => security_headers(relative),
+        _ => SECURITY_HEADERS,
+    };
     let (status, kind, body) = match routed {
         Ok(Routed::Read("api/events")) => {
             // Ends quietly when the client goes away or the daemon stops.
@@ -348,7 +353,11 @@ async fn handle(
         Ok(Routed::Write(accepted)) => write(&mut stream, accepted, client).await,
         Err(status) => rejected(status),
     };
-    let _ = timeout(REQUEST_TIMEOUT, respond(&mut stream, status, kind, &body)).await;
+    let _ = timeout(
+        REQUEST_TIMEOUT,
+        respond_with(&mut stream, status, kind, "", security, body.as_bytes()),
+    )
+    .await;
 }
 
 /// What a request refused before anything was read is told. Most of these are
@@ -400,6 +409,7 @@ async fn read(relative: &str, latest: &mut Latest, client: &Path) -> (u16, &'sta
         "dashboard.css" => (200, "text/css; charset=utf-8", CSS.to_owned()),
         "dashboard.js" => (200, "text/javascript; charset=utf-8", JS.to_owned()),
         "terminal.html" => (200, "text/html; charset=utf-8", TERMINAL_HTML.to_owned()),
+        "terminal.css" => (200, "text/css; charset=utf-8", TERMINAL_CSS.to_owned()),
         "terminal.js" => (
             200,
             "text/javascript; charset=utf-8",
@@ -1682,13 +1692,23 @@ fn under_capability<'a>(token: &str, target: &'a str) -> std::result::Result<&'a
     if mismatch != 0 {
         return Err(404);
     }
-    Ok(relative)
+    // A query (`terminal.html?session=…`) is the page's own; routes are
+    // paths alone.
+    Ok(relative.split_once('?').map_or(relative, |(path, _)| path))
 }
 
 const SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n";
+/// The terminal page's: xterm.js draws with `<style>` elements and style
+/// attributes of its own, so that page alone allows inline styles.
+const TERMINAL_SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n";
 
-async fn respond(stream: &mut TcpStream, status: u16, kind: &str, body: &str) -> Result<()> {
-    respond_bytes(stream, status, kind, "", body.as_bytes()).await
+/// The security headers `relative`'s answer carries.
+fn security_headers(relative: &str) -> &'static str {
+    if relative == "terminal.html" {
+        TERMINAL_SECURITY_HEADERS
+    } else {
+        SECURITY_HEADERS
+    }
 }
 
 /// `respond` for a body that need not be text, with any headers the answer
@@ -1698,6 +1718,18 @@ async fn respond_bytes(
     status: u16,
     kind: &str,
     extra: &str,
+    body: &[u8],
+) -> Result<()> {
+    respond_with(stream, status, kind, extra, SECURITY_HEADERS, body).await
+}
+
+/// `respond_bytes` with the security headers given.
+async fn respond_with(
+    stream: &mut TcpStream,
+    status: u16,
+    kind: &str,
+    extra: &str,
+    security: &str,
     body: &[u8],
 ) -> Result<()> {
     let reason = match status {
@@ -1712,7 +1744,7 @@ async fn respond_bytes(
         _ => "Bad Gateway",
     };
     let headers = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n{extra}{SECURITY_HEADERS}\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n{extra}{security}\r\n",
         body.len()
     );
     stream.write_all(headers.as_bytes()).await?;
@@ -2208,6 +2240,29 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
     /// The extension this build carries is a read route like the others:
     /// served whole under the capability, as a download, and refused
     /// without it.
+    /// The terminal page is linked with its session in the query (#563): the
+    /// query is not part of the route, and only that page allows the inline
+    /// styles xterm.js draws with.
+    #[tokio::test]
+    async fn serves_the_terminal_page_with_its_query_and_its_own_policy() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        std::mem::forget(tx);
+        let task = tokio::spawn(serve(listener, "secret".into(), rx, "unused".into()));
+        let page = fetch(address, "/secret/terminal.html?session=o%2Fr%237").await;
+        assert!(page.starts_with("HTTP/1.1 200 "), "{page}");
+        assert!(page.contains("style-src 'self' 'unsafe-inline'"), "{page}");
+        let css = fetch(address, "/secret/terminal.css").await;
+        assert!(css.starts_with("HTTP/1.1 200 "), "{css}");
+        let index = fetch(address, "/secret/?x=1").await;
+        assert!(index.starts_with("HTTP/1.1 200 "), "{index}");
+        assert!(!index.contains("unsafe-inline"), "{index}");
+        task.abort();
+    }
+
     #[tokio::test]
     async fn serves_the_embedded_chrome_extension_zip() {
         assert_eq!(
