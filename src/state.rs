@@ -419,6 +419,18 @@ pub struct IssueState {
 }
 
 impl IssueState {
+    /// Take `seen` from a diff of the timeline alone, keeping the reaction
+    /// records (`reactions:*`) it does not carry, so a reaction made across
+    /// a reactivation or handover is still news at the next follow-up.
+    pub fn replace_seen(&mut self, mut seen: BTreeMap<String, String>) {
+        for (k, v) in &self.seen {
+            if k.starts_with("reactions:") && !seen.contains_key(k) {
+                seen.insert(k.clone(), v.clone());
+            }
+        }
+        self.seen = seen;
+    }
+
     /// Whether this record answers to nothing: no session of its own, no
     /// subscriber, no workspace, no prompt ever sent or attempted, and
     /// nothing waiting on it.

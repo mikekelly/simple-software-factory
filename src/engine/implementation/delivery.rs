@@ -134,14 +134,16 @@ impl Engine {
     /// an item that did move goes through the usual follow-up, which
     /// delivers what is new. An item the listings already sent through
     /// the follow-up this pass has fresh ETags and answers 304. Items
-    /// with no ETags yet (none since this was added), blocked sessions and
-    /// held retirements are left to the listings, as before.
+    /// with no ETags yet (none since this was added), blocked sessions,
+    /// mailboxes held for want of a live bridge and held retirements are
+    /// left to the listings, as before.
     pub(in crate::engine) async fn watch_reactions(
         &mut self,
         repo: &RepoConfig,
         owner: &str,
         name: &str,
     ) {
+        let lost = self.channel_lost.clone();
         let active: Vec<(u64, Vec<String>)> = self
             .state
             .repo_mut(&repo.name)
@@ -152,6 +154,7 @@ impl Engine {
                     && s.active
                     && s.blocked.is_none()
                     && s.retirement_held_at.is_none()
+                    && !lost.contains(&(repo.name.clone(), s.number))
                     && !s.timeline_etags.is_empty()
             })
             .map(|s| (s.number, s.timeline_etags.clone()))
@@ -173,7 +176,13 @@ impl Engine {
             .await;
             match result {
                 Ok(()) => {}
-                Err(e) if is_held(&e) => self.note_mailbox_hold(repo, number, &e),
+                // Not `note_mailbox_hold`: forgetting the listing ETags on
+                // every pass would cost full listings for as long as the
+                // bridge is away. The item waits for the listings instead.
+                Err(e) if is_held(&e) => {
+                    debug!(repo = repo.name, issue = number, "held: {e:#}");
+                    self.channel_lost.insert((repo.name.clone(), number));
+                }
                 Err(e) => warn!(
                     repo = repo.name,
                     issue = number,
@@ -935,7 +944,7 @@ impl Engine {
                 e.prompts_sent += 1;
                 // The story told it everything on the item, so the pass
                 // that follows has nothing to deliver again.
-                e.seen = story.seen;
+                e.replace_seen(story.seen);
                 e.updated_at = Some(story.updated_at);
                 info!(
                     session,

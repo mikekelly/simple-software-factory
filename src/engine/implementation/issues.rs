@@ -321,12 +321,20 @@ impl Engine {
         timeline: &[Value],
     ) -> Result<Diff> {
         let counts = reaction_counts;
-        let mut targets = vec![(
-            "reactions:body".to_string(),
-            format!("issues/{}", issue.number),
-            issue.html_url.clone(),
-            counts(issue.reactions.as_ref()),
-        )];
+        // An item built from a listing that does not carry the body's
+        // counts (`/pulls`) says nothing about them: its record stands.
+        let mut targets = Vec::new();
+        let mut observed = BTreeMap::new();
+        if issue.reactions.is_some() {
+            targets.push((
+                "reactions:body".to_string(),
+                format!("issues/{}", issue.number),
+                issue.html_url.clone(),
+                counts(issue.reactions.as_ref()),
+            ));
+        } else if let Some(v) = seen.get("reactions:body") {
+            observed.insert("reactions:body".to_string(), v.clone());
+        }
         for ev in timeline {
             if ev.get("event").and_then(Value::as_str) != Some("commented") {
                 continue;
@@ -352,7 +360,6 @@ impl Engine {
             .iter()
             .any(|k| k == "reacted");
         let mut rendered = Vec::new();
-        let mut observed = BTreeMap::new();
         for (key, on, url, now) in targets {
             let stored = seen.get(&key).map(|s| parse_reactions(s));
             if let Some(old) = &stored
@@ -535,10 +542,14 @@ fn tally(set: &BTreeSet<(String, String)>) -> BTreeMap<String, u64> {
 
 /// Whether the item's body reactions differ from the record in `seen`.
 /// No record yet is not a change: the next look records them as they are.
+/// Neither is an item without counts (one built from the `/pulls` listing).
 pub(in crate::engine) fn body_reactions_moved(
     seen: &BTreeMap<String, String>,
     issue: &Issue,
 ) -> bool {
+    let Some(now) = issue.reactions.as_ref() else {
+        return false;
+    };
     seen.get("reactions:body")
-        .is_some_and(|s| tally(&parse_reactions(s)) != reaction_counts(issue.reactions.as_ref()))
+        .is_some_and(|s| tally(&parse_reactions(s)) != reaction_counts(Some(now)))
 }

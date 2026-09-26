@@ -21,7 +21,7 @@ async fn baselined(stub: &GitHubStub) -> (Engine, crate::driver::StubDriver) {
     let (mut e, d) = blocked_setup(stub, READY_SCREEN);
     let r = repo();
     stub.set_issue(5, item_with(json!({"total_count": 0})));
-    stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+    stub.set_assigned(vec![item_with(json!({"total_count": 0}))]);
     stub.set_timeline(
         5,
         vec![
@@ -213,4 +213,88 @@ async fn a_reaction_on_the_body_is_delivered_from_the_listing() {
     );
     e.tick_repo(&r).await.unwrap();
     assert!(d.prompts().is_empty(), "not said twice");
+}
+
+/// An item that does not carry the body's counts (the `/pulls` listing
+/// builds one) neither triggers a look nor wipes the body's record.
+#[tokio::test]
+async fn an_item_without_body_counts_leaves_the_body_record_alone() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = baselined(&stub).await;
+    let r = repo();
+    e.entry(&r, 5)
+        .seen
+        .insert("reactions:body".into(), "carol:hooray".into());
+    // The same item, without `reactions`, from both the listing and the
+    // item endpoint (the listing's baseline had them); the timeline moves (bob's ❤️) so the follow-up runs.
+    stub.set_issue(5, assigned_item(5, "alice", "u2"));
+    stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            reacted_comment(json!({"total_count": 2, "+1": 1, "heart": 1})),
+        ],
+    );
+    stub.set_reactions("issues/comments/2", &[("alice", "+1"), ("bob", "heart")]);
+    e.tick_repo(&r).await.unwrap();
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(!prompts[0].contains("carol"), "{}", prompts[0]);
+    assert_eq!(
+        e.entry(&r, 5)
+            .seen
+            .get("reactions:body")
+            .map(String::as_str),
+        Some("carol:hooray")
+    );
+    let hits = stub.hits();
+    assert!(
+        !hits
+            .iter()
+            .any(|h| h == "/repos/o/r/issues/5/reactions?per_page=100"),
+        "{hits:?}"
+    );
+}
+
+/// Rebuilding `seen` from the timeline alone (a reactivation, a
+/// handover's story) keeps the reaction records.
+#[test]
+fn replacing_seen_keeps_the_reaction_records() {
+    let mut st = IssueState::default();
+    st.seen.insert("commented:2".into(), "t".into());
+    st.seen
+        .insert("reactions:commented:2".into(), "alice:+1".into());
+    st.replace_seen(BTreeMap::from([(
+        "commented:3".to_string(),
+        "t".to_string(),
+    )]));
+    assert_eq!(
+        st.seen.keys().collect::<Vec<_>>(),
+        ["commented:3", "reactions:commented:2"]
+    );
+}
+
+/// A session whose mailbox has no live bridge is left to the listings:
+/// the sweep does not refetch its timeline every pass.
+#[tokio::test]
+async fn a_held_mailbox_is_not_swept() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = baselined(&stub).await;
+    let r = repo();
+    e.channel_lost.insert((r.name.clone(), 5));
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            reacted_comment(json!({"total_count": 2, "+1": 1, "heart": 1})),
+        ],
+    );
+    // The sweep on its own: a listing that changed would settle the hold.
+    e.watch_reactions(&r, "o", "r").await;
+    assert!(d.prompts().is_empty());
+    let hits = stub.hits();
+    assert!(!hits.iter().any(|h| h.contains("/timeline")), "{hits:?}");
 }
