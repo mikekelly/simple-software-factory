@@ -36,10 +36,35 @@ impl Engine {
                     continue;
                 }
             };
+            // A reaction leaves `updated_at` alone but moves the timeline's
+            // ETag, which a 304 answers for free.
             if st.updated_at.as_deref() == Some(issue.updated_at.as_str()) {
-                continue;
+                match self
+                    .gh
+                    .timeline_changed(owner, name, number, &st.timeline_etags)
+                    .await
+                {
+                    Ok(false) => continue,
+                    Ok(true) => {}
+                    Err(e) => {
+                        failed = true;
+                        warn!(
+                            repo = repo.name,
+                            issue = number,
+                            "polling subscribed item failed: {e:#}"
+                        );
+                        continue;
+                    }
+                }
             }
-            let timeline = match self.gh.timeline(owner, name, number).await {
+            let reacted = match self.gh.timeline_tagged(owner, name, number).await {
+                Ok((timeline, etags)) => self
+                    .reaction_diff(repo, owner, name, &issue, &st.seen, &timeline)
+                    .await
+                    .map(|r| (timeline, etags, r)),
+                Err(e) => Err(e),
+            };
+            let (timeline, etags, reacted) = match reacted {
                 Ok(t) => t,
                 Err(e) => {
                     failed = true;
@@ -52,7 +77,9 @@ impl Engine {
                 }
             };
             self.record_origins(repo, &issue, &timeline);
-            let diff = self.diff(repo, &st.seen, &timeline);
+            let mut diff = self.diff(repo, &st.seen, &timeline);
+            diff.rendered.extend(reacted.rendered);
+            diff.seen.extend(reacted.seen);
             let closed = issue.state == "closed";
             let merged = closed
                 && issue.is_pull_request()
@@ -75,6 +102,7 @@ impl Engine {
             let e = self.entry(repo, number);
             e.updated_at = Some(issue.updated_at.clone());
             e.seen = diff.seen;
+            e.timeline_etags = etags;
             e.title = issue.title.clone();
             e.github_state = Some(github_state(&issue, None, merged));
             if closed {
@@ -96,6 +124,61 @@ impl Engine {
             anyhow::bail!("polling a subscribed item failed");
         }
         Ok(())
+    }
+
+    /// Look again at every active item whose timeline moved while its
+    /// `updated_at` did not: a reaction added or removed. One conditional
+    /// request per timeline page, answered 304 (free) when nothing moved;
+    /// an item that did move goes through the usual follow-up, which
+    /// delivers what is new. An item the listings already sent through
+    /// the follow-up this pass has fresh ETags and answers 304. Items
+    /// with no ETags yet (none since this was added), blocked sessions and
+    /// held retirements are left to the listings, as before.
+    pub(in crate::engine) async fn watch_reactions(
+        &mut self,
+        repo: &RepoConfig,
+        owner: &str,
+        name: &str,
+    ) {
+        let active: Vec<(u64, Vec<String>)> = self
+            .state
+            .repo_mut(&repo.name)
+            .issues
+            .values()
+            .filter(|s| {
+                s.seeded
+                    && s.active
+                    && s.blocked.is_none()
+                    && s.retirement_held_at.is_none()
+                    && !s.timeline_etags.is_empty()
+            })
+            .map(|s| (s.number, s.timeline_etags.clone()))
+            .collect();
+        for (number, etags) in active {
+            let result = async {
+                if !self
+                    .gh
+                    .timeline_changed(owner, name, number, &etags)
+                    .await?
+                {
+                    return Ok(());
+                }
+                let issue = self.gh.issue(owner, name, number).await?;
+                let st = self.entry(repo, number).clone();
+                debug!(repo = repo.name, issue = number, "timeline moved");
+                self.follow_up(repo, owner, name, &issue, st).await
+            }
+            .await;
+            match result {
+                Ok(()) => {}
+                Err(e) if is_held(&e) => self.note_mailbox_hold(repo, number, &e),
+                Err(e) => warn!(
+                    repo = repo.name,
+                    issue = number,
+                    "checking for reactions failed: {e:#}"
+                ),
+            }
+        }
     }
 
     /// The session (`owner/repo#N`) that acts on the item a post's origin

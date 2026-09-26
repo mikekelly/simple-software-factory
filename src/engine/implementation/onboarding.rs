@@ -699,9 +699,14 @@ impl Engine {
         issue: &Issue,
         st: IssueState,
     ) -> Result<()> {
-        let timeline = self.gh.timeline(owner, name, issue.number).await?;
+        let (timeline, etags) = self.gh.timeline_tagged(owner, name, issue.number).await?;
         self.record_origins(repo, issue, &timeline);
-        let diff = self.diff(repo, &st.seen, &timeline);
+        let mut diff = self.diff(repo, &st.seen, &timeline);
+        let reacted = self
+            .reaction_diff(repo, owner, name, issue, &st.seen, &timeline)
+            .await?;
+        diff.rendered.extend(reacted.rendered);
+        diff.seen.extend(reacted.seen);
         // Subscribers hear first: the owner's own posts are news to them,
         // and a failed delivery to the owner must not replay to them.
         self.fan_out(repo, issue, &diff.rendered, Fyi::Activity, false, &[])
@@ -720,6 +725,7 @@ impl Engine {
             let e = self.entry(repo, issue.number);
             e.updated_at = Some(issue.updated_at.clone());
             e.seen = diff.seen;
+            e.timeline_etags = etags;
             e.title = issue.title.clone();
             e.github_state = Some(github_state(issue, st.pr.as_ref(), false));
             return Ok(());
@@ -757,6 +763,7 @@ impl Engine {
         e.title = issue.title.clone();
         e.github_state = Some(github_state(issue, st.pr.as_ref(), false));
         e.seen = diff.seen;
+        e.timeline_etags = etags;
         e.terminal_handle = Some(d.handle);
         e.last_prompt_at = Some(now_iso());
         e.prompts_sent += 1;

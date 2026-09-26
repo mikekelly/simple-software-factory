@@ -81,6 +81,9 @@ pub struct Issue {
     pub labels: Vec<Label>,
     #[serde(default)]
     pub pull_request: Option<Value>,
+    /// Reaction counts on the item's body (`total_count`, `+1`, `heart` ...).
+    #[serde(default)]
+    pub reactions: Option<Value>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -823,11 +826,27 @@ impl GitHub {
 
     /// Full timeline for an issue, oldest first, all pages.
     pub async fn timeline(&self, owner: &str, repo: &str, number: u64) -> Result<Vec<Value>> {
-        let mut url = Some(format!(
-            "{}?per_page=100",
+        Ok(self.timeline_tagged(owner, repo, number).await?.0)
+    }
+
+    fn timeline_page(&self, owner: &str, repo: &str, number: u64, page: usize) -> String {
+        format!(
+            "{}?per_page=100&page={page}",
             self.url(&format!("repos/{owner}/{repo}/issues/{number}/timeline"))
-        ));
+        )
+    }
+
+    /// The full timeline and the ETag of each of its pages, in order, for
+    /// [`Self::timeline_changed`] to ask about later.
+    pub async fn timeline_tagged(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(Vec<Value>, Vec<String>)> {
+        let mut url = Some(self.timeline_page(owner, repo, number, 1));
         let mut events = Vec::new();
+        let mut etags = Vec::new();
         let mut pages = 0;
         while let Some(u) = url.take() {
             pages += 1;
@@ -845,10 +864,87 @@ impl GitHub {
             )
             .await?;
             url = next_link(&resp);
+            etags.push(header_str(&resp, ETAG).unwrap_or_default());
             let page: Vec<Value> = resp.json().await.context("decoding timeline page")?;
             events.extend(page);
         }
-        Ok(events)
+        Ok((events, etags))
+    }
+
+    /// Whether any page of a timeline differs from when it answered
+    /// `etags` ([`Self::timeline_tagged`]). Each page is asked with
+    /// `If-None-Match`; a 304 costs no rate limit. A reaction moves the
+    /// ETag of the page its comment is on, though not the item's
+    /// `updated_at`. No ETags (never fetched) counts as changed.
+    pub async fn timeline_changed(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        etags: &[String],
+    ) -> Result<bool> {
+        if etags.is_empty() || etags.iter().any(String::is_empty) {
+            return Ok(true);
+        }
+        for (i, tag) in etags.iter().enumerate() {
+            let u = self.timeline_page(owner, repo, number, i + 1);
+            let resp = self
+                .get(&u)
+                .header(IF_NONE_MATCH, tag)
+                .send()
+                .await
+                .with_context(|| format!("GET {u}"))?;
+            let resp = Self::check(
+                resp,
+                &format!("checking timeline of {owner}/{repo}#{number}"),
+            )
+            .await?;
+            if resp.status() != StatusCode::NOT_MODIFIED {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Who reacted with what on an item's body (`issues/N`) or on a
+    /// comment (`issues/comments/ID`): `(login, content, created_at)`.
+    pub async fn reactions(
+        &self,
+        owner: &str,
+        repo: &str,
+        on: &str,
+    ) -> Result<Vec<(String, String, String)>> {
+        let mut url = Some(format!(
+            "{}?per_page=100",
+            self.url(&format!("repos/{owner}/{repo}/{on}/reactions"))
+        ));
+        let mut out = Vec::new();
+        let mut pages = 0;
+        while let Some(u) = url.take() {
+            pages += 1;
+            if pages > 50 {
+                bail!("reactions on {owner}/{repo} {on} exceed 50 pages; giving up");
+            }
+            let resp = self
+                .get(&u)
+                .send()
+                .await
+                .with_context(|| format!("GET {u}"))?;
+            let resp =
+                Self::check(resp, &format!("listing reactions on {owner}/{repo} {on}")).await?;
+            url = next_link(&resp);
+            let page: Vec<Value> = resp.json().await.context("decoding reactions page")?;
+            out.extend(page.iter().map(|r| {
+                (
+                    value_str(r, &["user", "login"])
+                        .unwrap_or("ghost")
+                        .to_string(),
+                    value_str(r, &["content"]).unwrap_or("").to_string(),
+                    value_str(r, &["created_at"]).unwrap_or("").to_string(),
+                )
+            }));
+        }
+        Ok(out)
     }
 }
 

@@ -140,6 +140,33 @@ fn body_and_session(body: &str, author: &str, bot: &str) -> (String, String) {
     }
 }
 
+/// The emoji GitHub shows for a reaction's `content` name.
+pub fn reaction_emoji(content: &str) -> &str {
+    match content {
+        "+1" => "👍",
+        "-1" => "👎",
+        "laugh" => "😄",
+        "hooray" => "🎉",
+        "confused" => "😕",
+        "heart" => "❤️",
+        "rocket" => "🚀",
+        "eyes" => "👀",
+        other => other,
+    }
+}
+
+/// A reaction added to (or removed from) the post at `url`: who, which
+/// emoji and where, never the post itself. `at` is when it happened.
+pub fn render_reaction(login: &str, content: &str, url: &str, added: bool, at: &str) -> String {
+    let at = fmt_when(at, &today_utc());
+    let emoji = reaction_emoji(content);
+    if added {
+        format!("- {at} @{login} reacted {emoji} to {url}")
+    } else {
+        format!("- {at} @{login} removed {emoji} from {url}")
+    }
+}
+
 /// The session a post by the bot came from, per its origin tag.
 fn post_origin(body: &str, author: &str, bot: &str) -> Option<String> {
     if !author.eq_ignore_ascii_case(bot) {

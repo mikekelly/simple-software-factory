@@ -298,6 +298,11 @@ pub struct IssueState {
     /// Delivered timeline events: key -> updated_at marker (for edit detection).
     #[serde(default)]
     pub seen: BTreeMap<String, String>,
+    /// ETag of each timeline page when `seen` was last brought up to date,
+    /// so a pass can ask cheaply whether anything moved that leaves
+    /// `updated_at` alone (a reaction).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timeline_etags: Vec<String>,
     /// The initial prompt has been delivered.
     #[serde(default)]
     pub seeded: bool,

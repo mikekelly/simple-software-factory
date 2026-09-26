@@ -178,7 +178,7 @@ instructions = "Run `make test` before opening a PR."
 | `dashboard.port` | `8787` | Server web UI port; restart required |
 | `daemon.poll_interval_secs` | `10` | GitHub poll interval (unchanged listings cost nothing against the rate limit) |
 | `daemon.include_own_events` | `false` | Deliver the bot's own commits and cross-references, and each session's posts back to it in live messages (normally noise; a session started again is always shown its own posts in the catch-up story; see [Identity and bylines](identity-and-bylines.md)) |
-| `daemon.ignored_events` | `["mentioned", "subscribed", "unsubscribed"]` | Timeline event types that are never delivered |
+| `daemon.ignored_events` | `["mentioned", "subscribed", "unsubscribed"]` | Timeline event types that are never delivered; `reacted` silences emoji reactions |
 | `daemon.max_body_chars` | `8000` | Longest comment body quoted in a prompt, in characters |
 | `daemon.first_prompt_max_events` | `50` | Most timeline events a session's first message carries, newest first; `0` is no limit. What is left out is never delivered later, and the message says so and where to read it (see [What the agent is told](prompts.md#the-messages-an-agent-receives)) |
 | `daemon.first_prompt_max_chars` | `32000` | Character budget for those events together, spent newest first so the newest is always included; `0` is no limit |

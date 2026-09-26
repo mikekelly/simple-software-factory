@@ -97,7 +97,22 @@ See [Session dashboard](dashboard.md).
   listing that has not changed costs nothing against the rate limit. Only
   items whose `updated_at` moved get their timeline fetched again, and an
   item ssf decided to leave alone is remembered with the reason (see
-  [Ownership](sessions.md#ownership-one-session-per-item)).
+  [Ownership](sessions.md#ownership-one-session-per-item)). A reaction
+  leaves `updated_at` alone, so each active or followed item's timeline
+  pages are also asked for conditionally against the ETags of the last
+  fetch (a 304 is free); a page that moved sends the item through the usual
+  follow-up.
+- **Reactions.** An emoji added to or removed from the item's body or a
+  comment on it arrives as one line (`- 17:25Z @alice reacted 👍 to <url>`,
+  `- 17:26Z @alice removed 👍 from <url>`; a swap is a removal and an
+  addition), never with the post itself. ssf keeps who reacted with what per
+  post in the item's `seen` map (`reactions:body`, `reactions:<event>`) and
+  lists a post's reactions only when its counts move. Reactions already there
+  when a session starts, or on a post ssf has not recorded yet, are recorded
+  without being delivered. A body reaction on its own does not move the
+  timeline, so it arrives with the item's next change. The bot's own
+  reactions and those by logins the allow-list refuses are never delivered;
+  `daemon.ignored_events` naming `reacted` silences all of them.
 - **Who is listened to.** Before an item gets a session, and before every
   delivery, the login behind the trigger or event is checked against the
   allow-list (see [Who may drive the

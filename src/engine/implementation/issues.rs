@@ -300,6 +300,139 @@ impl Engine {
         }
     }
 
+    /// Reactions added to or removed from the item's body and its comments
+    /// since `seen`, rendered, and the reaction records to keep in `seen`
+    /// (`reactions:body`, `reactions:<comment key>`: who reacted with what).
+    /// The timeline and the item carry counts only; a post whose counts
+    /// moved has its reactions listed to tell who. A post with no record
+    /// yet (a new session, a new comment, state from before reactions were
+    /// followed) is recorded as it stands and nothing is delivered for it,
+    /// so reactions that were already there never arrive as news. The
+    /// bot's own reactions, and those by logins the allow-list refuses,
+    /// are recorded but not delivered; `daemon.ignored_events` naming
+    /// `reacted` records them all without delivering any.
+    pub(in crate::engine) async fn reaction_diff(
+        &self,
+        repo: &RepoConfig,
+        owner: &str,
+        name: &str,
+        issue: &Issue,
+        seen: &BTreeMap<String, String>,
+        timeline: &[Value],
+    ) -> Result<Diff> {
+        const KINDS: [&str; 8] = [
+            "+1", "-1", "laugh", "hooray", "confused", "heart", "rocket", "eyes",
+        ];
+        let counts = |v: Option<&Value>| -> BTreeMap<String, u64> {
+            KINDS
+                .iter()
+                .filter_map(|k| {
+                    let n = v?.get(*k)?.as_u64()?;
+                    (n > 0).then(|| (k.to_string(), n))
+                })
+                .collect()
+        };
+        let mut targets = vec![(
+            "reactions:body".to_string(),
+            format!("issues/{}", issue.number),
+            issue.html_url.clone(),
+            counts(issue.reactions.as_ref()),
+        )];
+        for ev in timeline {
+            if ev.get("event").and_then(Value::as_str) != Some("commented") {
+                continue;
+            }
+            let (Some(key), Some(id)) = (event_key(ev), crate::github::value_u64(ev, &["id"]))
+            else {
+                continue;
+            };
+            targets.push((
+                format!("reactions:{key}"),
+                format!("issues/comments/{id}"),
+                crate::github::value_str(ev, &["html_url"])
+                    .unwrap_or("")
+                    .to_string(),
+                counts(ev.get("reactions")),
+            ));
+        }
+        let allowed = self.allow_list(repo);
+        let ignored = self
+            .cfg
+            .daemon
+            .ignored_events
+            .iter()
+            .any(|k| k == "reacted");
+        let mut rendered = Vec::new();
+        let mut observed = BTreeMap::new();
+        for (key, on, url, now) in targets {
+            let stored = seen.get(&key).map(|s| parse_reactions(s));
+            let tally = |set: &BTreeSet<(String, String)>| {
+                let mut m = BTreeMap::<String, u64>::new();
+                for (_, c) in set {
+                    *m.entry(c.clone()).or_default() += 1;
+                }
+                m
+            };
+            if let Some(old) = &stored
+                && tally(old) == now
+            {
+                let kept = seen[&key].clone();
+                observed.insert(key, kept);
+                continue;
+            }
+            if stored.is_none() && now.is_empty() {
+                observed.insert(key, String::new());
+                continue;
+            }
+            let list = self.gh.reactions(owner, name, &on).await?;
+            let new: BTreeSet<(String, String)> = list
+                .iter()
+                .map(|(l, c, _)| (l.clone(), c.clone()))
+                .collect();
+            observed.insert(key.clone(), format_reactions(&new));
+            let Some(old) = stored else { continue };
+            let when = |login: &str, content: &str| {
+                list.iter()
+                    .find(|(l, c, _)| l == login && c == content)
+                    .map(|(_, _, at)| at.clone())
+                    .unwrap_or_else(now_iso)
+            };
+            let changes = new
+                .difference(&old)
+                .map(|r| (r, true))
+                .chain(old.difference(&new).map(|r| (r, false)));
+            for ((login, content), added) in changes {
+                if login.eq_ignore_ascii_case(&self.login) {
+                    continue;
+                }
+                if !allowed.allows(login) {
+                    self.dropped(repo, &key, login);
+                    continue;
+                }
+                if ignored {
+                    continue;
+                }
+                let at = if added {
+                    when(login, content)
+                } else {
+                    now_iso()
+                };
+                let verb = if added { "added" } else { "removed" };
+                rendered.push(Rendered {
+                    key: format!("reacted:{key}:{login}:{content}:{verb}:{at}"),
+                    text: prompt::render_reaction(login, content, &url, added, &at),
+                    origin: None,
+                    assignee: None,
+                    state_change: false,
+                });
+            }
+        }
+        Ok(Diff {
+            rendered,
+            seen: observed,
+        })
+    }
+
     pub(in crate::engine) async fn reconcile_issue(
         &mut self,
         repo: &RepoConfig,
@@ -373,4 +506,21 @@ impl Engine {
         e.released_at = None;
         e.release_refusals = 0;
     }
+}
+
+/// A post's reactions as `reaction_diff` records them in `seen`: one
+/// `login:content` per reaction, space separated (neither has a space or
+/// a colon in it).
+fn format_reactions(set: &BTreeSet<(String, String)>) -> String {
+    set.iter()
+        .map(|(l, c)| format!("{l}:{c}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_reactions(s: &str) -> BTreeSet<(String, String)> {
+    s.split_whitespace()
+        .filter_map(|r| r.split_once(':'))
+        .map(|(l, c)| (l.to_string(), c.to_string()))
+        .collect()
 }
