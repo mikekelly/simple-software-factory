@@ -325,9 +325,15 @@ Good: `ssf status` names the account and repositories (or none yet), `ssh ssf-de
    ```
 
    The destination is the SSH alias, so the jump and key from step 4 apply.
-7. **Optionally Tailscale** instead of the jump, for a person already on a tailnet: `ssf vm tailscale` on the server enrolls the guest (section 10); the laptop's SSH entry then uses the guest's tailnet name as `HostName`, port 22, and no `ProxyJump`.
+7. **The skill, globally on the laptop**, so every harness there knows ssf. In entry point B the laptop is not the installing machine, so no earlier step covers it:
 
-**Skills.** Install the `working-with-ssf` skill (`npx skills add mikekelly/simple-software-factory -g`) on the laptop for its agents, on the server for the resident agent; the guest's agents get SSF's guidance from ssf itself.
+   ```sh
+   npx -y skills add mikekelly/simple-software-factory -g -y
+   ```
+
+8. **Optionally Tailscale** instead of the jump, for a person already on a tailnet: `ssf vm tailscale` on the server enrolls the guest (section 10); the laptop's SSH entry then uses the guest's tailnet name as `HostName`, port 22, and no `ProxyJump`.
+
+**Skills.** Install the `working-with-ssf` skill on the server for the resident agent too (`npx -y skills add mikekelly/simple-software-factory -g -y`); the laptop has it from step 2.7, and the guest's agents get SSF's guidance from ssf itself.
 
 ## 6. The bot account
 
@@ -453,7 +459,7 @@ ssf doctor
 ssf status
 ```
 
-Also check `herdr machine list` shows the factory machine (section 5). For a guest on a server, run from the laptop: `ssh ssf-factory true`, `herdr machine list` shows `ssf-factory`, and `ssf status` answers; and from the resident agent on the server: `ssh ssf-default true`, `herdr machine list` shows `ssf-default`, and `ssf status` answers. Healthy looks like: the token belongs to the bot; the driver is reachable and ready; the harness is installed and signed in where sessions run; each repository shows its GitHub identity, its allowed users, the commit identity, and its SSF agent guidance. `ssf status` names the configured account, then the repositories and their tracked items with no last error.
+Also check `herdr machine list` shows the factory machine (section 5). For a guest on a server, run from the laptop: `working-with-ssf` is installed globally (`npx -y skills ls -g` lists it), `ssh ssf-factory true`, `herdr machine list` shows `ssf-factory`, and `ssf status` answers; and from the resident agent on the server: `ssh ssf-default true`, `herdr machine list` shows `ssf-default`, and `ssf status` answers. Healthy looks like: the token belongs to the bot; the driver is reachable and ready; the harness is installed and signed in where sessions run; each repository shows its GitHub identity, its allowed users, the commit identity, and its SSF agent guidance. `ssf status` names the configured account, then the repositories and their tracked items with no last error.
 
 Two lines are expected to fail before the first issue and need no action: the repository's checkout (cloned when the first session starts) and the `gh`, `git` and `ssf` command links (written when the first agent starts). Anything else, work through [troubleshooting.md](troubleshooting.md) (`ssf skill troubleshoot`).
 
