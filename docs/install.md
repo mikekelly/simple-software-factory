@@ -18,6 +18,8 @@ At the end:
 
 Work through the sections in order. Every step says what a good result looks like and what is safe to re-run.
 
+**Run it as a guided install, not a checklist.** Before probing, tell the person in a few lines that you will guide them through setup, name the stages (where it runs → install → bot account → harness sign-in → first repository → first issue → oversight), and say you will ask only what is needed, as you go. Before each step, say in one or two sentences what is about to happen and why, and whether it needs anything from them ("Next I'll build the VM image; this takes a few minutes and needs nothing from you"). After it, give a one-line result.
+
 ## 1. How to ask, and what needs consent
 
 **Ask one decision at a time, at the step that needs it; never present the full list of questions up front.** Before the first install command, probe (section 2) and ask only where the factory should run. Every later question lives in the section that needs it:
@@ -219,14 +221,25 @@ Expect doctor to say the driver (herdr, the only one) is reachable and ready. De
 
 ### Oversee the agents from the person's machine
 
-The machine the agents run on should be reachable over SSH and visible in the person's own herdr, beside Local in the sidebar. For a local VM, `ssf vm ssh-config` prints the `~/.ssh/config` entry, and `herdr --remote ssf-server` attaches. For a rented host, save it once from the person's machine, in an interactive terminal:
+Do not skip this step. The machine the agents run on must be reachable over SSH and visible in the person's own herdr, beside Local in the sidebar. The SSH host name is `ssf-default` for the local VM (the entry `ssf vm ssh-config` writes, `ssf-NAME` for a VM named otherwise), or `user@host` for a rented host.
+
+For a local VM, add the SSH entry to `~/.ssh/config`, creating the file if it is missing and appending otherwise (skip if `grep -q '^Host ssf-default$' ~/.ssh/config` already finds it):
 
 ```sh
-herdr machine add user@host --label factory
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+ssf vm ssh-config >> ~/.ssh/config
+chmod 600 ~/.ssh/config
+ssh ssf-default true
+```
+
+Then save the machine in the person's herdr. Run it yourself with input closed first: closed input can never answer yes to replacing the remote server.
+
+```sh
+herdr machine add ssf-default --label factory </dev/null   # or user@host
 herdr machine list
 ```
 
-`herdr machine add` inspects the remote herdr and may offer to install, update or replace it; say No to replacing a running server unless the person asks, because its panes are live sessions. Details and the limits of what a local herdr command reaches are in [liaison.md](liaison.md#inspect-the-factorys-herdr-server).
+Expect `Remote server is ready.` If it stops at a prompt instead (a version mismatch, or an offer to install or update the remote herdr), hand the same command, without `</dev/null`, to the person to run interactively, answering No to replacing a running server unless they ask: its panes are live sessions. `herdr --remote ssf-default` then attaches. Details and the limits of what a local herdr command reaches are in [liaison.md](liaison.md#inspect-the-factorys-herdr-server).
 
 Root: agents in a VM or on a rented server should be able to `sudo` without a password, so they can install what their work needs without stopping. The guest's `ssf` user already has it. On a rented host the person grants it to the factory account; give them the exact commands ([Rented hosts](platform-specifics.md#rented-hosts)). Never grant it on the person's own machine in host mode: there, the agents are already running as the person.
 
@@ -328,14 +341,16 @@ Before the first issue, the repository also needs `SSF.md` committed at the root
 
 `ssf repo add` rewrites the entry for a repository that is already there, so it is safe to re-run after a mistake; it is also how you correct a harness or model chosen in error.
 
-## 10. Verify
+## 10. Other devices, then verify
+
+Ask one yes/no question: "Do you want to reach the factory or the dashboard from other devices?" If yes, on a VM target run `ssf vm tailscale` and pass the login URL it prints to the person; it prints the machine name and address once enrolled. In host mode or on a rented host, Tailscale goes on that machine itself: give the person the install command from [tailscale.com/download](https://tailscale.com/download) and `sudo tailscale up`, and pass along its login URL. Details in [platform-specifics.md](platform-specifics.md#tailscale). If no, move on.
 
 ```sh
 ssf doctor
 ssf status
 ```
 
-Healthy looks like: the token belongs to the bot; the driver is reachable and ready; the harness is installed and signed in where sessions run; each repository shows its GitHub identity, its allowed users, the commit identity, and its SSF agent guidance. `ssf status` names the configured account, then the repositories and their tracked items with no last error.
+Also check `herdr machine list` shows the factory machine (section 5). Healthy looks like: the token belongs to the bot; the driver is reachable and ready; the harness is installed and signed in where sessions run; each repository shows its GitHub identity, its allowed users, the commit identity, and its SSF agent guidance. `ssf status` names the configured account, then the repositories and their tracked items with no last error.
 
 Two lines are expected to fail before the first issue and need no action: the repository's checkout (cloned when the first session starts) and the `gh`, `git` and `ssf` command links (written when the first agent starts). Anything else, work through [troubleshooting.md](troubleshooting.md) (`ssf skill troubleshoot`).
 
@@ -354,7 +369,8 @@ Upgrade by installing the next release's package the same way it was installed; 
 - [ ] `ssf --version` and `ssf-server` both present, from the same release.
 - [ ] `ssf setup` complete and the service enabled (package and Homebrew paths).
 - [ ] `ssf vm status` reports a running VM, or herdr is reachable in host mode.
-- [ ] VM or rented host: reachable over SSH, agents have passwordless `sudo`, and it is saved in the person's herdr (`herdr machine add`).
+- [ ] VM or rented host: reachable over SSH, agents have passwordless `sudo`, and it is saved in the person's herdr (`herdr machine add`, shown by `herdr machine list`).
+- [ ] The person was asked about reaching the factory from other devices; Tailscale enrolled if yes.
 - [ ] Bot account created; `ssf auth status` names it.
 - [ ] Bot has Write on the repository, verified with `push: true`, and board access if there is a board.
 - [ ] Allowed users are deliberate; `*` only with the person's consent.
