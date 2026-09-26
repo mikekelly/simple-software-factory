@@ -269,25 +269,20 @@ it back.
 
 The agents in the guest need their own sign-in: the guest has no keyring, no
 browser and none of the host's home directory. `ssf vm login [<harness>]` runs
-the harness inside the guest, in this terminal, from the projects root
-(`/var/lib/ssf/projects`). Where the harness has an interactive sign-in, that
-is its own TUI: sign in, clear whatever it shows next (theme, onboarding, the
-bypass-permissions warning, folder trust), then quit it. Folder trust accepted
-in the projects root is meant to cover the worktrees underneath, so a session's
-first prompt does not meet a first-run screen. Sign-in uses the flow that works
-without a browser next to it: a page to open here and a code to paste back, a
-device code, or, for Oh My Pi, a loopback OAuth callback that ssf forwards over
-SSH while the login runs. ssf opens the page in the host browser
+the harness's login inside the guest, in this terminal, using the flow that
+works without a browser next to it: a page to open here and a code to paste
+back, a device code, or, for Oh My Pi, a loopback OAuth callback that ssf
+forwards over SSH while the login runs. ssf opens the page in the host browser
 when it can and prints the URL either way, then says whether the credential
 landed. Without a harness it lists those installed in the guest and asks which.
 Nothing is copied from this machine.
 
 | harness | what runs in the guest | the person does | credential (guest home) |
 |---|---|---|---|
-| claude | `claude` | sign in (open the URL, paste the code back), clear its first-run screens, `/exit` | `.claude/.credentials.json` |
-| codex | `codex` | pick Sign in with Device Code, enter the code on the page, clear its first-run screens, `/quit` | `.codex/auth.json` |
-| gemini | `NO_BROWSER=true gemini` | pick a method, open the URL, paste the code, clear its first-run screens, `/quit` | `.gemini/oauth_creds.json` |
-| copilot | `copilot`, then `/login` | enter the code on the page, clear its first-run screens, `/exit` | `.copilot/config.json` |
+| claude | `claude auth login` | sign in on the page, paste the code back | `.claude/.credentials.json` |
+| codex | `codex login --device-auth` | enter the code on the page | `.codex/auth.json` |
+| gemini | `NO_BROWSER=true gemini` | pick a method, open the URL, paste the code, `/quit` | `.gemini/oauth_creds.json` |
+| copilot | `copilot login --device-code` | enter the code on the page | `.copilot/config.json` |
 | opencode | `opencode auth login` | pick provider and method; OAuth prints a URL and takes the code | `.local/share/opencode/auth.json` |
 | pi | `pi`, then `/login` | pick method and provider, open the URL, paste the code or redirect URL | `.pi/agent/auth.json` |
 | omp | `omp`, then `/login` | pick provider and method, open the loopback `/launch` URL, finish in the host browser, then exit | `.omp/agent/agent.db` |

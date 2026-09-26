@@ -301,13 +301,13 @@ Each harness is signed in once, by hand, where the agents run. ssf does not do f
 ssf vm login claude      # or codex, gemini, copilot, opencode, pi, omp, grok, crush
 ```
 
-Without a harness argument it lists those installed in the guest and asks. The harness then runs inside the guest in this terminal, from the projects root. For Claude Code, Codex, Copilot, Gemini, Pi and Oh My Pi that is the harness's own TUI: sign in (a URL to open here and a code to paste back, or a device code), clear whatever it shows next (theme, onboarding, the bypass-permissions warning, folder trust), then quit it. The others run their login command. The credential is written on the guest's data disk; nothing is copied from this machine. `ssf vm reset` keeps it, `ssf vm destroy` removes it. API keys go through the same command.
+Without a harness argument it lists those installed in the guest and asks. The harness's own login then runs inside the guest in this terminal: a URL to open here and a code to paste back, or a device code. The credential is written on the guest's data disk; nothing is copied from this machine. `ssf vm reset` keeps it, `ssf vm destroy` removes it. API keys go through the same command.
 
 In host mode, use the harness's own login as the Unix user that runs the sessions, and verify a real request in a herdr-launched pane: a passing login check in your own shell does not prove that a pane can authenticate.
 
 Per-harness flows and their quirks are in [platform-specifics.md](platform-specifics.md).
 
-Check: `ssf vm status` lists the harness as logged in on its `logins:` line. `ssf vm login` is safe to re-run, and re-running it is also the fix when a login later expires under a running session, or when a harness update puts a new first-run screen in front of new sessions.
+Check: `ssf vm status` lists the harness as logged in on its `logins:` line. `ssf vm login` is safe to re-run, and re-running it is also the fix when a login later expires under a running session.
 
 ## 9. Watch the first repository
 

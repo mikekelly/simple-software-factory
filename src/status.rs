@@ -357,8 +357,8 @@ impl BlockedView {
 pub fn fix_for(b: &Blocked) -> String {
     if b.reason == Blocked::QUESTION {
         return format!(
-            "answer it in pane {} (`ssf vm attach` in VM mode, herdr on the host); the first message is sent once it is answered. For a first-run screen, also re-run `ssf vm login {}`",
-            b.detail, b.harness
+            "answer it in pane {} (`ssf vm attach` in VM mode, herdr on the host); the first message is sent once it is answered",
+            b.detail
         );
     }
     if b.reason == Blocked::SETUP {
