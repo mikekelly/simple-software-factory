@@ -17,6 +17,7 @@ use crate::codex_delivery::Codex;
 use crate::delivery_channel::{Grok, Mailbox};
 use crate::herdr::{Channel, Terminal};
 use crate::models::{self, Catalogue, Compaction};
+use crate::trust::Trust;
 
 pub struct Harness {
     /// Id used by herdr, Omarchy and `repo.harness` (`claude`, `codex`, ...).
@@ -57,6 +58,9 @@ pub struct Harness {
     /// How an event reaches it while it runs: its own channel, or the
     /// terminal.
     pub channel: &'static dyn Channel,
+    /// How a new checkout is registered as trusted, so its first session
+    /// shows no trust or init dialog (#548).
+    pub trust: Trust,
 }
 
 /// The descriptor for `id`, when ssf knows the harness.
@@ -123,6 +127,7 @@ pub static HARNESSES: &[Harness] = &[
         api_key_vars: &["ANTHROPIC_API_KEY"],
         reads_transcript: true,
         context: Some(crate::sessions::claude_context),
+        trust: Trust::ClaudeJson,
         channel: &Claude,
     },
     Harness {
@@ -162,6 +167,7 @@ pub static HARNESSES: &[Harness] = &[
         api_key_vars: &["OPENAI_API_KEY"],
         reads_transcript: true,
         context: Some(crate::sessions::codex_context),
+        trust: Trust::CodexToml,
         channel: &Codex,
     },
     // Pi, Oh My Pi and OpenCode use their own `provider/model` identifiers.
@@ -188,6 +194,7 @@ pub static HARNESSES: &[Harness] = &[
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
         context: Some(crate::sessions::omp_context),
+        trust: Trust::Global,
         channel: &Mailbox,
     },
     Harness {
@@ -215,6 +222,7 @@ pub static HARNESSES: &[Harness] = &[
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
         context: Some(crate::sessions::pi_context),
+        trust: Trust::Global,
         channel: &Mailbox,
     },
     Harness {
@@ -241,6 +249,7 @@ pub static HARNESSES: &[Harness] = &[
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
         context: Some(crate::sessions::opencode_context),
+        trust: Trust::None,
         channel: &Mailbox,
     },
     Harness {
@@ -273,6 +282,7 @@ pub static HARNESSES: &[Harness] = &[
         api_key_vars: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         reads_transcript: false,
         context: None,
+        trust: Trust::None,
         channel: &Terminal,
     },
     Harness {
@@ -296,6 +306,7 @@ pub static HARNESSES: &[Harness] = &[
         api_key_vars: &["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
         reads_transcript: false,
         context: None,
+        trust: Trust::CopilotJson,
         channel: &Terminal,
     },
     Harness {
@@ -322,6 +333,7 @@ pub static HARNESSES: &[Harness] = &[
         api_key_vars: &["XAI_API_KEY"],
         reads_transcript: true,
         context: Some(crate::sessions::grok_context),
+        trust: Trust::None,
         channel: &Grok,
     },
     Harness {
@@ -337,6 +349,7 @@ pub static HARNESSES: &[Harness] = &[
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
         context: None,
+        trust: Trust::CrushInit,
         channel: &Terminal,
     },
 ];

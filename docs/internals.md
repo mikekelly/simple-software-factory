@@ -160,7 +160,16 @@ delivery](harnesses.md#item-activity-delivery); what follows is the mechanism.
 
 ### First-prompt confirmation
 
-ssf answers known first-run trust dialogs from the pane screen: Claude Code
+When ssf makes a worktree it pre-registers the checkout with the harnesses
+that keep per-folder trust, so most of these dialogs never appear: Claude
+Code (`~/.claude.json`), Codex (`~/.codex/config.toml`) and Copilot
+(`~/.copilot/config.json`) get the main checkout, which covers its
+worktrees, and Crush gets `.crush/init` in the worktree (excluded from git).
+Each write merges into the existing file; a harness not set up on the
+machine is left alone. Each harness's `trust` field in `src/harness.rs` says
+how, or why nothing is needed.
+
+As the fallback, ssf answers known first-run trust dialogs from the pane screen: Claude Code
 and Codex ask whether to trust a new folder, Claude Code asks once per machine
 whether to accept its bypass permissions mode, and Gemini and Pi ask about
 trust when started without their flags. Approval prompts never appear, because

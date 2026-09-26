@@ -1404,6 +1404,7 @@ pub async fn add_local_worktree(
         )
         .await?;
     }
+    crate::trust::preregister(Path::new(repo_root), &path);
     Ok((path_s, format!("refs/heads/{branch}")))
 }
 

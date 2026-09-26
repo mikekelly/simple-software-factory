@@ -38,6 +38,7 @@ mod shim;
 mod state;
 mod status;
 mod tmux;
+mod trust;
 mod ui;
 mod uninstall;
 mod usage;
