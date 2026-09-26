@@ -418,6 +418,7 @@ impl Engine {
             retries: 0,
             told_at: None,
             tell_failures: 0,
+            first_message_owed: false,
         };
         warn!(
             repo = repo.name,
@@ -436,6 +437,34 @@ impl Engine {
             crate::status::fix_clause(&b)
         );
         e.blocked = Some(b.clone());
+        b
+    }
+
+    /// A harness that came up at a question ssf does not know, before its
+    /// first message (`herdr::AtQuestion`): the session is recorded as
+    /// blocked on it with the pane as its handle, the item is told once,
+    /// and the pass goes on. `recover` waits on the pane on later passes
+    /// and gives the harness its first message once a person has answered
+    /// (#541).
+    pub(in crate::engine) async fn hold_at_question(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        harness: &str,
+        pane: &str,
+    ) -> Blocked {
+        self.entry(repo, number).terminal_handle = Some(pane.to_string());
+        let b = self
+            .set_blocked_for(repo, number, harness, Blocked::QUESTION, pane.to_string())
+            .await;
+        let b = match self.entry(repo, number).blocked.as_mut() {
+            Some(cur) => {
+                cur.first_message_owed = true;
+                cur.clone()
+            }
+            None => b,
+        };
+        self.report_blocked(repo, number).await;
         b
     }
 
@@ -459,6 +488,11 @@ impl Engine {
             )
         } else if b.reason == Blocked::SETUP {
             "setup incomplete".to_string()
+        } else if b.reason == Blocked::QUESTION {
+            format!(
+                "the session is stuck at a harness question ssf does not know, in herdr pane {}",
+                b.detail
+            )
         } else {
             "not signed in".to_string()
         };
@@ -635,9 +669,10 @@ impl Engine {
         // until a session has actually read it, so a note that is still
         // there says no session has had its first message yet, whatever
         // the block was recorded as.
-        let owed = self
-            .peek(repo, number)
-            .is_some_and(|s| s.handover_note.is_some());
+        let owed = b.first_message_owed
+            || self
+                .peek(repo, number)
+                .is_some_and(|s| s.handover_note.is_some());
         // Telling a harness that is running costs a listing read, so it
         // is not tried every pass: once when the block is first looked
         // at, then on the same curve as a restart -- but counted apart
@@ -649,6 +684,14 @@ impl Engine {
             Some(t) => age(t) >= retry_wait(b.tell_failures),
         };
         if let Some(h) = &handle {
+            // A question ssf does not know waits for a person, however
+            // long: nothing is typed into it and nothing is restarted.
+            if b.reason == Blocked::QUESTION
+                && self.driver(repo).at_question(h).await.unwrap_or(true)
+            {
+                debug!(session, "still at the harness question; waiting");
+                return;
+            }
             let Ok(screen) = self.driver(repo).screen(h).await else {
                 return;
             };

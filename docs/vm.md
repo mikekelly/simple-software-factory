@@ -211,7 +211,8 @@ Arch or Debian/Ubuntu, since the provisioning script installs with `pacman` or
 `apt-get`.
 
 Either way the script upgrades the base and installs `openssh`, `sudo`, `git`,
-the GitHub CLI, a pinned upstream Node.js LTS with npm, `tmux`, the harness
+a current GitHub CLI from its own apt repository (`cli.github.com/packages`;
+Ubuntu's own `gh` is too old), a pinned upstream Node.js LTS with npm, `tmux`, the harness
 CLIs from `ssf agents` that npm or a release tarball provide (each best effort
 and listed at the end of the build), an `ssf` user that is root through `sudo`,
 herdr, and herdr's agent integrations for the agents present. The list lives in

@@ -261,12 +261,20 @@ impl Engine {
                     tokens,
                 );
                 let text = self.initial_text(repo, issue, &mine);
+                let mut at_question = false;
                 let handle = match self
                     .driver(repo)
                     .start(&created.id, &cmd, &title, &eff.harness, &text)
                     .await
                 {
                     Ok(handle) => handle,
+                    // The harness is running, at a question ssf does not
+                    // know: the item is taken on and the session held on
+                    // the question below, not failed and started again.
+                    Err(e) if crate::herdr::at_question(&e).is_some() => {
+                        at_question = true;
+                        crate::herdr::at_question(&e).unwrap().pane.clone()
+                    }
                     Err(start_error)
                         if self
                             .driver(repo)
@@ -305,6 +313,10 @@ impl Engine {
                     }),
                 )
                 .await;
+                if at_question {
+                    self.hold_at_question(repo, issue.number, &eff.harness, &handle)
+                        .await;
+                }
                 handle
             }
         };
@@ -313,15 +325,24 @@ impl Engine {
         }
 
         let e = self.entry(repo, issue.number);
+        // A session held at a question has not read the item yet: its
+        // first message, the whole story, goes once the question is
+        // answered, and marks what it covered as seen then.
+        let told = !e
+            .blocked
+            .as_ref()
+            .is_some_and(|b| b.reason == Blocked::QUESTION && b.detail == handle);
         e.terminal_handle = Some(handle);
-        e.updated_at = Some(issue.updated_at.clone());
-        e.seen = diff.seen;
+        if told {
+            e.updated_at = Some(issue.updated_at.clone());
+            e.seen = diff.seen;
+            e.last_prompt_at = Some(now_iso());
+            e.prompts_sent += 1;
+        }
         e.seeded = true;
         e.first_prompt_attempted = false;
         e.active = true;
         e.bound_at = Some(now_iso());
-        e.last_prompt_at = Some(now_iso());
-        e.prompts_sent += 1;
         if let Some(since) = since_prior {
             self.fan_out(repo, issue, &since, Fyi::Tracked, false, &[])
                 .await;

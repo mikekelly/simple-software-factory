@@ -282,6 +282,7 @@ fn a_blocked_session_is_flagged_everywhere() {
         retries: 0,
         told_at: None,
         tell_failures: 0,
+        first_message_owed: false,
     });
     let st = state_with(vec![it, item(2, None)]);
     let s = sessions(&cfg(), &st, Some(&[]));

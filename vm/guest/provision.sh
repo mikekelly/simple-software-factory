@@ -44,8 +44,18 @@ case "$pkg" in
         export DEBIAN_FRONTEND=noninteractive
         apt-get update
         apt-get dist-upgrade -y
-        apt-get install -y --no-install-recommends openssh-server sudo git gh tmux less vim \
+        apt-get install -y --no-install-recommends openssh-server sudo git tmux less vim \
             bash-completion man-db ripgrep jq unzip curl locales ca-certificates xz-utils
+        # A current gh from the GitHub CLI's own apt repository: Ubuntu's is
+        # 2.45, too old for what the agents ask of it (#541).
+        install -d -m 755 /etc/apt/keyrings
+        curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+            https://cli.github.com/packages/githubcli-archive-keyring.gpg
+        chmod 644 /etc/apt/keyrings/githubcli-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+            > /etc/apt/sources.list.d/github-cli.list
+        apt-get update
+        apt-get install -y --no-install-recommends gh
         # Noble's Node 18 is below the current harness floor (Claude Code and
         # Pi require Node 22). Install a pinned upstream Node LTS for both
         # Firecracker and Ubuntu-based lima guests; /usr/local wins over any

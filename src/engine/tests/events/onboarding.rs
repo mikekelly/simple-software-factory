@@ -836,3 +836,154 @@ async fn a_relaunch_posts_resumed_with_why() {
             posts[0].1
         );
 }
+
+/// A harness that comes up at a question ssf does not know holds its own
+/// session, not the daemon: the pass goes on to the next item's launch,
+/// nothing is typed into the question while it is up (new activity
+/// included), and the first message goes once a person has answered it
+/// (#541).
+#[tokio::test]
+async fn a_launch_held_at_a_question_does_not_hold_up_the_pass() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    d.with(|s| s.start_at_question = true);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    stub.set_assigned(vec![
+        assigned_item(5, "alice", "u1"),
+        assigned_item(6, "alice", "u1"),
+    ]);
+    stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+    stub.set_timeline(6, vec![assigned_by(1, "alice")]);
+
+    e.tick_repo(&r).await.unwrap();
+
+    let held: Vec<u64> = [5, 6]
+        .into_iter()
+        .filter(|n| e.entry(&r, *n).blocked.is_some())
+        .collect();
+    assert_eq!(held.len(), 1, "one launch is held");
+    let (held, other) = (held[0], if held[0] == 5 { 6 } else { 5 });
+    let st = e.entry(&r, held).clone();
+    let b = st.blocked.clone().unwrap();
+    assert_eq!(b.reason, Blocked::QUESTION);
+    assert!(b.reported);
+    let pane = st.terminal_handle.clone().unwrap();
+    assert_eq!(b.detail, pane);
+    // The other item was launched in the same pass and given its prompt.
+    let other_st = e.entry(&r, other).clone();
+    assert!(
+        other_st.blocked.is_none() && other_st.seeded,
+        "{other_st:?}"
+    );
+    let log = d.log();
+    assert_eq!(log.iter().filter(|l| l.starts_with("start:")).count(), 1);
+    assert_eq!(
+        log.iter()
+            .filter(|l| l.starts_with("start-at-question:"))
+            .count(),
+        1,
+        "{log:?}"
+    );
+    let posts = stub.post_bodies();
+    assert!(
+        posts.iter().any(
+            |(path, body)| path == &format!("/repos/o/r/issues/{held}/comments")
+                && body.contains("event=blocked")
+                && body.contains(&format!("herdr pane {pane}"))
+        ),
+        "{posts:?}"
+    );
+
+    // New activity while the question is up is held, not typed into it.
+    stub.set_assigned(vec![
+        assigned_item(5, "alice", "u2"),
+        assigned_item(6, "alice", "u1"),
+    ]);
+    stub.set_timeline(5, vec![assigned_by(1, "alice"), comment(2, "alice", "hi")]);
+    e.tick_repo(&r).await.unwrap();
+    assert!(e.entry(&r, held).blocked.is_some());
+    let log = d.log();
+    assert!(
+        !log.iter()
+            .any(|l| l.contains(&format!("issue-{held}-")) && !l.starts_with("remove:")),
+        "{log:?}"
+    );
+
+    // A person answers the question: the session gets its first message
+    // and deliveries resume.
+    d.with(|s| s.questions.clear());
+    stub.set_issue(held, assigned_item(held, "alice", "u2"));
+    e.tick_repo(&r).await.unwrap();
+    let st = e.entry(&r, held).clone();
+    assert!(st.blocked.is_none(), "{st:?}");
+    assert!(st.prompts_sent >= 1, "{st:?}");
+    assert!(
+        stub.post_bodies()
+            .iter()
+            .any(|(_, body)| body.contains("event=unblocked")),
+    );
+}
+
+/// A session held at a question before its first message still owes that
+/// message when the block turns into a sign-in screen: once the sign-in
+/// clears, the session is told what it took on rather than merely let go
+/// (#541).
+#[tokio::test]
+async fn a_question_hold_that_turns_into_a_login_still_owes_the_first_message() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    d.with(|s| s.start_at_question = true);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+    stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+    e.tick_repo(&r).await.unwrap();
+    let pane = e.entry(&r, 5).terminal_handle.clone().unwrap();
+    assert!(e.entry(&r, 5).blocked.as_ref().unwrap().first_message_owed);
+    d.log();
+
+    // The question is answered, and a sign-in screen comes up behind it.
+    probe_returning(&mut e, LoginState::SignedOut, Some("cred"));
+    d.with(|s| {
+        s.questions.clear();
+        s.screens.insert(
+            pane.clone(),
+            LOGIN_SCREEN.iter().map(|l| l.to_string()).collect(),
+        );
+    });
+    e.tick_repo(&r).await.unwrap();
+    let b = e.entry(&r, 5).blocked.clone().unwrap();
+    assert_eq!(b.reason, Blocked::LOGIN);
+    assert!(b.first_message_owed, "survives the reason change");
+
+    // Signed in at the terminal: the first message goes, then the block lifts.
+    d.with(|s| {
+        s.screens.insert(
+            pane.clone(),
+            READY_SCREEN.iter().map(|l| l.to_string()).collect(),
+        );
+    });
+    stub.set_issue(5, assigned_item(5, "alice", "u1"));
+    e.tick_repo(&r).await.unwrap();
+    let st = e.entry(&r, 5).clone();
+    assert!(st.blocked.is_none(), "{st:?}");
+    assert_eq!(st.prompts_sent, 1, "the first message was delivered");
+    let prompts = d.prompts();
+    assert!(
+        prompts
+            .iter()
+            .any(|p| p.contains("spawned you as a coding agent")),
+        "the session got its first message, not only the activity: {prompts:?}"
+    );
+    assert!(
+        d.log().iter().any(|l| l.starts_with("deliver:")),
+        "the session was told"
+    );
+}

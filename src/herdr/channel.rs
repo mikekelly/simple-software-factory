@@ -79,8 +79,8 @@ pub(crate) trait Channel: Sync {
     }
 }
 
-/// The herdr paste: `agent prompt`, or a raw paste when the harness is at a
-/// question or the text is too long for one argument.
+/// The herdr paste: `agent prompt`, held while the harness is at a question,
+/// or a raw paste when the text is too long for one argument.
 pub(crate) struct Terminal;
 
 impl Channel for Terminal {

@@ -1025,10 +1025,10 @@ fn the_screen_decides_what_to_do_after_a_wait() {
   /init - create an AGENTS.md file
 ▌ Ask Codex to do anything";
     assert_eq!(settle_step("idle", ready), Settle::Ready);
-    // A question that is not about trust: ssf has no answer for it, so
-    // the prompt goes in anyway and the harness queues it.
+    // A question that is not about trust: ssf has no answer for it, and
+    // a prompt pasted into it is lost, so the session is held (#541).
     let question = "Do you want to create an AGENTS.md file?\n❯ Yes\n  No";
-    assert_eq!(settle_step("blocked", question), Settle::AskAnyway);
+    assert_eq!(settle_step("blocked", question), Settle::Held);
     assert_eq!(settle_step("working", ready), Settle::Ready);
     // An agent already working is past any first-run dialog, whatever
     // the screen has on it: what is there is its own output.
@@ -1933,4 +1933,111 @@ LONG-PROMPT-OK and nothing else."
         let _ = h.run(&["workspace", "close", src]).await;
     }
     let _ = std::fs::remove_dir_all(&base);
+}
+
+fn question_herdr(name: &str, blocked_listings: u32) -> (std::path::PathBuf, Herdr) {
+    let base = std::env::temp_dir().join(format!("ssf-herdr-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let fake = base.join("herdr");
+    // Blocked on a question for the first `blocked_listings` agent
+    // listings, then idle at a composer: a person answered it.
+    crate::test_support::write_executable(
+        &fake,
+        r#"#!/bin/sh
+d="$(dirname "$0")"
+printf '%s\n' "$*" >> "$d/calls"
+n=$(cat "$d/n" 2>/dev/null || echo 0)
+case "$1 $2" in
+  "agent list")
+    n=$((n+1)); echo $n > "$d/n"
+    if [ $n -le LIMIT ]; then st=blocked; else st=idle; fi
+    echo "{\"agents\":[{\"agent\":\"claude\",\"agent_status\":\"$st\",\"pane_id\":\"w7:p1\",\"workspace_id\":\"w7\"}]}"
+    ;;
+  "agent wait")
+    echo '{"agent_status":"blocked"}'
+    ;;
+  "pane read")
+    if [ $n -le LIMIT ]; then
+      printf '%s\n' 'Choose the text style that looks best' '❯ 1. Dark mode' '  2. Light mode'
+    else
+      printf '%s\n' '> Try "fix lint errors"'
+    fi
+    ;;
+  "agent prompt")
+    echo '[agent_blocked] agent is blocked' >&2; exit 1
+    ;;
+esac
+"#
+        .replace("LIMIT", &blocked_listings.to_string()),
+    );
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+    (base, h)
+}
+
+/// A harness at a question ssf does not know is reported at once as an
+/// `AtQuestion` for its pane, with nothing typed into it: the caller holds
+/// the session, and the launch does not wait on a person (#541).
+#[tokio::test]
+async fn an_unknown_question_is_reported_not_answered_or_waited_on() {
+    let (base, h) = question_herdr("question-settle", 100);
+    let started = std::time::Instant::now();
+    let err = h.settle_harness("w7:p1", "claude").await.unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(
+        at_question(&err),
+        Some(&AtQuestion {
+            pane: "w7:p1".into(),
+            first: true
+        })
+    );
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(!calls.contains("send-keys"), "{calls}");
+    assert!(!calls.contains("send-text"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// A prompt herdr refuses because the agent is at a question is never
+/// pasted into it; the refusal is an `AtQuestion`, which the daemon holds.
+#[tokio::test]
+async fn a_blocked_prompt_is_held_not_pasted() {
+    let (base, h) = question_herdr("question-prompt", 100);
+    let err = h.send_prompt("w7:p1", "keep going").await.unwrap_err();
+    assert_eq!(at_question(&err).map(|q| q.first), Some(false));
+    let err = h.send_first_prompt("w7:p1", "the item").await.unwrap_err();
+    assert_eq!(at_question(&err).map(|q| q.first), Some(true));
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(!calls.contains("send-text"), "{calls}");
+    assert!(!calls.contains("send-keys"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// The held session is looked at again on later passes: at the question
+/// while herdr says blocked and the screen is unknown, not once answered.
+#[tokio::test]
+async fn a_question_is_seen_to_clear() {
+    let (base, h) = question_herdr("question-clear", 1);
+    assert!(h.at_question_now("w7:p1").await.unwrap());
+    assert!(!h.at_question_now("w7:p1").await.unwrap());
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// A prompt too long for one herdr argument is pasted by ssf itself, so no
+/// herdr refusal stands between it and a question: the pane is looked at
+/// first, and nothing is pasted into a question (#541).
+#[tokio::test]
+async fn a_long_prompt_is_not_pasted_into_a_question() {
+    let (base, h) = question_herdr("question-long", 100);
+    let long = "x".repeat(HERDR_ARG_LIMIT + 1);
+    let err = h.send_prompt("w7:p1", &long).await.unwrap_err();
+    assert_eq!(at_question(&err).map(|q| q.first), Some(false));
+    let err = h.send_first_prompt("w7:p1", &long).await.unwrap_err();
+    assert_eq!(at_question(&err).map(|q| q.first), Some(true));
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(!calls.contains("send-text"), "{calls}");
+    assert!(!calls.contains("send-keys"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
 }

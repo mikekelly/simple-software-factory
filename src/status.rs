@@ -315,6 +315,15 @@ impl BlockedView {
     /// 3m; run `claude auth login` on the host`, or, for a harness that
     /// never came up, what to do about that.
     pub fn describe(&self) -> String {
+        if self.reason == Blocked::QUESTION {
+            return format!(
+                "{} at a question in pane {} since {}; {}",
+                self.harness_name,
+                self.detail,
+                ago(Some(&self.since)),
+                self.fix
+            );
+        }
         if self.reason == Blocked::SETUP {
             return format!(
                 "{} setup incomplete since {}; {}",
@@ -346,6 +355,12 @@ impl BlockedView {
 /// by hand or hand the item over again with settings that work. Used by
 /// the status commands and by the `blocked` post, so both say the same.
 pub fn fix_for(b: &Blocked) -> String {
+    if b.reason == Blocked::QUESTION {
+        return format!(
+            "answer it in pane {} (`ssf vm attach` in VM mode, herdr on the host); the first message is sent once it is answered",
+            b.detail
+        );
+    }
     if b.reason == Blocked::SETUP {
         return "run `omp` interactively as the factory user on the host (inside the guest in VM mode); press Esc through the remaining setup steps to complete or skip setup".into();
     }
@@ -362,7 +377,7 @@ pub fn fix_for(b: &Blocked) -> String {
 /// kind of fix it is: a login block's is a command to sign in with, a
 /// start block's is an instruction of its own.
 pub fn fix_clause(b: &Blocked) -> String {
-    if b.reason == Blocked::START || b.reason == Blocked::SETUP {
+    if b.reason == Blocked::START || b.reason == Blocked::SETUP || b.reason == Blocked::QUESTION {
         fix_for(b)
     } else {
         format!("sign in with {}", fix_for(b))

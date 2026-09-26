@@ -235,7 +235,7 @@ impl Engine {
             &eff.harness,
             st.prompts_sent + 1,
         );
-        let d = self
+        let d = match self
             .driver(repo)
             .deliver(
                 &worktree_id,
@@ -253,7 +253,28 @@ impl Engine {
                 },
                 text,
             )
-            .await?;
+            .await
+        {
+            Ok(d) => d,
+            // A harness started for this delivery came up at a question ssf
+            // does not know: the session is held on it, not failed. (A
+            // message to a session already at work that is at a question
+            // is only held for the next pass: `is_held`.)
+            Err(e) => {
+                if let Some(q) = crate::herdr::at_question(&e).filter(|q| q.first) {
+                    let pane = q.pane.clone();
+                    let b = self
+                        .hold_at_question(repo, target, &eff.harness, &pane)
+                        .await;
+                    return Err(SessionBlocked {
+                        session: session_id(&repo.name, target),
+                        blocked: b,
+                    }
+                    .into());
+                }
+                return Err(e);
+            }
+        };
         if d.relaunched {
             let e = self.entry(repo, target);
             e.launched_at = Some(now_iso());

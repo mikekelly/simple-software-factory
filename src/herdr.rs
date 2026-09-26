@@ -275,8 +275,10 @@ pub enum Settle {
     Answer(driver::TrustAnswer),
     /// The harness is ready for its prompt.
     Ready,
-    /// Blocked on a question ssf does not know: the prompt goes in anyway.
-    AskAnyway,
+    /// Blocked on a question ssf does not know: the session is held, and
+    /// a person answers it (`ssf attach`) before the prompt goes in. A
+    /// prompt pasted into an unknown dialog is lost to it (#541).
+    Held,
     /// herdr reports the harness settled but its screen is still blank:
     /// the TUI has not drawn its composer yet, so a prompt sent now is lost.
     /// OpenCode 1.18 is `idle` to herdr 0.9 seconds before it draws.
@@ -302,10 +304,38 @@ pub fn settle_step(state: &str, screen: &str) -> Settle {
     } else if let Some(answer) = driver::trust_dialog(screen) {
         Settle::Answer(answer)
     } else if state == "blocked" {
-        Settle::AskAnyway
+        Settle::Held
     } else {
         Settle::Ready
     }
+}
+
+/// A harness in `pane` is at a question ssf does not know. Nothing was
+/// typed into it: a prompt pasted there is lost to it (#541). `first` is
+/// set when the harness has not had its first prompt yet (a launch, or
+/// the first prompt refused), and not for a message to a session already
+/// at work, which the next pass simply tries again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtQuestion {
+    pub pane: String,
+    pub first: bool,
+}
+
+impl std::fmt::Display for AtQuestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the harness in pane {} is at a question ssf does not know; held until a person answers it",
+            self.pane
+        )
+    }
+}
+
+impl std::error::Error for AtQuestion {}
+
+/// The [`AtQuestion`] this error is, if it is one.
+pub fn at_question(e: &anyhow::Error) -> Option<&AtQuestion> {
+    e.chain().find_map(|c| c.downcast_ref::<AtQuestion>())
 }
 
 /// The agent states [`Herdr::settle_harness`] waits for: every one but
@@ -938,10 +968,16 @@ impl Herdr {
                     tokio::time::sleep(UNDRAWN_POLL).await;
                     continue;
                 }
-                Settle::AskAnyway => {
-                    // Some other question: the prompt goes in anyway.
+                Settle::Held => {
+                    // Some other question: a prompt pasted now is lost to
+                    // it. The caller holds the session until a person has
+                    // answered it, without waiting here.
                     warn!(pane_id, "{harness} is at a question ssf does not know");
-                    return Ok(state);
+                    return Err(AtQuestion {
+                        pane: pane_id.to_string(),
+                        first: true,
+                    }
+                    .into());
                 }
                 Settle::Ready => return Ok(state),
             }
@@ -953,6 +989,36 @@ impl Herdr {
             "{harness} still shows a first-run dialog after four answers; going on anyway"
         );
         Ok(state)
+    }
+
+    /// Is the agent in the pane blocked at a question ssf does not know
+    /// ([`Settle::Held`])? `false` once a person has answered it, the
+    /// screen is a trust dialog ssf answers itself, or the agent is gone.
+    pub async fn at_question_now(&self, pane_id: &str) -> Result<bool> {
+        let Some(agent) = self
+            .agents()
+            .await?
+            .into_iter()
+            .find(|a| a.pane_id == pane_id)
+        else {
+            return Ok(false);
+        };
+        let text = self.screen(pane_id).await?.join("\n");
+        Ok(settle_step(&agent.status, &text) == Settle::Held)
+    }
+
+    /// A paste that bypasses `agent prompt` has no herdr refusal to meet a
+    /// question with, so the pane is looked at first: at a question, or
+    /// unreadable, nothing is pasted and the error is an [`AtQuestion`].
+    async fn no_question_before_paste(&self, pane_id: &str, first: bool) -> Result<()> {
+        if self.at_question_now(pane_id).await.unwrap_or(true) {
+            return Err(AtQuestion {
+                pane: pane_id.to_string(),
+                first,
+            }
+            .into());
+        }
+        Ok(())
     }
 
     /// Answer a trust dialog in the pane with the keys it takes.
@@ -1071,8 +1137,9 @@ impl Herdr {
     }
 
     /// Give the agent in a pane a prompt. `agent prompt` pastes for us; if
-    /// it refuses because the agent is at a question, the text is pasted
-    /// raw so the harness can queue it.
+    /// it refuses because the agent is at a question, nothing is pasted
+    /// (text pasted into a question is lost to it, #541): the error is an
+    /// [`AtQuestion`], and the caller holds the prompt for the next pass.
     pub async fn send_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
         if !fits_one_argument(text) {
             warn!(
@@ -1080,6 +1147,7 @@ impl Herdr {
                 bytes = text.len(),
                 "the prompt is too long for one herdr argument; pasting it raw"
             );
+            self.no_question_before_paste(pane_id, false).await?;
             return self.paste_prompt(pane_id, text).await;
         }
         match self
@@ -1087,20 +1155,13 @@ impl Herdr {
             .await
         {
             Ok(_) => Ok(()),
-            Err(e) if prompt_failure(&e.to_string()) == PromptFailure::Blocked => {
-                self.paste_raw(pane_id, text).await
+            Err(e) if prompt_failure(&e.to_string()) == PromptFailure::Blocked => Err(AtQuestion {
+                pane: pane_id.to_string(),
+                first: false,
             }
+            .into()),
             Err(e) => Err(e),
         }
-    }
-
-    /// Paste a prompt into the pane ourselves and submit it when herdr will not.
-    async fn paste_raw(&self, pane_id: &str, text: &str) -> Result<()> {
-        warn!(
-            pane_id,
-            "agent is blocked on a question; pasting the prompt raw"
-        );
-        self.paste_prompt(pane_id, text).await
     }
 
     /// Paste a prompt into the pane and submit it with Enter, for text that
@@ -1190,9 +1251,25 @@ impl Herdr {
                 Err(e) => e,
             };
             match prompt_failure(&e.to_string()) {
-                // Sent nothing: the harness is at a question, so paste it in
-                // and let the harness queue it.
-                PromptFailure::Blocked => return self.paste_raw(pane_id, text).await,
+                // Sent nothing: the harness is at a question. A trust
+                // dialog is answered; anything else holds the prompt until
+                // a person has answered it.
+                PromptFailure::Blocked => {
+                    let screen = self.screen(pane_id).await.unwrap_or_default().join("\n");
+                    match driver::trust_dialog(&screen) {
+                        Some(answer) if !answered_dialog => {
+                            self.answer_trust(pane_id, answer).await?;
+                            answered_dialog = true;
+                        }
+                        _ => {
+                            return Err(AtQuestion {
+                                pane: pane_id.to_string(),
+                                first: true,
+                            }
+                            .into());
+                        }
+                    }
+                }
                 PromptFailure::Stalled => {
                     let screen = self
                         .recent_screen(pane_id)
@@ -1347,6 +1424,7 @@ accepting the successful Enter without retrying: {e:#}"
             bytes = text.len(),
             "the first prompt is too long for one herdr argument; typing it into the pane"
         );
+        self.no_question_before_paste(pane_id, true).await?;
         self.paste_prompt(pane_id, text).await?;
         self.wait_until_working(pane_id).await
     }
