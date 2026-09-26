@@ -313,7 +313,7 @@ Do this step with the person, one harness at a time, through herdr. In VM mode r
 
    ```sh
    herdr workspace create --cwd /var/lib/ssf/projects --label "claude login" --no-focus
-   herdr pane run PANE claude     # PANE: the pane id the command above printed
+   herdr pane run PANE claude     # PANE: result.root_pane.pane_id in the JSON printed above
    ```
 
 2. **Clear the first-run screens.** Read the pane with `herdr pane read PANE` and answer with `herdr pane send-keys PANE KEY...`. Take the default on preference screens, or ask the person in one line if the choice matters; for Claude Code's "Try the new fullscreen renderer?" pick **Not now**. Accept folder trust. Read again after every key: screens change with every harness release.
