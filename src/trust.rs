@@ -55,7 +55,7 @@ pub fn preregister(repo_root: &Path, worktree: &Path) {
             Trust::CodexToml if home.join(".codex").is_dir() => {
                 codex(&real(home.join(".codex/config.toml")), repo_root)
             }
-            Trust::CopilotJson if home.join(".copilot/config.json").is_file() => {
+            Trust::CopilotJson if home.join(".copilot").is_dir() => {
                 copilot(&real(home.join(".copilot/config.json")), repo_root)
             }
             Trust::CrushInit if crate::agents::installed(h.id) => crush(repo_root, worktree),
@@ -113,9 +113,21 @@ pub fn claude(path: &Path, repo_root: &Path) -> Result<()> {
     write_json(path, &state)
 }
 
-/// Add the checkout to Copilot's trusted folders.
+/// Add the checkout to Copilot's trusted folders. Its `config.json` is
+/// JSONC and opens with comment lines, which are kept; a missing or empty
+/// file is created.
 pub fn copilot(path: &Path, repo_root: &Path) -> Result<()> {
-    let mut config = read_json(path)?;
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let body = strip_json_comments(&text);
+    let mut config: serde_json::Value = if body.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(&body).with_context(|| format!("parsing {}", path.display()))?
+    };
     let root = config
         .as_object_mut()
         .context("config.json is not an object")?;
@@ -129,7 +141,67 @@ pub fn copilot(path: &Path, repo_root: &Path) -> Result<()> {
         return Ok(());
     }
     folders.push(root_key.into());
-    write_json(path, &config)
+    // The comment lines before the object, as Copilot writes them.
+    let header: String = text
+        .lines()
+        .take_while(|l| !l.trim_start().starts_with('{'))
+        .filter(|l| l.trim_start().starts_with("//"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let mut data = header.into_bytes();
+    data.extend(serde_json::to_vec_pretty(&config)?);
+    data.push(b'\n');
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    crate::config::write_atomic(path, &data, mode_of(path, 0o600))
+}
+
+/// JSONC to JSON: `//` and `/* */` comments outside strings removed.
+fn strip_json_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if c == '\\' {
+                if let Some(n) = chars.next() {
+                    out.push(n);
+                }
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match (c, chars.peek()) {
+            ('"', _) => {
+                in_string = true;
+                out.push(c);
+            }
+            ('/', Some('/')) => {
+                for n in chars.by_ref() {
+                    if n == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            ('/', Some('*')) => {
+                chars.next();
+                let mut prev = ' ';
+                for n in chars.by_ref() {
+                    if prev == '*' && n == '/' {
+                        break;
+                    }
+                    prev = n;
+                }
+                out.push(' ');
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Trust the checkout in Codex's config. The file is TOML people edit, so
@@ -291,6 +363,49 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["theme"], "dark");
         assert_eq!(v["trustedFolders"], serde_json::json!(["/a", "/r"]));
+    }
+
+    #[test]
+    fn copilot_reads_its_real_jsonc_file_and_keeps_the_comments() {
+        let d = tmp();
+        let path = d.path().join("config.json");
+        let real = "// User settings belong in settings.json.\n// This file is managed automatically.\n{\n  \"firstLaunchAt\": \"2026-09-26T10:00:00Z\",\n  \"appTipShown\": true\n}\n";
+        std::fs::write(&path, real).unwrap();
+        copilot(&path, Path::new("/r")).unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        assert!(first.starts_with(
+            "// User settings belong in settings.json.\n// This file is managed automatically.\n{"
+        ));
+        let v: serde_json::Value = serde_json::from_str(&strip_json_comments(&first)).unwrap();
+        assert_eq!(v["appTipShown"], true);
+        assert_eq!(v["trustedFolders"], serde_json::json!(["/r"]));
+        copilot(&path, Path::new("/r")).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+    }
+
+    #[test]
+    fn copilot_creates_a_missing_or_empty_file() {
+        let d = tmp();
+        let missing = d.path().join("a/config.json");
+        copilot(&missing, Path::new("/r")).unwrap();
+        let empty = d.path().join("config.json");
+        std::fs::write(&empty, "").unwrap();
+        copilot(&empty, Path::new("/r")).unwrap();
+        for p in [missing, empty] {
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            assert_eq!(v, serde_json::json!({"trustedFolders": ["/r"]}));
+        }
+    }
+
+    #[test]
+    fn json_comments_are_stripped_outside_strings_only() {
+        let v: serde_json::Value = serde_json::from_str(&strip_json_comments(
+            "/* a */ {\"u\": \"http://x/*y*/\", // c\n \"q\": \"\\\"//\"}",
+        ))
+        .unwrap();
+        assert_eq!(v["u"], "http://x/*y*/");
+        assert_eq!(v["q"], "\"//");
     }
 
     #[test]
