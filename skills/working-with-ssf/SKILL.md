@@ -40,8 +40,10 @@ locally, in a VM, or over SSH. Linux and macOS are supported.
 
 Before any change: `ssf server list`, then `ssf --server NAME doctor` and
 `ssf --server NAME status` for the target you are about to touch. Ask the
-person before creating accounts, spending money, using `sudo`, choosing a
-model and effort, allowing anyone to drive the factory, or passing `--force`.
+person, one decision at a time at the step that needs it, before creating
+accounts, spending money, choosing a model and effort, allowing anyone to
+drive the factory, or passing `--force`. Hand `sudo` commands to the person
+to run; run them yourself only where you already have non-interactive root.
 The bot's credentials are the bot's, never the person's.
 
 ## Installing this skill
