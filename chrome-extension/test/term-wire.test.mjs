@@ -39,3 +39,14 @@ test("typing and resizing reach the socket only while Writes is on", () => {
   assert.equal(termSend(resize, false), null);
   assert.equal(termSend({ type: "ping" }, true), null);
 });
+
+test("an item terminal's asks need Writes, except a release", () => {
+  const ask = (type) => ({ type: "ask", data: JSON.stringify({ type }) });
+  assert.equal(termSend(ask("control"), true), '{"type":"control"}');
+  assert.equal(termSend(ask("scroll"), true), '{"type":"scroll"}');
+  assert.equal(termSend(ask("control"), false), null);
+  assert.equal(termSend(ask("scroll"), false), null);
+  assert.equal(termSend(ask("release"), false), '{"type":"release"}');
+  assert.equal(termSend(ask("takeover"), true), null);
+  assert.equal(termSend({ type: "ask", data: "not json" }, true), null);
+});

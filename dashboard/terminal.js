@@ -75,7 +75,9 @@ function sendSize() {
 
 function readOnly() {
   notice(
-    mayControl
+    typing
+      ? "Nothing was sent: waiting for control of the pane."
+      : mayControl
       ? "Read-only: nothing was sent. Turn on Type to type into this pane."
       : "Read-only: nothing was sent. This server does not take typing from this page.",
   );

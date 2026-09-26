@@ -440,9 +440,11 @@ async function readPane(message, signal, tell) {
 /// carries the extension's origin, which the factory requires.
 ///
 /// The page sends `open` to connect, `input` (base64 bytes) and `resize`
-/// (the factory's own JSON text), both dropped while the factory's Writes
-/// switch is off; this worker sends `open` once connected,
-/// `data` (base64 bytes) and, once, `closed` with why. Closing the port closes
+/// (the factory's own JSON text), and for an item's pane (#563) `ask` (JSON
+/// text: control, release, scroll), all but a release dropped while the
+/// factory's Writes switch is off; this worker sends `open` once connected,
+/// `data` (base64 bytes), `text` (the factory's JSON text frames) and, once,
+/// `closed` with why. Closing the port closes
 /// the socket.
 function termStream(port) {
   let socket = null;
@@ -475,6 +477,8 @@ function termStream(port) {
       mine.onmessage = (event) => {
         if (socket === mine && event.data instanceof ArrayBuffer) {
           tell({ type: "data", data: toBase64(new Uint8Array(event.data)) });
+        } else if (socket === mine && typeof event.data === "string") {
+          tell({ type: "text", data: event.data });
         }
       };
       mine.onclose = (event) => {

@@ -110,3 +110,7 @@ pre { margin: 0; font-family: "Nerd Font Symbols", "Symbols Nerd Font", "JetBrai
 /* A scratch session's live terminal (xterm.js, #491), sized to the window. */
 #xterm { flex: 1 1 auto; min-height: 0; padding: 4px 0 0 6px; overflow: hidden; }
 #xterm[hidden], main[hidden] { display: none; }
+/* An item terminal's notice (#563): read-only, or why Type went off. */
+#notice { flex: none; margin: 0; padding: 4px 12px; background: rgba(210, 153, 34, .15);
+  color: #e3b341; }
+#notice[hidden] { display: none; }
