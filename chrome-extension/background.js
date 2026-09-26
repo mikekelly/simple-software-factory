@@ -14,8 +14,8 @@
 // below rebuilds every stream. Nothing here depends on running continuously.
 //
 // This worker also carries every write -- `api/assign`, `api/handover`,
-// `api/release`, the scratch writes and the pane mirror's input -- the
-// listings the forms' pickers need, and the pane mirror's own stream. A factory
+// `api/release` and the scratch writes -- the listings the forms' pickers
+// need, and the live terminals' sockets. A factory
 // accepts a write only from an extension origin (docs/dashboard.md), and a
 // content script running on github.com has none, so these are sent from here;
 // the same rule is why the read streams live here too.
@@ -328,115 +328,10 @@ async function scratchResume(message) {
   return writeTo(message, "scratch/resume", { session: message.session });
 }
 
-/// `api/pane/input`: what the pane mirror's terminal typed -- herdr key names
-/// as keys, or a paste as text. A write like any other, so the factory's
-/// Writes switch applies to it too.
-async function paneInput(message) {
-  const body = { session: message.session };
-  if (typeof message.text === "string") body.text = message.text;
-  if (Array.isArray(message.keys)) body.keys = message.keys.map(String);
-  return writeTo(message, "pane/input", body);
-}
-
-/// The pane mirror's stream, `api/pane/<session>`, read here for the page on
-/// its port (`ssf-pane`). The page is framed over github.com, where Chrome's
-/// local-network rules can hold a request of its own to a factory on a private
-/// or tailnet address (#477); this worker reads the factory with the extension's
-/// host permission, as it reads `api/events`.
-///
-/// The page sends `watch` to start a read and pings to keep this worker awake;
-/// closing the port ends the read. Each read ends in one message: `refused`
-/// (the factory said no, or said the pane cannot be read: asking again would
-/// hear the same) or `dropped` (the stream failed or ended), and the page
-/// decides whether to watch again.
-function paneStream(port) {
-  let controller = null;
-  const tell = (message) => {
-    try {
-      port.postMessage(message);
-    } catch {
-      controller?.abort();
-    }
-  };
-  port.onDisconnect.addListener(() => controller?.abort());
-  port.onMessage.addListener(async (message) => {
-    if (message?.type !== "watch") return;
-    controller?.abort();
-    const mine = new AbortController();
-    controller = mine;
-    const end = await readPane(message, mine.signal, tell);
-    if (!mine.signal.aborted) tell(end);
-  });
-}
-
-/// One read of a pane stream, passing each frame to `tell`; returns how it
-/// ended. Only a factory the options page holds is read, whatever the page
-/// asks for: the page takes its factory from its own address.
-async function readPane(message, signal, tell) {
-  const url = factoryUrl(message.url);
-  const stored = (await chrome.storage.local.get("factories")).factories ?? [];
-  if (!url || !stored.some((item) => factoryUrl(item?.url) === url)) {
-    return { type: "refused", error: "this terminal names no configured factory" };
-  }
-  const session = encodeURIComponent(String(message.session ?? ""));
-  let response;
-  try {
-    response = await fetch(endpoint(url, `pane/${session}`), {
-      signal,
-      cache: "no-store",
-      headers: { accept: "text/event-stream" },
-    });
-  } catch (error) {
-    return { type: "dropped", error: reachError(error, { url }) };
-  }
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    let parsed = null;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      // Not JSON; the raw text is the best description available.
-    }
-    return { type: "refused", error: errorBody(parsed, text, response.status) };
-  }
-  // Server-sent events: a block per blank line, `event:` and `data:` lines in
-  // it; a block of comments alone is the factory's keepalive.
-  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-  let buffer = "";
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) return { type: "dropped" };
-      buffer += value;
-      let end;
-      while ((end = buffer.indexOf("\n\n")) >= 0) {
-        const block = buffer.slice(0, end);
-        buffer = buffer.slice(end + 2);
-        let event = "message";
-        const data = [];
-        for (const line of block.split("\n")) {
-          const field = line.replace(/\r$/, "");
-          if (field.startsWith("event:")) event = field.slice(6).trim();
-          else if (field.startsWith("data:")) data.push(field.slice(5).replace(/^ /, ""));
-        }
-        if (!data.length) continue;
-        // The screen, or the history above it (docs/dashboard.md).
-        if (event === "screen" || event === "history") {
-          tell({ type: event, data: data.join("\n") });
-        } else if (event === "error") {
-          // The factory's reader has stopped, and says why.
-          return { type: "refused", error: errorText(data.join("\n")) };
-        }
-      }
-    }
-  } catch (error) {
-    return { type: "dropped", error: String(error) };
-  }
-}
-
 /// A scratch session's terminal, `api/term/<session>` (a WebSocket), opened
-/// here for the page on its port (`ssf-term`, #491), for the same reason the
-/// pane stream is read here: the page is framed under github.com. The socket
+/// here for the page on its port (`ssf-term`, #491): the page is framed under
+/// github.com, where Chrome's local-network rules can hold a request of its
+/// own to a factory on a private or tailnet address (#477). The socket
 /// carries the extension's origin, which the factory requires.
 ///
 /// The page sends `open` to connect, `input` (base64 bytes) and `resize`
@@ -509,8 +404,8 @@ async function listing(message, path) {
 /// else is routed, and the content script holds no factory fetch of its own.
 /// The item writes are each an `ssf` command for one item, and a message to an
 /// item's agent is a comment on the item (#439); the scratch writes are `ssf
-/// scratch` and a kill. The one input is the pane mirror's terminal, sent from
-/// its own page (#414).
+/// scratch` and a kill. The one input is the live terminal, on its own port
+/// (`ssf-term`).
 const HANDLERS = {
   "ssf:assign": assign,
   "ssf:handover": handover,
@@ -518,7 +413,6 @@ const HANDLERS = {
   "ssf:scratch": scratch,
   "ssf:scratch-release": scratchRelease,
   "ssf:scratch-resume": scratchResume,
-  "ssf:pane-input": paneInput,
   "ssf:agents": (message) => listing(message, "agents"),
   "ssf:usage": (message) => listing(message, "usage"),
   "ssf:models": (message) =>
@@ -566,10 +460,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name === "ssf-pane") {
-    paneStream(port);
-    return;
-  }
   if (port.name === "ssf-term") {
     termStream(port);
     return;

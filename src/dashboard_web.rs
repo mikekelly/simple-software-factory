@@ -35,33 +35,9 @@ const LISTING_TIMEOUT: Duration = Duration::from_secs(30);
 /// doing may still land.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 const KEEPALIVE: Duration = Duration::from_secs(25);
-/// How often a pane mirror reads its pane while someone is watching it: four
-/// times a second, measured on #414 at a few percent of a core per pane.
-const MIRROR_INTERVAL_MS: &str = "250";
 /// Longest session id a pane route takes: `owner/repo#N` or `owner/repo~id`,
 /// with room for GitHub's longest names.
 const MAX_SESSION: usize = 256;
-/// Panes read at once: each is a process reading herdr four times a second.
-const MAX_MIRRORS: usize = 16;
-
-/// The pane mirrors being watched, by session: one reader per pane however
-/// many viewers it has, started by the first and stopped with the last.
-type Mirrors = std::sync::Arc<
-    std::sync::Mutex<
-        std::collections::HashMap<String, std::sync::Arc<tokio::sync::watch::Sender<Mirror>>>,
-    >,
->;
-
-/// What a pane mirror has to send: the latest frame (a screen or an error),
-/// or `None` before the first read, and the latest history frame. History is
-/// kept apart because the channel holds only the latest value, and a viewer
-/// who joins late still needs the history read before it came.
-#[derive(Clone, Default)]
-struct Mirror {
-    history: Option<std::sync::Arc<str>>,
-    frame: Option<String>,
-}
-
 /// The latest status snapshot, or the error that prevented loading one.
 type Latest = tokio::sync::watch::Receiver<Option<std::result::Result<Value, String>>>;
 
@@ -266,30 +242,17 @@ async fn serve(
     let host: std::sync::Arc<str> = listener.local_addr()?.to_string().into();
     let token: std::sync::Arc<str> = token.into();
     let client: std::sync::Arc<PathBuf> = client.into();
-    let mirrors = Mirrors::default();
     loop {
         let (stream, _) = listener.accept().await?;
-        let (host, token, latest, client, mirrors) = (
-            host.clone(),
-            token.clone(),
-            latest.clone(),
-            client.clone(),
-            mirrors.clone(),
-        );
+        let (host, token, latest, client) =
+            (host.clone(), token.clone(), latest.clone(), client.clone());
         // Each connection gets its own task so a long-lived event stream
         // does not stop the listener from answering anyone else.
-        tokio::spawn(async move { handle(stream, &host, &token, latest, &client, &mirrors).await });
+        tokio::spawn(async move { handle(stream, &host, &token, latest, &client).await });
     }
 }
 
-async fn handle(
-    mut stream: TcpStream,
-    host: &str,
-    token: &str,
-    mut latest: Latest,
-    client: &Path,
-    mirrors: &Mirrors,
-) {
+async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Latest, client: &Path) {
     let request = timeout(REQUEST_TIMEOUT, read_request(&mut stream)).await;
     let routed = match &request {
         Ok(Ok(request)) => classify(request, host, token),
@@ -315,16 +278,6 @@ async fn handle(
             ) {
                 Ok((session, key)) => {
                     crate::dashboard_term::serve(stream, &session, &key, client).await;
-                    return;
-                }
-                Err(answer) => answer,
-            }
-        }
-        Ok(Routed::Read(relative)) if relative.starts_with("api/pane/") => {
-            match pane_session(&relative["api/pane/".len()..]) {
-                Ok(session) => {
-                    let mut frames = mirror(mirrors, &session, client);
-                    pane_events(&mut stream, &mut frames, KEEPALIVE, REQUEST_TIMEOUT).await;
                     return;
                 }
                 Err(answer) => answer,
@@ -395,7 +348,6 @@ async fn write(
         Route::Scratch => scratch(&body, &write, client).await,
         Route::ScratchRelease => scratch_release(&body, &write, client).await,
         Route::ScratchResume => scratch_resume(&body, &write, client).await,
-        Route::PaneInput => pane_input(&body, &write, client).await,
     }
 }
 
@@ -726,68 +678,6 @@ async fn scratch_resume(
     .await
 }
 
-/// `POST api/pane/input`: type into a session's agent pane, from the pane
-/// mirror's terminal. `text` is what the terminal sent (Enter, Backspace and
-/// the arrows as the bytes a terminal sends for them); `keys` are named keys
-/// herdr presses (`enter`, `ctrl+c`).
-async fn pane_input(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'static str, String) {
-    let request: PaneInputRequest = match parse(body, "pane input") {
-        Ok(request) => request,
-        Err(answer) => return answer,
-    };
-    if !is_session(&request.session) {
-        return bad("session must be owner/repo#N or owner/repo~id");
-    }
-    // Whether an item's pane takes typing is the factory's setting
-    // (`item_pane_input`, off by default: #439), decided where the config
-    // is -- in the guest, for a factory in a VM -- by `ssf __pane send`.
-    if request
-        .text
-        .as_deref()
-        .is_some_and(|text| text.contains('\0'))
-    {
-        return bad("text cannot carry a NUL byte");
-    }
-    if !request.keys.iter().all(|key| is_key(key)) {
-        return bad("keys are key names such as enter, esc or ctrl+c, or single characters");
-    }
-    let text = request.text.filter(|text| !text.is_empty());
-    if text.is_none() && request.keys.is_empty() {
-        return bad("nothing to type: give text or keys");
-    }
-    // What was typed is not logged: it is the person's, and may be a secret
-    // they were asked for.
-    tracing::debug!(
-        origin = write.origin,
-        session = request.session,
-        chars = text.as_deref().map(|t| t.chars().count()).unwrap_or(0),
-        keys = request.keys.len(),
-        "web API pane input"
-    );
-    let mut args = vec!["__pane".to_string(), "send".into(), request.session];
-    if let Some(text) = text {
-        // One argument, `=`-joined, so text that starts with a dash is text.
-        args.push(format!("--text={text}"));
-    }
-    for key in request.keys {
-        args.push(format!("--key={key}"));
-    }
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    match ask(client, &args, WRITE_TIMEOUT).await {
-        Ok(output) if output.status.success() => {
-            (200, "application/json", json!({"sent": true}).to_string())
-        }
-        Ok(output) if output.status.code() == Some(crate::pane::INPUT_REFUSED) => {
-            bad(client_error(&output, "the input"))
-        }
-        Ok(output) => failure(
-            Some(crate::ipc::RefusalKind::Conflict),
-            client_error(&output, "the input"),
-        ),
-        Err(error) => failure_of(&error),
-    }
-}
-
 /// A GitHub login: letters, digits and single hyphens, as GitHub allows.
 fn is_login(login: &str) -> bool {
     !login.is_empty()
@@ -795,43 +685,6 @@ fn is_login(login: &str) -> bool {
         && login
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-}
-
-/// A key herdr presses: a name (`enter`, `esc`, `ctrl+c`, `f5`), or one
-/// literal character, which is how the pane mirror types (#477). A space
-/// or a control character is not one herdr takes: those go by name.
-fn is_key(key: &str) -> bool {
-    let mut chars = key.chars();
-    if let (Some(c), None) = (chars.next(), chars.next()) {
-        return !c.is_control() && !c.is_whitespace();
-    }
-    !key.is_empty()
-        && key.len() <= 32
-        && key
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
-}
-
-/// A session id a route takes: an item's (`owner/repo#N`) or a scratch
-/// session's (`owner/repo~id`).
-fn is_session(session: &str) -> bool {
-    session.len() <= MAX_SESSION
-        && (crate::origin::Origin::parse(session).is_some()
-            || crate::origin::Scratch::parse(session).is_some())
-}
-
-/// The session a pane stream names, percent-decoded (`#` cannot be in a URL
-/// path as itself), or the `400` for one that is not a session.
-fn pane_session(encoded: &str) -> std::result::Result<String, (u16, &'static str, String)> {
-    // Named as ssf names it, so two spellings of one session share a reader.
-    percent_decode(encoded)
-        .filter(|session| session.len() <= MAX_SESSION)
-        .and_then(|session| {
-            crate::origin::Scratch::parse(&session)
-                .map(|s| s.to_string())
-                .or_else(|| crate::origin::Origin::parse(&session).map(|o| o.to_string()))
-        })
-        .ok_or_else(|| bad("the pane route takes a session, owner/repo#N or owner/repo~id"))
 }
 
 /// A terminal route's session and its WebSocket key, or the answer that
@@ -918,257 +771,6 @@ fn percent_decode(text: &str) -> Option<String> {
         }
     }
     String::from_utf8(out).ok()
-}
-
-/// A viewer of `session`'s pane: the running mirror's frames, or a mirror
-/// started for this viewer. The map is only touched under its lock, and a
-/// mirror leaves it under the same lock, so a viewer never joins a mirror
-/// that is on its way out.
-fn mirror(mirrors: &Mirrors, session: &str, client: &Path) -> tokio::sync::watch::Receiver<Mirror> {
-    let mut map = mirrors
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(sender) = map.get(session) {
-        return sender.subscribe();
-    }
-    if map.len() >= MAX_MIRRORS {
-        // The sender goes at once, so the viewer gets this frame and the end.
-        let (_, frames) = tokio::sync::watch::channel(Mirror {
-            history: None,
-            frame: Some(error_frame(&format!(
-                "{MAX_MIRRORS} panes are already being watched; close one and try again"
-            ))),
-        });
-        return frames;
-    }
-    let (sender, frames) = tokio::sync::watch::channel(Mirror::default());
-    let sender = std::sync::Arc::new(sender);
-    map.insert(session.to_string(), sender.clone());
-    let command = match mirror_command(client, session) {
-        Ok(command) => Some(command),
-        Err(error) => {
-            sender.send_modify(|m| m.frame = Some(error_frame(&format!("{error:#}"))));
-            None
-        }
-    };
-    tokio::spawn(run_mirror(
-        mirrors.clone(),
-        session.to_string(),
-        sender,
-        command,
-    ));
-    frames
-}
-
-/// `ssf __pane watch <session>`, through the status stream's own transport.
-fn mirror_command(client: &Path, session: &str) -> Result<tokio::process::Command> {
-    Ok(crate::dashboard_transport::local_client_command(
-        client,
-        &[
-            "__pane",
-            "watch",
-            session,
-            "--interval-ms",
-            MIRROR_INTERVAL_MS,
-        ],
-        crate::server_catalog::service_local_context(),
-        crate::server_catalog::selected_vm_context()?.as_ref(),
-        crate::server_catalog::selected_target_identity()?.as_ref(),
-    ))
-}
-
-/// One pane's reader: runs the watch while anyone is looking, passing on each
-/// frame it prints (it prints one only when the screen changed), and stops it
-/// -- the child goes with the command -- once the last viewer has gone.
-async fn run_mirror(
-    mirrors: Mirrors,
-    session: String,
-    sender: std::sync::Arc<tokio::sync::watch::Sender<Mirror>>,
-    command: Option<tokio::process::Command>,
-) {
-    use tokio::io::AsyncBufReadExt;
-    let leave = |mirrors: &Mirrors| {
-        let mut map = mirrors
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if map
-            .get(&session)
-            .is_some_and(|held| std::sync::Arc::ptr_eq(held, &sender))
-        {
-            map.remove(&session);
-        }
-    };
-    let Some(mut command) = command else {
-        leave(&mirrors);
-        return;
-    };
-    // A group of its own, so that stopping it stops everything it started:
-    // with the factory in a VM the client is a wrapper around ssh, and the
-    // watch runs in the guest behind it.
-    command
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .process_group(0);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            sender.send_modify(|m| {
-                m.frame = Some(error_frame(&format!(
-                    "could not start the pane reader: {error}"
-                )));
-            });
-            leave(&mirrors);
-            return;
-        }
-    };
-    let group = child.id();
-    // Read as it comes, so a chatty reader cannot fill the pipe and stall;
-    // the start of it is what says why a reader stopped.
-    let mut stderr = child.stderr.take().expect("piped");
-    let mut stderr = tokio::spawn(async move {
-        let mut kept = Vec::new();
-        let mut buffer = [0u8; 1024];
-        while let Ok(read @ 1..) = stderr.read(&mut buffer).await {
-            let room = 4096usize.saturating_sub(kept.len());
-            kept.extend_from_slice(&buffer[..read.min(room)]);
-        }
-        String::from_utf8_lossy(&kept).into_owned()
-    });
-    let mut lines = tokio::io::BufReader::new(child.stdout.take().expect("piped")).lines();
-    loop {
-        tokio::select! {
-            line = lines.next_line() => match line {
-                // The watch's heartbeat.
-                Ok(Some(line)) if line.is_empty() => {}
-                Ok(Some(line)) => {
-                    let frame = pane_frame(&line);
-                    sender.send_if_modified(|last| {
-                        if frame.starts_with("event: history") {
-                            if last.history.as_deref() == Some(frame.as_str()) {
-                                return false;
-                            }
-                            last.history = Some(frame.into());
-                        } else {
-                            if last.frame.as_deref() == Some(frame.as_str()) {
-                                return false;
-                            }
-                            last.frame = Some(frame);
-                        }
-                        true
-                    });
-                }
-                _ => {
-                    // A watch that ended on an error said it as its last
-                    // frame; one that did not says why here, if anywhere.
-                    let detail = timeout(REQUEST_TIMEOUT, &mut stderr).await;
-                    let detail = detail.ok().and_then(|d| d.ok()).unwrap_or_default();
-                    let detail = detail.trim();
-                    if !detail.is_empty() {
-                        sender.send_modify(|m| m.frame = Some(error_frame(detail)));
-                    } else if !sender.borrow().frame.as_deref().is_some_and(|f| f.starts_with("event: error")) {
-                        sender.send_modify(|m| m.frame = Some(error_frame("the pane reader stopped")));
-                    }
-                    break;
-                }
-            },
-            _ = sender.closed() => {
-                // Nobody is watching. A viewer that arrived since holds the
-                // lock to join, so the count is read under it too.
-                let map = mirrors.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                if sender.receiver_count() == 0 {
-                    drop(map);
-                    break;
-                }
-            }
-        }
-    }
-    leave(&mirrors);
-    if let Some(group) = group.and_then(|pid| i32::try_from(pid).ok()) {
-        // SAFETY: a signal to the group this reader was started in.
-        unsafe { libc::killpg(group, libc::SIGKILL) };
-    }
-    let _ = child.start_kill();
-    let _ = child.wait().await;
-}
-
-/// A watch line as the frame a viewer gets: `event: screen` with the
-/// `{"screen": …}` object, `event: history` with the `{"history": …}` one, or
-/// `event: error` with the `{"error": …}` one.
-fn pane_frame(line: &str) -> String {
-    match serde_json::from_str::<Value>(line) {
-        Ok(value) if value.get("screen").is_some() => format!("event: screen\ndata: {value}\n\n"),
-        Ok(value) if value.get("history").is_some() => {
-            format!("event: history\ndata: {value}\n\n")
-        }
-        Ok(value) if value.get("error").is_some() => format!("event: error\ndata: {value}\n\n"),
-        _ => error_frame("the pane reader said something that is not a frame"),
-    }
-}
-
-/// Server-sent events for a pane mirror: the latest history and frame, then
-/// each new one, with a keepalive comment while the screen stands still.
-/// History goes before the screen it sits above. Ends when the
-/// viewer goes -- noticed at once, since a viewer is what keeps the pane
-/// being read -- or the mirror stops.
-async fn pane_events(
-    stream: &mut TcpStream,
-    frames: &mut tokio::sync::watch::Receiver<Mirror>,
-    keepalive: Duration,
-    write_timeout: Duration,
-) {
-    let (mut reader, mut writer) = stream.split();
-    // A viewer sends nothing after its request, so a read that returns is
-    // the viewer going away.
-    let gone = async {
-        let mut byte = [0u8; 1];
-        loop {
-            match reader.read(&mut byte).await {
-                Ok(0) | Err(_) => return,
-                Ok(_) => {}
-            }
-        }
-    };
-    let send = async {
-        let headers = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n{SECURITY_HEADERS}\r\n"
-        );
-        if !write_frame(&mut writer, headers.as_bytes(), write_timeout).await {
-            return;
-        }
-        let mut sent = Mirror::default();
-        loop {
-            // Only what changed is sent: the channel keeps its value, and a
-            // screen change must not resend the history, nor a keepalive the
-            // last frame.
-            let latest = frames.borrow_and_update().clone();
-            for (now, before) in [
-                (latest.history.as_deref(), sent.history.as_deref()),
-                (latest.frame.as_deref(), sent.frame.as_deref()),
-            ] {
-                if let Some(frame) = now
-                    && now != before
-                    && !write_frame(&mut writer, frame.as_bytes(), write_timeout).await
-                {
-                    return;
-                }
-            }
-            sent = latest;
-            match timeout(keepalive, frames.changed()).await {
-                Ok(Ok(())) => {}
-                // The mirror stopped; its last frame has been sent.
-                Ok(Err(_)) => return,
-                Err(_) => {
-                    if !write_frame(&mut writer, b": keepalive\n\n", write_timeout).await {
-                        return;
-                    }
-                }
-            }
-        }
-    };
-    tokio::select! {
-        () = gone => {}
-        () = send => {}
-    }
 }
 
 /// One write's body as its own request, or the `400` that names what about it
@@ -1452,9 +1054,8 @@ struct Write<'a> {
 /// comment on it -- assign, hand over and release -- and a client that wants
 /// to say something to an item's agent says it on the item, where the
 /// exchange is part of the item's record (#439). The scratch writes are `ssf
-/// scratch` and the kill of one. The one route that types at an agent is the
-/// pane mirror's input (#414): a terminal on the agent's own pane, the same
-/// thing a person attached to the factory's herdr has, not a message box.
+/// scratch` and the kill of one. Typing at an agent is the live terminal's
+/// (`api/term/<session>`), not a write route.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Route {
     Assign,
@@ -1463,7 +1064,6 @@ enum Route {
     Scratch,
     ScratchRelease,
     ScratchResume,
-    PaneInput,
 }
 
 /// The body of an assign write: `ssf assign`'s own arguments, with the item
@@ -1555,17 +1155,6 @@ struct SessionRequest {
     session: String,
 }
 
-/// The body of a pane input: what to type into the session's agent pane.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PaneInputRequest {
-    session: String,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    keys: Vec<String>,
-}
-
 /// Check one request and say what it is. A read answers on the rules it
 /// always has. A write is held to the stricter ones: only a Chrome
 /// extension's own origin, so a page the tailnet can load cannot post, and
@@ -1641,7 +1230,6 @@ fn classify<'a>(request: &'a str, host: &str, token: &str) -> std::result::Resul
         "api/scratch" => Route::Scratch,
         "api/scratch/release" => Route::ScratchRelease,
         "api/scratch/resume" => Route::ScratchResume,
-        "api/pane/input" => Route::PaneInput,
         // A write is only for the write routes, however the request is
         // shaped; every other path under the capability is a read.
         _ => return Err(405),
@@ -2016,7 +1604,6 @@ mod tests {
             ("/secret/api/scratch", Route::Scratch),
             ("/secret/api/scratch/release", Route::ScratchRelease),
             ("/secret/api/scratch/resume", Route::ScratchResume),
-            ("/secret/api/pane/input", Route::PaneInput),
         ] {
             assert!(
                 matches!(
@@ -2729,11 +2316,11 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         task.abort();
     }
 
-    /// What a scratch or pane write cannot read is refused without asking the
+    /// What a scratch write cannot read is refused without asking the
     /// factory: a force on an item (an item's release is never forced from a
-    /// browser), a login that is not one, a key that is not a key name.
+    /// browser), a login that is not one.
     #[tokio::test]
-    async fn refuses_scratch_and_pane_bodies_a_route_cannot_read() {
+    async fn refuses_scratch_bodies_a_route_cannot_read() {
         let client = Client::new("scratch-unread", "", 0);
         std::fs::remove_file(client.program()).unwrap();
         let (address, task) = served(&client).await;
@@ -2758,21 +2345,6 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 json!({"repo":"o/r","harness":"claude","number":0}),
                 "unknown field",
             ),
-            (
-                "/secret/api/pane/input",
-                json!({"session":"o/r~ab12","keys":["enter; rm -rf /"]}),
-                "key names",
-            ),
-            (
-                "/secret/api/pane/input",
-                json!({"session":"o/r~ab12"}),
-                "nothing to type",
-            ),
-            (
-                "/secret/api/pane/input",
-                json!({"session":"nonsense","text":"x"}),
-                "session must be",
-            ),
         ] {
             let response = post_json(address, path, &body.to_string()).await;
             assert!(
@@ -2781,277 +2353,14 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             );
             assert!(response.contains(needle), "{path} {body}: {response}");
         }
-        // Input is a write: a page's own origin, or none, is refused before
-        // anything is read.
-        let body = json!({"session":"o/r~ab12","text":"y"}).to_string();
-        for extra in [
-            "Content-Type: application/json\r\n".to_string(),
-            format!("Origin: http://{address}\r\nContent-Type: application/json\r\n"),
-            "Origin: https://github.com\r\nContent-Type: application/json\r\n".to_string(),
-        ] {
-            let response = write(address, "/secret/api/pane/input", &extra, &body).await;
-            assert!(response.starts_with("HTTP/1.1 403"), "{extra}: {response}");
-        }
-        assert!(client.args().is_empty(), "a refused write ran the client");
-        // A pane stream names a session; anything else is refused unread.
-        let response = fetch(address, "/secret/api/pane/nonsense").await;
-        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
         task.abort();
-    }
-
-    /// Typing into a scratch session's pane is `ssf __pane send`, with the text as one
-    /// `--text=` argument so text that starts with a dash is still text.
-    #[tokio::test]
-    async fn pane_input_types_through_the_factorys_client() {
-        let client = Client::new("input", "", 0);
-        let (address, task) = served(&client).await;
-        let body = json!({"session":"o/r~t414","text":"-y\u{1b}[A","keys":["ctrl+c"]}).to_string();
-        let response = post_json(address, "/secret/api/pane/input", &body).await;
-        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-        assert_eq!(
-            client.args(),
-            [
-                "__client",
-                "__pane",
-                "send",
-                "o/r~t414",
-                "--text=-y\u{1b}[A",
-                "--key=ctrl+c"
-            ]
-        );
-        task.abort();
-    }
-
-    /// The pane mirror types a keystroke at a time (#477): each printable
-    /// character is a key of its own, as herdr's `pane send-keys` takes a
-    /// single literal character (checked against herdr 0.9: punctuation and
-    /// non-ASCII alike), with Space, Tab and Enter by name. A literal space
-    /// or control character is not a key herdr takes, so it is refused here.
-    #[tokio::test]
-    async fn pane_input_takes_literal_characters_as_keys() {
-        let client = Client::new("literal-keys", "", 0);
-        let (address, task) = served(&client).await;
-        let keys = ["h", ".", "'", "é", "日", "Space", "Enter"];
-        let body = json!({"session":"o/r~t477","keys":keys}).to_string();
-        let response = post_json(address, "/secret/api/pane/input", &body).await;
-        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-        let mut expected = vec!["__client", "__pane", "send", "o/r~t477"];
-        let named: Vec<String> = keys.iter().map(|key| format!("--key={key}")).collect();
-        expected.extend(named.iter().map(String::as_str));
-        assert_eq!(client.args(), expected);
-        for key in [" ", "\u{7}", "\n", "ab c"] {
-            let body = json!({"session":"o/r~t477","keys":[key]}).to_string();
-            let response = post_json(address, "/secret/api/pane/input", &body).await;
-            assert!(response.starts_with("HTTP/1.1 400"), "{key:?}: {response}");
-        }
-        task.abort();
-    }
-
-    /// An item's pane the factory keeps view-only (`item_pane_input` off,
-    /// decided by `ssf __pane send` where the config is) is the request's
-    /// fault, `400`, in the factory's words -- not a failure to type.
-    #[tokio::test]
-    async fn a_view_only_pane_refuses_typing_as_the_factory_words_it() {
-        let client = Client::new("viewonly", "", 0);
-        std::fs::write(
-            client.program(),
-            "#!/bin/sh\necho \"o/r#7's pane is view-only: speak to an item's agent by commenting on the item\" >&2\nexit 2\n",
-        )
-        .unwrap();
-        let (address, task) = served(&client).await;
-        let body = json!({"session":"o/r#7","text":"y"}).to_string();
-        let response = post_json(address, "/secret/api/pane/input", &body).await;
-        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
-        assert!(response.contains("commenting on the item"), "{response}");
-        task.abort();
-    }
-
-    /// Reads one pane stream until it has `frames` screen frames, or fails
-    /// the test.
-    async fn screens(address: std::net::SocketAddr, path: &str, frames: usize) -> Vec<String> {
-        let mut stream = TcpStream::connect(address).await.unwrap();
-        stream
-            .write_all(request(path, &address.to_string(), "").as_bytes())
-            .await
-            .unwrap();
-        let mut seen = String::new();
-        timeout(Duration::from_secs(10), async {
-            let mut buffer = [0u8; 4096];
-            while seen.matches("event: screen").count() < frames {
-                let read = stream.read(&mut buffer).await.unwrap();
-                assert!(read > 0, "the stream ended: {seen}");
-                seen.push_str(&String::from_utf8_lossy(&buffer[..read]));
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("no {frames} frames: {seen}"));
-        seen.lines()
-            .filter_map(|line| line.strip_prefix("data: "))
-            .map(str::to_string)
-            .collect()
-    }
-
-    /// Two viewers of one pane share one reader, and a screen that did not
-    /// change is not sent again. When the last viewer goes the reader stops,
-    /// and the next viewer starts a new one.
-    #[tokio::test]
-    async fn one_reader_per_pane_however_many_watch_it() {
-        let client = Client::new("mirror", "", 0);
-        let log = client.root.join("runs");
-        // A reader that prints the same screen twice, then another, and then
-        // waits the way a reader of an idle pane does.
-        let script = format!(
-            "#!/bin/sh\necho \"$*\" >> '{log}'\n\
-             echo '{{\"screen\":\"one\"}}'\necho '{{\"screen\":\"one\"}}'\nsleep 0.3\n\
-             echo '{{\"screen\":\"two\"}}'\nexec sleep 30\n",
-            log = log.display()
-        );
-        std::fs::write(client.program(), script).unwrap();
-        let (address, task) = served(&client).await;
-        let path = "/secret/api/pane/o%2Fr~ab12";
-        let (first, second) = tokio::join!(screens(address, path, 2), screens(address, path, 2));
-        for frames in [&first, &second] {
-            assert_eq!(
-                frames.last().map(String::as_str),
-                Some("{\"screen\":\"two\"}"),
-                "{frames:?}"
-            );
-            assert!(
-                !frames.windows(2).any(|pair| pair[0] == pair[1]),
-                "a frame was sent twice: {frames:?}"
-            );
-        }
-        let runs = std::fs::read_to_string(&log).unwrap();
-        assert_eq!(runs.lines().count(), 1, "{runs}");
-        assert_eq!(
-            runs.trim(),
-            "__client __pane watch o/r~ab12 --interval-ms 250"
-        );
-        // Both viewers have gone; the reader goes with them, and a new
-        // viewer starts it again.
-        timeout(Duration::from_secs(5), async {
-            loop {
-                let _ = screens(address, path, 1).await;
-                if std::fs::read_to_string(&log).unwrap().lines().count() == 2 {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("the reader outlived its last viewer");
-        task.abort();
-    }
-
-    /// The history above the screen is its own frame, sent before the screen
-    /// and again only when it changes; a viewer who joins a running reader
-    /// gets the history it already read, not just the latest screen.
-    #[tokio::test]
-    async fn a_viewer_gets_the_history_above_the_screen() {
-        let client = Client::new("history", "", 0);
-        let script = "#!/bin/sh\n\
-             echo '{\"history\":\"old\"}'\necho '{\"screen\":\"one\"}'\nsleep 0.3\n\
-             echo '{\"screen\":\"two\"}'\nsleep 1\necho '{\"screen\":\"three\"}'\nexec sleep 30\n";
-        std::fs::write(client.program(), script).unwrap();
-        let (address, task) = served(&client).await;
-        let path = "/secret/api/pane/o%2Fr~ab12";
-        // The early viewer stays until "three", so the late one joins the
-        // same reader rather than starting another.
-        let (early, late) = tokio::join!(screens(address, path, 3), async {
-            tokio::time::sleep(Duration::from_millis(600)).await;
-            screens(address, path, 1).await
-        });
-        assert_eq!(
-            early,
-            [
-                "{\"history\":\"old\"}",
-                "{\"screen\":\"one\"}",
-                "{\"screen\":\"two\"}",
-                "{\"screen\":\"three\"}"
-            ],
-            "{early:?}"
-        );
-        assert_eq!(
-            late,
-            ["{\"history\":\"old\"}", "{\"screen\":\"two\"}"],
-            "{late:?}"
-        );
-        task.abort();
-    }
-
-    /// Stopping a reader stops everything it started: with the factory in a
-    /// VM the client is a wrapper whose ssh child would otherwise outlive it,
-    /// still reading the pane in the guest.
-    #[tokio::test]
-    async fn a_reader_that_stops_takes_its_children_with_it() {
-        let client = Client::new("group", "", 0);
-        let pid = client.root.join("child");
-        let script = format!(
-            "#!/bin/sh
-sleep 30 &
-echo $! > '{pid}'
-             echo '{{\"screen\":\"one\"}}'
-wait
-",
-            pid = pid.display()
-        );
-        std::fs::write(client.program(), script).unwrap();
-        let (address, task) = served(&client).await;
-        let _ = screens(address, "/secret/api/pane/o%2Fr%7Eab12", 1).await;
-        let child: i32 = std::fs::read_to_string(&pid)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        timeout(Duration::from_secs(5), async {
-            while still_running(child) {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("the reader's child outlived its last viewer");
-        task.abort();
-    }
-
-    /// Whether `pid` is still running: field 3 of `/proc/<pid>/stat`, after
-    /// the parenthesized comm, which can hold spaces. A `Z` process has
-    /// exited and only waits to be reaped, which is what this test meets: the
-    /// group kill takes the reader and its child at once, so nothing in this
-    /// process is left to reap the child — where the namespace's init reaps
-    /// what it did not start (a machine's does; a test job's container need
-    /// not) it is gone, and where it does not, it sits as a zombie. Exited
-    /// either way, and not still reading a pane, though `kill(pid, 0)` counts
-    /// a zombie as present.
-    #[cfg(target_os = "linux")]
-    fn still_running(pid: i32) -> bool {
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            return false;
-        };
-        stat.rsplit_once(") ")
-            .and_then(|(_, rest)| rest.split_whitespace().next())
-            .is_some_and(|state| state != "Z")
-    }
-
-    /// Without `/proc`, whether the process is there at all; the platforms
-    /// that have none reap orphaned children themselves.
-    #[cfg(not(target_os = "linux"))]
-    fn still_running(pid: i32) -> bool {
-        // SAFETY: signal 0 only asks whether the process is there.
-        unsafe { libc::kill(pid, 0) == 0 }
-    }
-
-    /// Two spellings of one session are one pane, read once.
-    #[test]
-    fn a_pane_is_named_as_ssf_names_it() {
-        assert_eq!(pane_session("o%2Fr%7Eab12").unwrap(), "o/r~ab12");
-        assert_eq!(pane_session("o%2Fr%237").unwrap(), "o/r#7");
-        assert!(pane_session("nonsense").is_err());
     }
 
     /// The endpoint has no message route: `api/message` was removed with the
     /// overlay's message box (#439), and a POST to it is a path under the
     /// capability that is not a write route -- the same `405` any other path
-    /// gets. The only input is the pane mirror's terminal (#414), which the
+    /// gets; so is `api/pane/input`, removed with the pane mirror (#564). The
+    /// only input is the live terminal (`api/term/<session>`), which the
     /// factory's `item_pane_input` keeps off item sessions by default.
     #[tokio::test]
     async fn there_is_no_route_that_types_at_an_agent() {
@@ -3059,8 +2368,10 @@ wait
         std::fs::remove_file(client.program()).unwrap();
         let (address, task) = served(&client).await;
         let body = json!({"repo":"o/r","number":7,"text":"hello"}).to_string();
-        let response = post_json(address, "/secret/api/message", &body).await;
-        assert!(response.starts_with("HTTP/1.1 405"), "{response}");
+        for path in ["/secret/api/message", "/secret/api/pane/input"] {
+            let response = post_json(address, path, &body).await;
+            assert!(response.starts_with("HTTP/1.1 405"), "{path}: {response}");
+        }
         assert!(client.args().is_empty(), "a refused write ran the client");
         task.abort();
     }

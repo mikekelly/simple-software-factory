@@ -496,11 +496,6 @@ does not submit (ESC CR), and a paste is always sent as a bracketed paste.
 Half an hour with nothing typed disconnects it. When the socket closes the
 terminal says so and offers **Reconnect**.
 
-The older pane mirror (`pane-render.js`, `pane-keys.js`, the worker's
-`ssf-pane` port and `api/pane/<session>`) is no longer opened for any session;
-it is kept until [#564](https://github.com/mikekelly/simple-software-factory/issues/564)
-removes it.
-
 ## Reaching a factory on a tailnet
 
 A tailnet factory needs `dashboard.bind` set to a Tailscale address; see
@@ -530,7 +525,7 @@ forward, and keep tailnet ACLs restrictive.
   text is ever parsed as HTML and no GitHub style leaks in.
 - The **service worker** also carries every write and the two listings the
   forms' pickers need: `api/assign`, `api/handover`, `api/release`, the
-  scratch routes, `api/pane/input`, `api/agents` and `api/models/<harness>`,
+  scratch routes, `api/agents` and `api/models/<harness>`,
   and it opens a terminal's `api/term/<session>` WebSocket, passing it on a port. The terminal is the extension's own page (`terminal.html`), framed over
   github.com and listed in `web_accessible_resources` for github.com alone; it
   talks to no factory itself, since Chrome's local-network rules can hold a
@@ -580,18 +575,7 @@ forward, and keep tailnet ACLs restrictive.
   by the agent on #N*: that card is a pointer to the same session, and its own
   card carries the actions. A comment on the item still reaches the session that
   works it.
-- The (unused) item mirror draws the pane's rows at the window's width, not the pane's, so a
-  line longer than the panel wraps and the pane's own column layout is kept
-  only where it matters: in a clipped border row and a table's own box. A table
-  the pane had already wrapped at its own width cannot be put back together, and
-  a box's vertical strokes show small gaps between rows, which are 1.25em apart.
-
 ## Credits
-
-The terminal's renderer and key mapping (`pane-render.js`, `pane-keys.js`, and
-the painted-glyph rules in `terminal.css`) are ported from
-[collie](https://github.com/AltanS/collie) by Altan Sarisin, under the MIT
-license; each file carries the notice.
 
 The live terminal is [xterm.js](https://github.com/xtermjs/xterm.js) with
 its fit addon, vendored unmodified in `vendor/xterm/` (a Manifest V3 extension

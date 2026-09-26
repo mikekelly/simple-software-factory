@@ -840,48 +840,6 @@ impl Herdr {
         self.screen_from(pane_id, "visible").await
     }
 
-    /// The visible screen of a pane with its colours, as herdr renders it
-    /// (`pane read --source visible --format ansi`): what the web pane mirror
-    /// shows.
-    pub async fn screen_ansi(&self, pane_id: &str) -> Result<String> {
-        self.run_raw(&[
-            "pane", "read", pane_id, "--source", "visible", "--format", "ansi",
-        ])
-        .await
-    }
-
-    /// The last `lines` rows of a pane with their colours, ending with the
-    /// visible screen (`pane read --source recent --format ansi`): the web
-    /// pane mirror's history.
-    pub async fn recent_ansi(&self, pane_id: &str, lines: u32) -> Result<String> {
-        let lines = lines.to_string();
-        self.run_raw(&[
-            "pane", "read", pane_id, "--source", "recent", "--lines", &lines, "--format", "ansi",
-        ])
-        .await
-    }
-
-    /// Type into a pane as a person at it would: `text` is written as it is
-    /// (control characters and escape sequences included, which is what a
-    /// terminal sends for Enter, Backspace or an arrow key), then `keys` are
-    /// pressed by name (`enter`, `ctrl+c`, `esc`).
-    pub async fn type_input(
-        &self,
-        pane_id: &str,
-        text: Option<&str>,
-        keys: &[String],
-    ) -> Result<()> {
-        if let Some(text) = text.filter(|text| !text.is_empty()) {
-            self.run(&["pane", "send-text", pane_id, text]).await?;
-        }
-        if !keys.is_empty() {
-            let mut args = vec!["pane", "send-keys", pane_id];
-            args.extend(keys.iter().map(String::as_str));
-            self.run(&args).await?;
-        }
-        Ok(())
-    }
-
     /// Recent logical lines retain more of a collapsed or scrolled composer
     /// than the visible viewport, which is what prompt recovery needs.
     async fn recent_screen(&self, pane_id: &str) -> Result<Vec<String>> {

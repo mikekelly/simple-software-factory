@@ -51,52 +51,6 @@ pub fn name_of(handle: &str) -> Option<&str> {
     handle.strip_prefix(HANDLE_PREFIX)
 }
 
-/// A key as `tmux send-keys` names it, from the names the pane mirror sends
-/// (herdr's: `enter`, `esc`, `ctrl+c`, `shift+tab`, `f5`). `None` for a
-/// name tmux has no key for; a single character is typed literally by the
-/// caller, not here.
-pub fn key_name(key: &str) -> Option<String> {
-    let lower = key.to_ascii_lowercase();
-    let named = match lower.as_str() {
-        "enter" | "return" => "Enter",
-        "esc" | "escape" => "Escape",
-        "tab" => "Tab",
-        "shift+tab" | "backtab" => "BTab",
-        "backspace" | "bspace" => "BSpace",
-        "space" => "Space",
-        "up" => "Up",
-        "down" => "Down",
-        "left" => "Left",
-        "right" => "Right",
-        "home" => "Home",
-        "end" => "End",
-        "pageup" | "pgup" => "PPage",
-        "pagedown" | "pgdn" => "NPage",
-        "delete" | "del" => "DC",
-        "insert" | "ins" => "IC",
-        _ => {
-            if let Some(n) = lower.strip_prefix('f')
-                && let Ok(n) = n.parse::<u8>()
-                && (1..=12).contains(&n)
-            {
-                return Some(format!("F{n}"));
-            }
-            for (prefix, tmux) in [("ctrl+", "C-"), ("alt+", "M-"), ("meta+", "M-")] {
-                if let Some(rest) = lower.strip_prefix(prefix) {
-                    let inner = if rest.chars().count() == 1 {
-                        rest.to_string()
-                    } else {
-                        key_name(rest)?
-                    };
-                    return Some(format!("{tmux}{inner}"));
-                }
-            }
-            return None;
-        }
-    };
-    Some(named.to_string())
-}
-
 /// The target of a session, matched exactly (a bare name is a prefix match).
 fn session_target(name: &str) -> String {
     format!("={name}")
@@ -418,29 +372,6 @@ impl Tmux {
         Ok(())
     }
 
-    /// Type into the session's pane as a person would: `text` literally,
-    /// then each named key.
-    pub async fn type_input(&self, name: &str, text: Option<&str>, keys: &[String]) -> Result<()> {
-        let target = pane_target(name);
-        if let Some(text) = text.filter(|t| !t.is_empty()) {
-            self.run(&["send-keys", "-t", &target, "-l", "--", text], None)
-                .await?;
-        }
-        for key in keys {
-            if key.chars().count() == 1 {
-                self.run(&["send-keys", "-t", &target, "-l", "--", key], None)
-                    .await?;
-            } else {
-                let Some(named) = key_name(key) else {
-                    bail!("tmux has no key named {key}");
-                };
-                self.run(&["send-keys", "-t", &target, &named], None)
-                    .await?;
-            }
-        }
-        Ok(())
-    }
-
     /// The session's visible screen with its colours, rows joined by
     /// `\r\n`; with `history`, that many rows above it too.
     pub async fn capture(&self, name: &str, history: Option<u32>) -> Result<String> {
@@ -678,25 +609,6 @@ mod tests {
     }
 
     #[test]
-    fn keys_map_to_tmux_names() {
-        for (ours, theirs) in [
-            ("enter", "Enter"),
-            ("esc", "Escape"),
-            ("ctrl+c", "C-c"),
-            ("alt+b", "M-b"),
-            ("shift+tab", "BTab"),
-            ("backspace", "BSpace"),
-            ("f5", "F5"),
-            ("ctrl+up", "C-Up"),
-            ("pageup", "PPage"),
-        ] {
-            assert_eq!(key_name(ours).as_deref(), Some(theirs), "{ours}");
-        }
-        assert_eq!(key_name("f13"), None);
-        assert_eq!(key_name("nonsense"), None);
-    }
-
-    #[test]
     fn ansi_is_stripped_for_matching() {
         assert_eq!(
             strip_ansi("\x1b[1mTrust\x1b[0m this \x1b]0;title\x07folder"),
@@ -843,19 +755,15 @@ mod tests {
             .unwrap();
         assert_eq!(size.trim(), "latest");
         tmux.paste(&name, "hello from ssf").await.unwrap();
-        tmux.type_input(&name, Some("typed"), &["enter".into()])
-            .await
-            .unwrap();
         let mut seen = String::new();
         for _ in 0..20 {
             seen = tmux.capture(&name, Some(100)).await.unwrap();
-            if seen.contains("hello from ssf") && seen.contains("typed") {
+            if seen.contains("hello from ssf") {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert!(seen.contains("hello from ssf"), "{seen:?}");
-        assert!(seen.contains("typed"), "{seen:?}");
         tmux.kill_session(&name).await.unwrap();
         assert!(!tmux.has_session(&name).await.unwrap());
         // A session already gone is fine to kill.

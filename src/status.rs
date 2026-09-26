@@ -40,7 +40,7 @@ pub struct Session {
     /// Whose scratch session this is (a GitHub login); null for a shared
     /// one and for an item's session.
     pub owner_login: Option<String>,
-    /// Whether the web pane mirror may type into this session's pane: always
+    /// Whether this session's live terminal takes typing: always
     /// for a scratch session, for an item's as `item_pane_input` says for
     /// its repository.
     pub pane_input: bool,

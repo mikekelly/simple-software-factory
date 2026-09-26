@@ -183,9 +183,9 @@ the log line below carries the URL actually being served.
 
 Where this page may type into an item's pane, its card has an **Open
 terminal** link. It opens the session's agent pane in a new tab as a live
-terminal (xterm.js), streamed from herdr as the pane draws it. It is not the
-redacted pane mirror: anyone who opens it sees the pane's output as it is,
-GitHub tokens included.
+terminal (xterm.js), streamed from herdr as the pane draws it. Nothing is
+redacted: anyone who opens it sees the pane's output as it is, GitHub tokens
+included.
 
 The terminal is a full terminal: keys, paste and the wheel all reach the pane.
 The link shows, and the server opens the terminal, only where both of these are
@@ -268,7 +268,6 @@ server's own browser page and its CSS and JavaScript.
 | `GET /<capability>/api/agents` | what `ssf agents --json` prints |
 | `GET /<capability>/api/models/<harness>` | what `ssf models <harness> --json` prints |
 | `GET /<capability>/api/usage` | what `ssf usage --json` prints: each harness's remaining provider allowance |
-| `GET /<capability>/api/pane/<session>` | a server-sent events mirror of a session's agent pane (below) |
 | `GET /<capability>/api/term/<session>` | a WebSocket terminal: a scratch session's tmux session, or an item session's herdr pane ([Terminal](#terminal)) |
 | `GET /<capability>/chrome-extension.zip` | this build's [Chrome extension](#chrome-extension) as a zip download (`ssf-chrome-extension.zip`), which the browser page links to |
 
@@ -310,45 +309,12 @@ reads each harness's stored credential read-only and never refreshes it, and
 keeps each provider's answer for five minutes in `usage.json` under its state
 directory; see [Provider usage](harnesses.md#provider-usage).
 
-`api/pane/<session>` names the session percent-encoded (`owner%2Fname%2342`
-for an item, `owner%2Fname~id` for a scratch session). It sends an
-`event: screen` frame whose `data` is `{"screen": "..."}`, the pane's visible
-screen with its ANSI colours as `herdr pane read --source visible --format ansi`
-prints it, with anything that looks like a GitHub token (`ghp_`, `gho_`,
-`ghs_`, `ghu_`, `github_pat_`) replaced by `<redacted>`, and another only when
-the screen changes. An `event: history` frame whose `data` is
-`{"history": "..."}` carries the rows above the screen, the pane's history,
-redacted the same way: `herdr pane read --source recent --lines 1000 --format
-ansi` with the screen's own rows taken off its end, so at most 1000 rows with
-the screen. It comes before the first screen, is read every two seconds and
-is sent again only when it changes; a client shows it above the screen, as
-scrollback. `event: error` with
-`{"error": ...}` says the pane cannot be read (no workspace, no agent running)
-and ends the stream, so a client does not ask again on its own.
-The screen is read about four times a second, and only while someone watches:
-every viewer of one pane shares a single reader, which stops when the last
-viewer disconnects. At most 16 panes are read at once; a viewer of a
-seventeenth gets an error frame. The reader asks herdr directly rather than the daemon, so
-the mirror does not freeze while a pass is busy. On an Intel i3-9100 a reader
-cost about 1.5% of one core whether the screen was idle or changing, shared by
-all its viewers; a screen changing four times a second sent about 26 KB/s per
-viewer. The history is the larger part: a colourful 1000-row history frame
-measured about 480 KB, so a pane whose history changes all the time can send
-up to about 240 KB/s per viewer, and an idle one sends it once.
-
-A scratch session runs in tmux rather than in a herdr pane
-([sessions.md](sessions.md#scratch-sessions)), so its mirror reads tmux
-instead: the screen is `tmux capture-pane -p -e` and the history `tmux
-capture-pane -p -e -S -1000`, the same frames with the same redaction. A
-scratch session still in the herdr pane it was started in before that is read
-from herdr until it is next started.
-
 ### Terminal
 
 `GET /<capability>/api/term/<session>` is a WebSocket (version 13) upgrade
 that attaches a live terminal to a scratch session's tmux session: the server
 runs `ssf __pane attach <session>` (`tmux attach-session`) in a PTY, through
-the same client transport as the pane mirror, so a factory in a VM is attached
+the same client transport as the status stream, so a factory in a VM is attached
 to in the guest. For an item's session (`owner%2Fname%2342`) it streams the
 herdr pane instead (below). Anything that is not a session is `400`, as is a
 request that is not a WebSocket upgrade. Since a scratch terminal types at an
@@ -369,7 +335,7 @@ The protocol:
   not be attached to, in which case what tmux or ssf said is the last output --
   or when the client closes it.
 
-Unlike the mirror, the terminal shows no redaction: it is the session's own
+The terminal shows no redaction: it is the session's own
 terminal, as `tmux attach` in a shell on the factory shows it. The Chrome
 extension's floating terminal window uses it for scratch sessions and, as below, item sessions.
 
@@ -420,7 +386,7 @@ Besides the fields the TUI and the server's page render, each card carries:
 | `effort` | the level the card's stack is on, beside `harness` and `model`; empty while `next_launch` is set, since the running session was launched with a stack ssf does not have on record |
 | `worktree_path` | the workspace the session runs in; `null` when the item has none |
 | `handover` | the hand-over waiting on the daemon for the item (`harness`, `model`, `effort`, `summary_chars`, `by`, `requested_at`), or `null` |
-| `pane_input` | whether `api/pane/input` accepts typing for this session: always for a scratch session, for an item's as `item_pane_input` says for its repository |
+| `pane_input` | whether the session's live terminal takes typing: always for a scratch session, for an item's as `item_pane_input` says for its repository. Clients offer an item's terminal only where it is `true` |
 | `activity_note` | why `last_activity_at` is null: the harness keeps no local transcript ssf can read (`omp`; ssf reads Claude Code, Codex and Grok), the session's conversation is not identified yet, or ssf has not found its transcript yet. Clients show that sentence where the time would be |
 
 A client holding several factories can label a card without asking which stream
@@ -483,9 +449,10 @@ harnesses.
 
 ### Write endpoints
 
-Seven POST routes. The first three are one `ssf` command for one item, named
+Six POST routes. The first three are one `ssf` command for one item, named
 by repository and number; the scratch routes are `ssf scratch`'s, named by
-repository or by session id; `api/pane/input` types into a session's pane. Their bodies are the command's own arguments; a field a route does not
+repository or by session id. Typing into a session's pane is the
+[terminal](#terminal)'s, not a write route. Their bodies are the command's own arguments; a field a route does not
 take is refused rather than ignored, so a misspelled one cannot ask for
 something nobody meant.
 
@@ -496,7 +463,6 @@ POST /<capability>/api/release  {"repo": "owner/name", "number": 42}
 POST /<capability>/api/scratch         {"repo": "owner/name", "harness": "claude", "model": "opus", "effort": "low", "for": "octocat"}
 POST /<capability>/api/scratch/release {"session": "owner/name~id", "force": false}
 POST /<capability>/api/scratch/resume  {"session": "owner/name~id"}
-POST /<capability>/api/pane/input      {"session": "owner/name~id", "text": "yes", "keys": ["Enter"]}
 ```
 
 - **assign** starts a session on an item that has none: the bot is assigned on
@@ -521,20 +487,13 @@ POST /<capability>/api/pane/input      {"session": "owner/name~id", "text": "yes
   so a client can show what would be lost and ask again with `"force": true`.
 - **scratch/resume** starts a scratch session that is `off` again in its
   workspace, or a released one in a new workspace; one that is live is `409`.
-- **pane/input** types into a session's agent pane: `text` is sent as typed
-  (control characters included), then `keys`, in order, as herdr's `pane
-  send-keys` presses them (for a scratch session in tmux, `tmux send-keys`, with
-  the same names mapped to tmux's): key names such as `Enter`, `Space`, `Backspace` or
-  `ctrl+c`, or a single literal character (`a`, `.`, `é`), which is how the
-  extension's terminal types a keystroke at a time. A space or control
-  character is not a key; it goes by name. The text is not logged. A scratch
-  session always takes typing. An item session's pane takes it only where
-  `item_pane_input` is on for its repository (`daemon.item_pane_input`,
-  overridden by `repo.item_pane_input`; off by default), and is otherwise
-  refused with `400`: a person speaks to an item's agent by commenting on the
-  item, where everyone working it can read the exchange (#439). Each card and
-  scratch entry in the snapshot carries `pane_input`, whether its pane takes
-  typing, so a client need not know the rule.
+
+A scratch session's terminal always takes typing. An item session's takes it
+only where `item_pane_input` is on for its repository (`daemon.item_pane_input`,
+overridden by `repo.item_pane_input`; off by default): a person speaks to an
+item's agent by commenting on the item, where everyone working it can read the
+exchange (#439). Each card and scratch entry in the snapshot carries
+`pane_input`, whether its pane takes typing, so a client need not know the rule.
 
 Each answers with the same JSON its command prints under `--json`:
 
