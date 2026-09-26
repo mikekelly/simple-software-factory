@@ -287,7 +287,7 @@ fn a_blocked_session_is_flagged_everywhere() {
     let s = sessions(&cfg(), &st, Some(&[]));
     let b = s[0].blocked.as_ref().unwrap();
     assert_eq!(b.reason, "login");
-    assert!(b.fix.contains("claude auth login"), "{}", b.fix);
+    assert!(b.fix.contains("claude, sign in"), "{}", b.fix);
     assert_eq!(b.harness_name, "Claude Code");
     assert!(
         b.describe()

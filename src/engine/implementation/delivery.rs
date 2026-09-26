@@ -524,6 +524,53 @@ impl Engine {
         }
     }
 
+    /// What a launch for `number` reports when its harness is held at a
+    /// question ssf does not know (see `herdr::ON_HOLD`): a `blocked`
+    /// event on the item naming the pane, posted in the background, as
+    /// [`post_event`](Self::post_event) would, because the launch itself
+    /// waits on the pane until a person has answered it (#541).
+    pub(in crate::engine) fn hold_hook(
+        &self,
+        repo: &RepoConfig,
+        number: u64,
+        harness: &str,
+    ) -> crate::herdr::HoldHook {
+        let enabled = self.cfg.event_comments(repo);
+        let origin = Origin::new(&repo.name, number);
+        let kind = match self.peek(repo, number).and_then(|s| s.kind.as_deref()) {
+            Some("pull_request") => "pull request",
+            _ => "issue",
+        };
+        let gh = self.gh.clone();
+        let repo_name = repo.name.clone();
+        let harness = harness.to_string();
+        std::sync::Arc::new(move |pane: &str| {
+            let Some(origin) = origin.as_ref().filter(|_| enabled) else {
+                return;
+            };
+            let Some((owner, name)) = repo_name.split_once('/') else {
+                return;
+            };
+            let event = Event::Blocked {
+                harness: login::display_name(&harness),
+                reason: format!(
+                    "the session is stuck at a harness question ssf does not know, in herdr pane {pane}"
+                ),
+                fix: format!(
+                    "open the pane (`ssf vm attach` in VM mode, herdr on the host) and answer it; \
+the prompt is sent once it is answered. For a first-run screen, re-run `ssf vm login {harness}`"
+                ),
+            };
+            let body = events::comment(origin, kind, &event);
+            let (gh, owner, name) = (gh.clone(), owner.to_string(), name.to_string());
+            tokio::spawn(async move {
+                if let Err(e) = gh.comment(&owner, &name, number, &body).await {
+                    warn!("could not post the hold event on {owner}/{name}#{number}: {e:#}");
+                }
+            });
+        })
+    }
+
     /// What the harness of `number`'s workspace is started with, for an
     /// `attached` post: the repository's harness, model and effort as
     /// configured (the item's overrides applied), the driver, and the

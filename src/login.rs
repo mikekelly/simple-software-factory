@@ -492,6 +492,10 @@ pub fn how_to_sign_in(harness: &str) -> String {
     let host = match harness {
         "gemini" => "gemini (pick the Google account option)".to_string(),
         "pi" | "omp" => format!("{harness}, then /login"),
+        // The harness's own TUI, so its first-run screens are cleared too.
+        "claude" | "codex" | "copilot" => {
+            format!("{harness}, sign in, clear its first-run screens and quit")
+        }
         other => match crate::vm::login(other) {
             Some(l) => l.argv.join(" "),
             None => format!("sign {other} in"),
@@ -683,7 +687,7 @@ mod tests {
         let p = probe("nope");
         assert_eq!(p.state, LoginState::Unknown);
         assert!(p.fingerprint.is_none());
-        assert!(how_to_sign_in("claude").contains("claude auth login"));
+        assert!(how_to_sign_in("claude").contains("claude, sign in"));
         assert!(how_to_sign_in("pi").contains("/login"));
         assert_eq!(display_name("claude"), "Claude Code");
     }

@@ -839,19 +839,27 @@ impl Vm {
 
     /// Run a harness's login in the guest with this terminal. The first
     /// URL it prints is opened in the host browser when the flow is plain
-    /// text and the host has a display (it stays on screen either way).
+    /// text and the host has a display (it stays on screen either way). It
+    /// runs in the guest projects root, so folder trust accepted there
+    /// covers the worktrees underneath.
     /// Returns whether the credential is in place afterwards.
     pub fn login(&self, l: &Login) -> Result<bool> {
         if !self.ssh_ok() {
             bail!("the VM is not reachable; `ssf vm start` first");
         }
-        let remote: Vec<String> = l.argv.iter().map(|s| s.to_string()).collect();
         println!(
-            "{}: running `{}` in the VM; {}.",
+            "{}: running `{}` in {GUEST_PROJECTS_DIR} in the VM; {}.",
             l.harness,
-            remote.join(" "),
+            l.argv.join(" "),
             l.hint
         );
+        // In the projects root, so a folder trust accepted there covers the
+        // worktrees underneath it (#541).
+        let remote: Vec<String> = ["env", "-C", GUEST_PROJECTS_DIR]
+            .iter()
+            .chain(l.argv)
+            .map(|s| s.to_string())
+            .collect();
         let mut cmd = self.ssh(&remote, true);
         let omp = l.harness == "omp";
         let status = if omp || (l.open_url && host_has_display()) {

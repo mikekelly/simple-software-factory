@@ -235,23 +235,26 @@ impl Engine {
             &eff.harness,
             st.prompts_sent + 1,
         );
-        let d = self
-            .driver(repo)
-            .deliver(
-                &worktree_id,
-                st.terminal_handle.as_deref(),
-                Relaunch {
-                    command: &relaunch,
-                    resume_command: resume.as_deref(),
-                    harness: &eff.harness,
-                    title: &title,
-                    text: relaunch_text,
-                    first_prompt,
-                    channel: channel
-                        .as_ref()
-                        .map(|(mailbox, sequence)| (mailbox.as_path(), *sequence)),
-                },
-                text,
+        let hold = self.hold_hook(repo, target, &eff.harness);
+        let d = crate::herdr::ON_HOLD
+            .scope(
+                hold,
+                self.driver(repo).deliver(
+                    &worktree_id,
+                    st.terminal_handle.as_deref(),
+                    Relaunch {
+                        command: &relaunch,
+                        resume_command: resume.as_deref(),
+                        harness: &eff.harness,
+                        title: &title,
+                        text: relaunch_text,
+                        first_prompt,
+                        channel: channel
+                            .as_ref()
+                            .map(|(mailbox, sequence)| (mailbox.as_path(), *sequence)),
+                    },
+                    text,
+                ),
             )
             .await?;
         if d.relaunched {

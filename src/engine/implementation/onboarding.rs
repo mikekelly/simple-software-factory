@@ -261,9 +261,13 @@ impl Engine {
                     tokens,
                 );
                 let text = self.initial_text(repo, issue, &mine);
-                let handle = match self
-                    .driver(repo)
-                    .start(&created.id, &cmd, &title, &eff.harness, &text)
+                let hold = self.hold_hook(repo, issue.number, &eff.harness);
+                let handle = match crate::herdr::ON_HOLD
+                    .scope(
+                        hold,
+                        self.driver(repo)
+                            .start(&created.id, &cmd, &title, &eff.harness, &text),
+                    )
                     .await
                 {
                     Ok(handle) => handle,

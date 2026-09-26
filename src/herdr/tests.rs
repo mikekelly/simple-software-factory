@@ -1025,10 +1025,10 @@ fn the_screen_decides_what_to_do_after_a_wait() {
   /init - create an AGENTS.md file
 ▌ Ask Codex to do anything";
     assert_eq!(settle_step("idle", ready), Settle::Ready);
-    // A question that is not about trust: ssf has no answer for it, so
-    // the prompt goes in anyway and the harness queues it.
+    // A question that is not about trust: ssf has no answer for it, and
+    // a prompt pasted into it is lost, so the session is held (#541).
     let question = "Do you want to create an AGENTS.md file?\n❯ Yes\n  No";
-    assert_eq!(settle_step("blocked", question), Settle::AskAnyway);
+    assert_eq!(settle_step("blocked", question), Settle::Held);
     assert_eq!(settle_step("working", ready), Settle::Ready);
     // An agent already working is past any first-run dialog, whatever
     // the screen has on it: what is there is its own output.
@@ -1933,4 +1933,108 @@ LONG-PROMPT-OK and nothing else."
         let _ = h.run(&["workspace", "close", src]).await;
     }
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A harness at a question ssf does not know is held, past the settle
+/// deadline, until a person answers it; the hold is reported once (#541).
+#[tokio::test]
+async fn an_unknown_question_holds_the_launch_and_reports_once() {
+    let base = std::env::temp_dir().join(format!("ssf-herdr-hold-{}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    let fake = base.join("herdr");
+    // Blocked on a question for the first eight agent listings, then idle
+    // at a composer: a person answered it.
+    crate::test_support::write_executable(
+        &fake,
+        r#"#!/bin/sh
+d="$(dirname "$0")"
+printf '%s\n' "$*" >> "$d/calls"
+n=$(cat "$d/n" 2>/dev/null || echo 0)
+case "$1 $2" in
+  "agent list")
+    n=$((n+1)); echo $n > "$d/n"
+    if [ $n -le 8 ]; then st=blocked; else st=idle; fi
+    echo "{\"agents\":[{\"agent\":\"claude\",\"agent_status\":\"$st\",\"pane_id\":\"w7:p1\",\"workspace_id\":\"w7\"}]}"
+    ;;
+  "agent wait")
+    if [ $n -le 8 ]; then st=blocked; else st=idle; fi
+    echo "{\"agent_status\":\"$st\"}"
+    ;;
+  "pane read")
+    if [ $n -le 8 ]; then
+      printf '%s\n' 'Choose the text style that looks best' '❯ 1. Dark mode' '  2. Light mode'
+    else
+      printf '%s\n' '> Try "fix lint errors"'
+    fi
+    ;;
+esac
+"#,
+    );
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        // Shorter than the hold: the deadline must not end a held launch.
+        tui_idle_timeout_ms: 100,
+        ..HerdrConfig::default()
+    });
+    let reports = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = reports.clone();
+    let hook: HoldHook = std::sync::Arc::new(move |pane: &str| {
+        seen.lock().unwrap().push(pane.to_string());
+    });
+    let state = ON_HOLD
+        .scope(hook, h.settle_harness("w7:p1", "claude"))
+        .await
+        .unwrap();
+    assert_eq!(state, "idle");
+    assert_eq!(*reports.lock().unwrap(), vec!["w7:p1".to_string()]);
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(!calls.contains("send-keys"), "{calls}");
+    assert!(!calls.contains("send-text"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// A prompt herdr refuses because the agent is at a question is held and
+/// sent once the question is answered, never pasted into it (#541).
+#[tokio::test]
+async fn a_blocked_prompt_is_held_not_pasted() {
+    let base = std::env::temp_dir().join(format!("ssf-herdr-hold-prompt-{}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    let fake = base.join("herdr");
+    crate::test_support::write_executable(
+        &fake,
+        r#"#!/bin/sh
+d="$(dirname "$0")"
+printf '%s\n' "$*" >> "$d/calls"
+n=$(cat "$d/n" 2>/dev/null || echo 0)
+case "$1 $2" in
+  "agent list")
+    n=$((n+1)); echo $n > "$d/n"
+    if [ $n -le 3 ]; then st=blocked; else st=idle; fi
+    echo "{\"agents\":[{\"agent\":\"claude\",\"agent_status\":\"$st\",\"pane_id\":\"w7:p1\",\"workspace_id\":\"w7\"}]}"
+    ;;
+  "pane read")
+    printf '%s\n' 'Allow this edit?' '❯ 1. Yes' '  2. No'
+    ;;
+  "agent prompt")
+    if [ $n -le 3 ]; then echo '[agent_blocked] agent is blocked' >&2; exit 1; fi
+    ;;
+esac
+"#,
+    );
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+    let reports = std::sync::Arc::new(std::sync::Mutex::new(0));
+    let seen = reports.clone();
+    let hook: HoldHook = std::sync::Arc::new(move |_: &str| *seen.lock().unwrap() += 1);
+    ON_HOLD
+        .scope(hook, h.send_prompt("w7:p1", "keep going"))
+        .await
+        .unwrap();
+    assert_eq!(*reports.lock().unwrap(), 1);
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert_eq!(calls.matches("agent prompt").count(), 2, "{calls}");
+    assert!(!calls.contains("send-text"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
 }

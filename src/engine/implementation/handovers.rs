@@ -411,9 +411,13 @@ which harness is running in its workspaces"
             tokens,
         );
         self.entry(repo, number).launched_at = Some(now_iso());
-        let handle = match self
-            .driver(repo)
-            .start(&wt, &cmd, &title, &eff.harness, &text)
+        let hold = self.hold_hook(repo, number, &eff.harness);
+        let handle = match crate::herdr::ON_HOLD
+            .scope(
+                hold,
+                self.driver(repo)
+                    .start(&wt, &cmd, &title, &eff.harness, &text),
+            )
             .await
         {
             Ok(handle) => handle,

@@ -37,7 +37,7 @@ async fn a_session_at_a_login_prompt_is_blocked_told_and_held() {
             login::how_to_sign_in("claude").replace('`', "")
         )
     );
-    assert!(posts[0].1.contains("fix: claude auth login on the host"));
+    assert!(posts[0].1.contains("claude, sign in"));
     // Nothing was pasted, and the activity is still owed: `updated_at`
     // did not move, the comment is not marked seen, no failure counted.
     assert!(d.log().is_empty(), "no delivery into a blocked session");
@@ -58,7 +58,7 @@ async fn a_session_at_a_login_prompt_is_blocked_told_and_held() {
             .contains("Claude Code has been at its sign-in prompt"),
         "{err:#}"
     );
-    assert!(err.to_string().contains("claude auth login"), "{err:#}");
+    assert!(err.to_string().contains("claude, sign in"), "{err:#}");
     assert!(d.log().is_empty());
 }
 #[tokio::test]
