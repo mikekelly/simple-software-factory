@@ -200,7 +200,9 @@ Applies when the factory should run on a machine the person rents rather
 than on their own computer: a bot account's dedicated server, or a VPS from
 Hetzner, Linode, OVH or similar.
 
-The host runs the factory in host mode with the standalone binaries; the
+This section is the host-mode fallback; prefer a guest on the server
+where possible ([install.md](install.md#a-server-guest-first)). The host
+runs the factory in host mode with the standalone binaries; the
 person operates it from their own machine as a client over SSH. Nothing
 here needs KVM, Docker or a desktop session, though it does need a Unix
 account the agents will run as: in host mode agents can reach that user's

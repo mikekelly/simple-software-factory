@@ -63,7 +63,8 @@ doctor` checkpoints; run them.
 7. **Check the machine before proposing where the factory runs.** The
    install document opens with the probes: with the resources for a VM,
    propose the VM (herdr inside it); without them, propose host mode or a
-   rented host and let the person choose. Let `ssf vm
+   rented host and let the person choose. On a server, prefer a guest
+   (Firecracker, else Incus) over host mode. Let `ssf vm
    build` size the VM and tell the person what it picked; pass `--vcpus`,
    `--mem-mib` or `--data-gib` only when they ask.
 8. **Never delete a worktree directory or `ssf purge --force`** on the
