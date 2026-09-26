@@ -4,7 +4,7 @@ Read this when someone asks you to set up Simple Software Factory for them, from
 
 ## 0. Who this is for, and the outcome
 
-You are an agent doing this on behalf of a person, on a machine you have not seen before. The person owns every decision that costs money, creates an account, needs `sudo`, or widens who can drive the factory. You own the probing, the reading, the commands, and the diagnosis.
+You are an agent doing this on behalf of a person, on a machine you have not seen before. The person owns every decision that costs money, creates an account, needs root on their machine, or widens who can drive the factory. You own the probing, the reading, the unprivileged commands, and the diagnosis.
 
 At the end:
 
@@ -18,30 +18,27 @@ At the end:
 
 Work through the sections in order. Every step says what a good result looks like and what is safe to re-run.
 
-## 1. Facts to gather, and consent to obtain
+## 1. How to ask, and what needs consent
 
-Gather these before running anything. Probe what you can; ask for the rest.
+**Ask one decision at a time, at the step that needs it; never present the full list of questions up front.** Before the first install command, probe (section 2) and ask only where the factory should run. Every later question lives in the section that needs it:
 
-| Fact | How |
+| Question | Asked in |
 |---|---|
-| OS and architecture | probe: `uname -s -m` |
-| CPU count, RAM, free disk | probe (section 2) |
-| Hardware virtualisation | probe: `/dev/kvm` on Linux, the backend on macOS |
-| A systemd user session | probe: `systemctl --user is-system-running` |
-| `gh`, `herdr` and `tmux` present | probe: `command -v gh herdr tmux` |
-| Does a bot GitHub account exist, or may one be created | **ask** |
-| Which repository to watch | **ask** |
-| Who owns that repository, and can they grant the bot Write | **ask** |
-| Which coding harness they already pay for | **ask** |
-| How much metered spend is acceptable | **ask** |
-| Where the factory should run, when more than one option fits | **ask**, after you present the options |
+| Where the factory runs, after you present the options | section 2 |
+| Whether renting a host is acceptable, and at what cost | section 2, only if a rented host is proposed |
+| Whether a bot GitHub account exists, or may be created | section 6 |
+| Which repository to watch, who owns it, and whether they can grant the bot Write | section 6, Write access |
+| Which harness they already pay for, and any metered API spend | section 8 |
+| The model and effort | section 9 |
+| Who may drive the factory, if not the default | section 7 |
 
-Consent you must obtain explicitly, in words, before acting:
+**Hand privileged commands to the person.** Do not run `sudo` yourself: most harnesses have no terminal for a password, and root on their machine is theirs to use. Prepare everything the command needs first (download the package, print its exact path), give the person the exact command, ask them to run it in their own terminal (in Claude Code, typing `! <command>` runs it in the session), and continue once they confirm and you have checked the result. Run it yourself only when you already have non-interactive root there (`sudo -n true` succeeds), such as inside the factory's own VM.
+
+Consent you must obtain explicitly, in words, at the step it applies to:
 
 | Needs consent | Why |
 |---|---|
 | Creating a GitHub account | it is their identity and their email |
-| Running anything with `sudo` | it changes their machine |
 | Renting a host, or any metered API spending | it costs them money |
 | The harness, model and effort for the repository | it costs them money and sets quality |
 | `--allowed-users '*'` / `--accept-anyone-risk` | it lets anyone on GitHub drive their factory |
@@ -51,7 +48,7 @@ Decide these yourself, no need to ask: which probe commands to run, which instal
 
 ## 2. Choose where the factory runs
 
-Run the probes, then propose. The person picks.
+Run the probes, then propose. The person picks; this is the only question before installing.
 
 ```sh
 uname -s -m
@@ -95,7 +92,7 @@ Renting costs money: get explicit consent before proposing a specific product, a
 
 ### 3.1 Linux package
 
-Download the matching asset from [GitHub Releases](https://github.com/mikekelly/simple-software-factory/releases) and install it (`sudo`, so **ask first**):
+Download the matching asset from [GitHub Releases](https://github.com/mikekelly/simple-software-factory/releases) yourself (`gh release download --repo mikekelly/simple-software-factory --pattern PATTERN`), print its absolute path, then give the person the install command for their family with that path filled in, and wait for them to confirm it ran:
 
 | Family | Command |
 |---|---|
@@ -162,13 +159,13 @@ For a stable name instead of a destination, see the server catalog in [configura
 
 ## 4. `ssf setup` and the service
 
-On the package and Homebrew paths only:
+On the package and Homebrew paths only. On Linux, first check linger with `loginctl show-user "$USER" -p Linger --value`; if it is not `yes`, have the person run `sudo loginctl enable-linger USER` (their user name filled in), because `ssf setup` would otherwise try `sudo` itself. Then:
 
 ```sh
 ssf setup
 ```
 
-It validates any existing configuration, creates the conventional VM server `ssf-server` when nothing is configured yet (selected automatically while it is the only one), enables that server's background service, and on Linux enables login linger through `sudo` so the factory survives logout and starts at boot. Expect it to end with `ssf setup complete; selected service enabled` and a `next:` line naming `ssf vm build` (VM) or `ssf auth login --web` (host).
+It validates any existing configuration, creates the conventional VM server `ssf-server` when nothing is configured yet (selected automatically while it is the only one), enables that server's background service, and on Linux needs login linger so the factory survives logout and starts at boot. Expect it to end with `ssf setup complete; selected service enabled` and a `next:` line naming `ssf vm build` (VM) or `ssf auth login --web` (host).
 
 For host mode, create the local target first so setup prepares that shape:
 
@@ -179,7 +176,7 @@ ssf setup
 
 Do not create both a VM server and a local server just to compare: with more than one configured, unqualified commands require `--server NAME`.
 
-`ssf setup` is idempotent and safe to re-run at any time. It creates no bot, watches no repository, and never removes configuration. If it stops on linger, run the `sudo loginctl enable-linger $USER` command it prints, then run it again.
+`ssf setup` is idempotent and safe to re-run at any time. It creates no bot, watches no repository, and never removes configuration. If it stops on linger, give the person the `sudo loginctl enable-linger $USER` line it prints (with the user name filled in), and run `ssf setup` again once they confirm.
 
 ```sh
 ssf doctor
@@ -231,13 +228,13 @@ herdr machine list
 
 `herdr machine add` inspects the remote herdr and may offer to install, update or replace it; say No to replacing a running server unless the person asks, because its panes are live sessions. Details and the limits of what a local herdr command reaches are in [liaison.md](liaison.md#inspect-the-factorys-herdr-server).
 
-Root: agents in a VM or on a rented server should be able to `sudo` without a password, so they can install what their work needs without stopping. The guest's `ssf` user already has it. On a rented host grant it to the factory account ([Rented hosts](platform-specifics.md#rented-hosts)). Never grant it on the person's own machine in host mode: there, the agents are already running as the person.
+Root: agents in a VM or on a rented server should be able to `sudo` without a password, so they can install what their work needs without stopping. The guest's `ssf` user already has it. On a rented host the person grants it to the factory account; give them the exact commands ([Rented hosts](platform-specifics.md#rented-hosts)). Never grant it on the person's own machine in host mode: there, the agents are already running as the person.
 
 ## 6. The bot account
 
 The factory acts on GitHub as an account of its own. Every agent post carries a byline naming the session and what it runs, and a post from the bot *without* a byline is read as typed by a person, so sharing the person's own account confuses who said what. The bot is a default, not a security boundary: agents run as a Unix user and the account only bounds what `gh` does by default.
 
-**Ask first, then let them create it.** In a private browser window they sign up at `https://github.com/signup` with a separate address (plus-addressing works), verify it, and turn on two-factor authentication. For an organisation, the same thing owned by the organisation as a machine user. Nothing else is needed: no repositories, no keys.
+**Ask now whether a bot account exists; if not, ask whether one may be created, then let them create it.** In a private browser window they sign up at `https://github.com/signup` with a separate address (plus-addressing works), verify it, and turn on two-factor authentication. For an organisation, the same thing owned by the organisation as a machine user. Nothing else is needed: no repositories, no keys.
 
 Sign it in where the factory runs. On a VM target the command runs in the guest, so the VM from section 5 must be up:
 
@@ -252,7 +249,7 @@ Scopes: `repo`, `project` (boards), `admin:public_key` and `admin:ssh_signing_ke
 
 Login records `github.login` and `github.email`, and enrolls a dedicated ed25519 key on the bot account as both an SSH key and a signing key. `ssf auth logout` revokes those keys and forgets the bot.
 
-**Write access.** An invitation is not access. The repository owner invites the bot with Write, from their own account:
+**Write access.** Ask now which repository the factory should watch, who owns it, and whether that owner can grant the bot Write. An invitation is not access. The repository owner invites the bot with Write, from their own account:
 
 ```sh
 gh api repos/OWNER/NAME/collaborators/BOT -X PUT -f permission=push
@@ -295,7 +292,7 @@ ssf repo set OWNER/NAME --allowed-users alice,bob
 
 ## 8. Sign in the harness
 
-Each harness is signed in once, by hand, where the agents run. ssf does not do first-run onboarding.
+Ask now which harness the person already pays for, and whether any metered API spend is acceptable. Each harness is signed in once, by hand, where the agents run. ssf does not do first-run onboarding.
 
 ```sh
 ssf vm login claude      # or codex, gemini, copilot, opencode, pi, omp, grok, crush
@@ -311,7 +308,7 @@ Check: `ssf vm status` lists the harness as logged in on its `logins:` line. `ss
 
 ## 9. Watch the first repository
 
-Get the person's explicit choice of harness, model and effort first. Examples and recommendations are not consent. List what the installation actually offers, in the place the sessions will run:
+Ask now for the person's explicit choice of model and effort, and confirm the harness. Examples and recommendations are not consent. List what the installation actually offers, in the place the sessions will run:
 
 ```sh
 ssf agents
@@ -352,8 +349,8 @@ Upgrade by installing the next release's package the same way it was installed; 
 
 ## 12. Checklist
 
-- [ ] Probes run; the person chose where the factory runs.
-- [ ] Consent recorded for accounts, `sudo`, spending, and the model choice.
+- [ ] Probes run; the person chose where the factory runs, before anything else was asked.
+- [ ] Consent recorded at each step for accounts, spending, and the model choice; every `sudo` command was run by the person.
 - [ ] `ssf --version` and `ssf-server` both present, from the same release.
 - [ ] `ssf setup` complete and the service enabled (package and Homebrew paths).
 - [ ] `ssf vm status` reports a running VM, or herdr is reachable in host mode.
