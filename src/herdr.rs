@@ -1007,6 +1007,20 @@ impl Herdr {
         Ok(settle_step(&agent.status, &text) == Settle::Held)
     }
 
+    /// A paste that bypasses `agent prompt` has no herdr refusal to meet a
+    /// question with, so the pane is looked at first: at a question, or
+    /// unreadable, nothing is pasted and the error is an [`AtQuestion`].
+    async fn no_question_before_paste(&self, pane_id: &str, first: bool) -> Result<()> {
+        if self.at_question_now(pane_id).await.unwrap_or(true) {
+            return Err(AtQuestion {
+                pane: pane_id.to_string(),
+                first,
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     /// Answer a trust dialog in the pane with the keys it takes.
     async fn answer_trust(&self, pane_id: &str, answer: driver::TrustAnswer) -> Result<()> {
         if answer == driver::TrustAnswer::DownEnter {
@@ -1133,6 +1147,7 @@ impl Herdr {
                 bytes = text.len(),
                 "the prompt is too long for one herdr argument; pasting it raw"
             );
+            self.no_question_before_paste(pane_id, false).await?;
             return self.paste_prompt(pane_id, text).await;
         }
         match self
@@ -1409,6 +1424,7 @@ accepting the successful Enter without retrying: {e:#}"
             bytes = text.len(),
             "the first prompt is too long for one herdr argument; typing it into the pane"
         );
+        self.no_question_before_paste(pane_id, true).await?;
         self.paste_prompt(pane_id, text).await?;
         self.wait_until_working(pane_id).await
     }

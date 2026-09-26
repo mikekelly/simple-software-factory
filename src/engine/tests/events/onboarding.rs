@@ -927,3 +927,63 @@ async fn a_launch_held_at_a_question_does_not_hold_up_the_pass() {
             .any(|(_, body)| body.contains("event=unblocked")),
     );
 }
+
+/// A session held at a question before its first message still owes that
+/// message when the block turns into a sign-in screen: once the sign-in
+/// clears, the session is told what it took on rather than merely let go
+/// (#541).
+#[tokio::test]
+async fn a_question_hold_that_turns_into_a_login_still_owes_the_first_message() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    d.with(|s| s.start_at_question = true);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+    stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+    e.tick_repo(&r).await.unwrap();
+    let pane = e.entry(&r, 5).terminal_handle.clone().unwrap();
+    assert!(e.entry(&r, 5).blocked.as_ref().unwrap().first_message_owed);
+    d.log();
+
+    // The question is answered, and a sign-in screen comes up behind it.
+    probe_returning(&mut e, LoginState::SignedOut, Some("cred"));
+    d.with(|s| {
+        s.questions.clear();
+        s.screens.insert(
+            pane.clone(),
+            LOGIN_SCREEN.iter().map(|l| l.to_string()).collect(),
+        );
+    });
+    e.tick_repo(&r).await.unwrap();
+    let b = e.entry(&r, 5).blocked.clone().unwrap();
+    assert_eq!(b.reason, Blocked::LOGIN);
+    assert!(b.first_message_owed, "survives the reason change");
+
+    // Signed in at the terminal: the first message goes, then the block lifts.
+    d.with(|s| {
+        s.screens.insert(
+            pane.clone(),
+            READY_SCREEN.iter().map(|l| l.to_string()).collect(),
+        );
+    });
+    stub.set_issue(5, assigned_item(5, "alice", "u1"));
+    e.tick_repo(&r).await.unwrap();
+    let st = e.entry(&r, 5).clone();
+    assert!(st.blocked.is_none(), "{st:?}");
+    assert_eq!(st.prompts_sent, 1, "the first message was delivered");
+    let prompts = d.prompts();
+    assert!(
+        prompts
+            .iter()
+            .any(|p| p.contains("spawned you as a coding agent")),
+        "the session got its first message, not only the activity: {prompts:?}"
+    );
+    assert!(
+        d.log().iter().any(|l| l.starts_with("deliver:")),
+        "the session was told"
+    );
+}

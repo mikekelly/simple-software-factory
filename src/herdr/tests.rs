@@ -2024,3 +2024,20 @@ async fn a_question_is_seen_to_clear() {
     assert!(!h.at_question_now("w7:p1").await.unwrap());
     std::fs::remove_dir_all(base).unwrap();
 }
+
+/// A prompt too long for one herdr argument is pasted by ssf itself, so no
+/// herdr refusal stands between it and a question: the pane is looked at
+/// first, and nothing is pasted into a question (#541).
+#[tokio::test]
+async fn a_long_prompt_is_not_pasted_into_a_question() {
+    let (base, h) = question_herdr("question-long", 100);
+    let long = "x".repeat(HERDR_ARG_LIMIT + 1);
+    let err = h.send_prompt("w7:p1", &long).await.unwrap_err();
+    assert_eq!(at_question(&err).map(|q| q.first), Some(false));
+    let err = h.send_first_prompt("w7:p1", &long).await.unwrap_err();
+    assert_eq!(at_question(&err).map(|q| q.first), Some(true));
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(!calls.contains("send-text"), "{calls}");
+    assert!(!calls.contains("send-keys"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
+}

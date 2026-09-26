@@ -233,6 +233,7 @@ async fn a_handover_closes_an_outstanding_hold_on_the_item() {
         retries: 0,
         told_at: None,
         tell_failures: 0,
+        first_message_owed: false,
     });
     e.handover("o/r#5", "pi", None, None, Some("half done"), None)
         .await

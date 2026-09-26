@@ -418,6 +418,7 @@ impl Engine {
             retries: 0,
             told_at: None,
             tell_failures: 0,
+            first_message_owed: false,
         };
         warn!(
             repo = repo.name,
@@ -456,6 +457,13 @@ impl Engine {
         let b = self
             .set_blocked_for(repo, number, harness, Blocked::QUESTION, pane.to_string())
             .await;
+        let b = match self.entry(repo, number).blocked.as_mut() {
+            Some(cur) => {
+                cur.first_message_owed = true;
+                cur.clone()
+            }
+            None => b,
+        };
         self.report_blocked(repo, number).await;
         b
     }
@@ -661,9 +669,10 @@ impl Engine {
         // until a session has actually read it, so a note that is still
         // there says no session has had its first message yet, whatever
         // the block was recorded as.
-        let owed = self
-            .peek(repo, number)
-            .is_some_and(|s| s.handover_note.is_some());
+        let owed = b.first_message_owed
+            || self
+                .peek(repo, number)
+                .is_some_and(|s| s.handover_note.is_some());
         // Telling a harness that is running costs a listing read, so it
         // is not tried every pass: once when the block is first looked
         // at, then on the same curve as a restart -- but counted apart

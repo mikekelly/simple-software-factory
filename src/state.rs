@@ -682,6 +682,11 @@ pub struct Blocked {
     pub told_at: Option<String>,
     #[serde(default)]
     pub tell_failures: u32,
+    /// The harness was held at a question before its first message
+    /// (`Blocked::QUESTION`), so that message is still owed whatever the
+    /// block turns into later (a sign-in screen, say).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub first_message_owed: bool,
 }
 
 impl Blocked {

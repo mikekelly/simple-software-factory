@@ -79,6 +79,7 @@ async fn a_blocked_session_is_started_again_once_the_login_is_back() {
         retries: 0,
         told_at: None,
         tell_failures: 0,
+        first_message_owed: false,
     });
     e.state.repo_mut("o/r").issues_etag = Some("etag".into());
     stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
@@ -168,6 +169,7 @@ async fn a_harness_started_again_onto_the_login_prompt_stays_blocked_quietly() {
         retries: 0,
         told_at: None,
         tell_failures: 0,
+        first_message_owed: false,
     });
     stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
     stub.set_timeline(5, vec![assigned_by(1, "alice")]);
@@ -211,6 +213,7 @@ async fn a_person_signing_in_at_the_terminal_lifts_the_block_without_a_restart()
         retries: 0,
         told_at: None,
         tell_failures: 0,
+        first_message_owed: false,
     });
     e.state.repo_mut("o/r").issues_etag = Some("etag".into());
     stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
@@ -302,6 +305,7 @@ async fn a_blocked_harness_that_is_gone_is_judged_by_its_restart() {
         retries: 0,
         told_at: None,
         tell_failures: 0,
+        first_message_owed: false,
     };
     e.entry(&repo(), 5).blocked = Some(record.clone());
     // The terminal vanished (a reboot, a closed terminal).

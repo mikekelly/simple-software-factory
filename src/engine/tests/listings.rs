@@ -378,6 +378,7 @@ async fn one_unblock_owes_exactly_one_full_fetch() {
         retries: 0,
         told_at: None,
         tell_failures: 0,
+        first_message_owed: false,
     };
     e.unblock(&r, 18, &b, Conversation::Kept).await;
     assert!(e.refetch.contains(&r.name));
@@ -442,6 +443,7 @@ async fn tick_preserves_one_owed_full_fetch_across_the_pass_boundary() {
         retries: 0,
         told_at: None,
         tell_failures: 0,
+        first_message_owed: false,
     };
     let read_this_pass = e.state.repos[&r.name].created_etag.clone().unwrap();
     e.unblock(&r, 18, &b, Conversation::Kept).await;
@@ -508,6 +510,7 @@ async fn an_unblock_after_the_listings_were_read_makes_the_next_pass_full() {
         retries: 0,
         told_at: None,
         tell_failures: 0,
+        first_message_owed: false,
     };
     let read_this_pass = e.state.repos[&r.name].created_etag.clone();
     assert!(read_this_pass.is_some());

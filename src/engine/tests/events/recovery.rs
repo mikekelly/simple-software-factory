@@ -20,6 +20,7 @@ fn ssf_texts_never_look_like_a_login_prompt() {
             retries: 0,
             told_at: None,
             tell_failures: 0,
+            first_message_owed: false,
         };
         let o = Origin::new("o/r", 5).unwrap();
         let texts = [
