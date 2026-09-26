@@ -333,7 +333,27 @@ Good: `ssf status` names the account and repositories (or none yet), `ssh ssf-de
 
 8. **Optionally Tailscale** instead of the jump, for a person already on a tailnet: `ssf vm tailscale` on the server enrolls the guest (section 10); the laptop's SSH entry then uses the guest's tailnet name as `HostName`, port 22, and no `ProxyJump`.
 
-**Skills.** Install the `working-with-ssf` skill on the server for the resident agent too (`npx -y skills add mikekelly/simple-software-factory -g -y`); the laptop has it from step 2.7, and the guest's agents get SSF's guidance from ssf itself.
+**Skills: the resident agent's harness must load `working-with-ssf`, not only have it on disk.** The laptop has the skill from step 2.7; the guest's agents get SSF's guidance from ssf itself. On the server, as the resident agent's user:
+
+```sh
+npx -y skills add mikekelly/simple-software-factory -g -y
+```
+
+That links the skill into the global skills directories of the harnesses it detects, and prints which. If the resident harness is not in that list, name it with `-a`:
+
+| Resident harness | Global skills directory | Install for it |
+|---|---|---|
+| Hermes Agent | `~/.hermes/skills` | `-a hermes-agent` |
+| OpenClaw | `~/.openclaw/skills` (`~/.clawdbot/skills` or `~/.moltbot/skills` on older installs) | `-a openclaw` |
+| Grok Build | `~/.grok/skills` | `-a grok` |
+| Claude Code | `~/.claude/skills` | `-a claude-code` |
+| Pi | `~/.pi/agent/skills` | `-a pi` |
+
+For example `npx -y skills add mikekelly/simple-software-factory -g -y -a openclaw`. `npx skills add --help` and the CLI's agent list cover the other harnesses it knows; a harness that reads a directory of its own can take a copy with `--copy`.
+
+Then **confirm it is loaded**: start a new session of the resident harness (skills are usually read at startup) and check that it lists `working-with-ssf` in its skills, or ask it to quote that skill's description. A file on disk that the harness does not read does not count.
+
+**No skill mechanism** (for example Meta Muse, or any harness not above that loads no skills directory): put a line in the resident agent's standing instructions or memory instead, such as "For anything about the ssf factory on this server, run `ssf skill` and follow it; `ssf skill setup` is the install guide." Confirm the same way: a new session answers where the ssf guidance comes from.
 
 ## 6. The bot account
 
@@ -459,7 +479,7 @@ ssf doctor
 ssf status
 ```
 
-Also check `herdr machine list` shows the factory machine (section 5). For a guest on a server, run from the laptop: `working-with-ssf` is installed globally (`npx -y skills ls -g` lists it), `ssh ssf-factory true`, `herdr machine list` shows `ssf-factory`, and `ssf status` answers; and from the resident agent on the server: `ssh ssf-default true`, `herdr machine list` shows `ssf-default`, and `ssf status` answers. Healthy looks like: the token belongs to the bot; the driver is reachable and ready; the harness is installed and signed in where sessions run; each repository shows its GitHub identity, its allowed users, the commit identity, and its SSF agent guidance. `ssf status` names the configured account, then the repositories and their tracked items with no last error.
+Also check `herdr machine list` shows the factory machine (section 5). For a guest on a server, run from the laptop: `working-with-ssf` is installed globally (`npx -y skills ls -g` lists it), `ssh ssf-factory true`, `herdr machine list` shows `ssf-factory`, and `ssf status` answers; and from the resident agent on the server: its own harness has `working-with-ssf` loaded (a new session lists it or quotes its description; or, without a skill mechanism, its standing instructions point at `ssf skill`), `ssh ssf-default true`, `herdr machine list` shows `ssf-default`, and `ssf status` answers. Healthy looks like: the token belongs to the bot; the driver is reachable and ready; the harness is installed and signed in where sessions run; each repository shows its GitHub identity, its allowed users, the commit identity, and its SSF agent guidance. `ssf status` names the configured account, then the repositories and their tracked items with no last error.
 
 Two lines are expected to fail before the first issue and need no action: the repository's checkout (cloned when the first session starts) and the `gh`, `git` and `ssf` command links (written when the first agent starts). Anything else, work through [troubleshooting.md](troubleshooting.md) (`ssf skill troubleshoot`).
 
@@ -480,7 +500,7 @@ Upgrade by installing the next release's package the same way it was installed; 
 - [ ] `ssf vm status` reports a running VM, or herdr is reachable in host mode.
 - [ ] VM or rented host: reachable over SSH, agents have passwordless `sudo`, and it is saved in the person's herdr (`herdr machine add`, shown by `herdr machine list`).
 - [ ] Server: the agents run in a guest (Firecracker, else Incus), or host mode was chosen as the fallback with the reason said to the person.
-- [ ] Guest on a server: the resident agent (if any) and the person's laptop each pass `ssh <entry> true`, show the factory in `herdr machine list`, and get an answer from `ssf status`; the laptop uses its own key through `ProxyJump`; `working-with-ssf` is installed on both.
+- [ ] Guest on a server: the resident agent (if any) and the person's laptop each pass `ssh <entry> true`, show the factory in `herdr machine list`, and get an answer from `ssf status`; the laptop uses its own key through `ProxyJump`; `working-with-ssf` is installed globally on the laptop, and the resident agent has it loaded in its own harness (listed by a new session), or `ssf skill` in its standing instructions where the harness has no skills.
 - [ ] The person was asked about reaching the factory from other devices; Tailscale enrolled if yes.
 - [ ] Bot account created; `ssf auth status` names it.
 - [ ] Bot has Write on the repository, verified with `push: true`, and board access if there is a board.
