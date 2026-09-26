@@ -38,7 +38,9 @@ impl Engine {
             };
             // A reaction leaves `updated_at` alone but moves the timeline's
             // ETag, which a 304 answers for free.
-            if st.updated_at.as_deref() == Some(issue.updated_at.as_str()) {
+            if st.updated_at.as_deref() == Some(issue.updated_at.as_str())
+                && !super::issues::body_reactions_moved(&st.seen, &issue)
+            {
                 match self
                     .gh
                     .timeline_changed(owner, name, number, &st.timeline_etags)

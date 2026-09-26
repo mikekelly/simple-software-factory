@@ -109,8 +109,10 @@ See [Session dashboard](dashboard.md).
   post in the item's `seen` map (`reactions:body`, `reactions:<event>`) and
   lists a post's reactions only when its counts move. Reactions already there
   when a session starts, or on a post ssf has not recorded yet, are recorded
-  without being delivered. A body reaction on its own does not move the
-  timeline, so it arrives with the item's next change. The bot's own
+  without being delivered. A body reaction moves neither `updated_at` nor
+  the timeline but does move the listings, whose items carry the body's
+  counts; counts that differ from the record send the item through the
+  follow-up. The bot's own
   reactions and those by logins the allow-list refuses are never delivered;
   `daemon.ignored_events` naming `reacted` silences all of them.
 - **Who is listened to.** Before an item gets a session, and before every

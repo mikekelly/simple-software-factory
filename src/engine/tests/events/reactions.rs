@@ -191,23 +191,18 @@ async fn reactions_can_be_ignored_like_any_event() {
     assert!(d.prompts().is_empty());
 }
 
+/// A reaction on the body moves neither `updated_at` nor the timeline,
+/// only the listing, whose item carries the body's counts.
 #[tokio::test]
-async fn a_reaction_on_the_body_is_delivered_with_the_next_timeline_look() {
+async fn a_reaction_on_the_body_is_delivered_from_the_listing() {
     let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let (mut e, d) = baselined(&stub).await;
     let r = repo();
-    stub.set_issue(5, item_with(json!({"total_count": 1, "hooray": 1})));
+    let reacted = item_with(json!({"total_count": 1, "hooray": 1}));
+    stub.set_issue(5, reacted.clone());
+    stub.set_assigned(vec![reacted]);
     stub.set_reactions("issues/5", &[("carol", "hooray")]);
-    // Something moves the timeline (here: bob's ❤️ on the comment).
-    stub.set_timeline(
-        5,
-        vec![
-            assigned_by(1, "alice"),
-            reacted_comment(json!({"total_count": 2, "+1": 1, "heart": 1})),
-        ],
-    );
-    stub.set_reactions("issues/comments/2", &[("alice", "+1"), ("bob", "heart")]);
     e.tick_repo(&r).await.unwrap();
     let prompts = d.prompts();
     assert_eq!(prompts.len(), 1, "{prompts:?}");
@@ -216,4 +211,6 @@ async fn a_reaction_on_the_body_is_delivered_with_the_next_timeline_look() {
         "{}",
         prompts[0]
     );
+    e.tick_repo(&r).await.unwrap();
+    assert!(d.prompts().is_empty(), "not said twice");
 }

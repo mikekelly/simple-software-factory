@@ -320,18 +320,7 @@ impl Engine {
         seen: &BTreeMap<String, String>,
         timeline: &[Value],
     ) -> Result<Diff> {
-        const KINDS: [&str; 8] = [
-            "+1", "-1", "laugh", "hooray", "confused", "heart", "rocket", "eyes",
-        ];
-        let counts = |v: Option<&Value>| -> BTreeMap<String, u64> {
-            KINDS
-                .iter()
-                .filter_map(|k| {
-                    let n = v?.get(*k)?.as_u64()?;
-                    (n > 0).then(|| (k.to_string(), n))
-                })
-                .collect()
-        };
+        let counts = reaction_counts;
         let mut targets = vec![(
             "reactions:body".to_string(),
             format!("issues/{}", issue.number),
@@ -366,13 +355,6 @@ impl Engine {
         let mut observed = BTreeMap::new();
         for (key, on, url, now) in targets {
             let stored = seen.get(&key).map(|s| parse_reactions(s));
-            let tally = |set: &BTreeSet<(String, String)>| {
-                let mut m = BTreeMap::<String, u64>::new();
-                for (_, c) in set {
-                    *m.entry(c.clone()).or_default() += 1;
-                }
-                m
-            };
             if let Some(old) = &stored
                 && tally(old) == now
             {
@@ -462,7 +444,11 @@ impl Engine {
                 self.reactivate(repo, owner, name, issue, st).await?
             }
             Some(st) if st.seeded => {
-                if st.updated_at.as_deref() != Some(issue.updated_at.as_str()) {
+                // A reaction on the body moves the listing (whose items
+                // carry the counts) but neither `updated_at` nor the timeline.
+                if st.updated_at.as_deref() != Some(issue.updated_at.as_str())
+                    || body_reactions_moved(&st.seen, issue)
+                {
                     self.follow_up(repo, owner, name, issue, st).await?
                 }
             }
@@ -523,4 +509,36 @@ fn parse_reactions(s: &str) -> BTreeSet<(String, String)> {
         .filter_map(|r| r.split_once(':'))
         .map(|(l, c)| (l.to_string(), c.to_string()))
         .collect()
+}
+
+/// Per-content reaction counts GitHub reports on a post (`reactions`).
+fn reaction_counts(v: Option<&Value>) -> BTreeMap<String, u64> {
+    const KINDS: [&str; 8] = [
+        "+1", "-1", "laugh", "hooray", "confused", "heart", "rocket", "eyes",
+    ];
+    KINDS
+        .iter()
+        .filter_map(|k| {
+            let n = v?.get(*k)?.as_u64()?;
+            (n > 0).then(|| (k.to_string(), n))
+        })
+        .collect()
+}
+
+fn tally(set: &BTreeSet<(String, String)>) -> BTreeMap<String, u64> {
+    let mut m = BTreeMap::<String, u64>::new();
+    for (_, c) in set {
+        *m.entry(c.clone()).or_default() += 1;
+    }
+    m
+}
+
+/// Whether the item's body reactions differ from the record in `seen`.
+/// No record yet is not a change: the next look records them as they are.
+pub(in crate::engine) fn body_reactions_moved(
+    seen: &BTreeMap<String, String>,
+    issue: &Issue,
+) -> bool {
+    seen.get("reactions:body")
+        .is_some_and(|s| tally(&parse_reactions(s)) != reaction_counts(issue.reactions.as_ref()))
 }
