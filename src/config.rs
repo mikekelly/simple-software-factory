@@ -100,6 +100,11 @@ pub struct DashboardConfig {
     pub enabled: bool,
     pub bind: std::net::IpAddr,
     pub port: u16,
+    /// Let the browser page itself take control of an item's live terminal
+    /// and type into it (#563), where `item_pane_input` also allows it. Off,
+    /// the page's terminals are view only; the extension's origin is held to
+    /// the write rules instead.
+    pub terminal_input: bool,
 }
 
 impl Default for DashboardConfig {
@@ -108,6 +113,7 @@ impl Default for DashboardConfig {
             enabled: false,
             bind: std::net::Ipv4Addr::LOCALHOST.into(),
             port: 8787,
+            terminal_input: false,
         }
     }
 }

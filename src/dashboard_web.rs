@@ -14,6 +14,13 @@ use crate::ipc::Refused;
 const INDEX: &str = include_str!("../dashboard/index.html");
 const CSS: &str = include_str!("../dashboard/dashboard.css");
 const JS: &str = include_str!("../dashboard/dashboard.js");
+/// An item pane's live terminal (#563), and the xterm.js it runs on: the
+/// extension's vendored copy, served as it is.
+const TERMINAL_HTML: &str = include_str!("../dashboard/terminal.html");
+const TERMINAL_JS: &str = include_str!("../dashboard/terminal.js");
+const XTERM_JS: &str = include_str!("../chrome-extension/vendor/xterm/xterm.mjs");
+const XTERM_FIT_JS: &str = include_str!("../chrome-extension/vendor/xterm/addon-fit.mjs");
+const XTERM_CSS: &str = include_str!("../chrome-extension/vendor/xterm/xterm.css");
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HEADERS: usize = 8192;
 /// Longest body the endpoint reads: a write carries a handful of fields, and
@@ -58,11 +65,16 @@ struct Mirror {
 /// The latest status snapshot, or the error that prevented loading one.
 type Latest = tokio::sync::watch::Receiver<Option<std::result::Result<Value, String>>>;
 
+/// `dashboard.terminal_input`: whether this page's own terminals may take
+/// control of an item's pane. Set once, from the configuration [`bind`] reads.
+static TERMINAL_INPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Bind before starting the daemon so configuration and port failures are explicit.
 pub(crate) async fn bind(config: &crate::config::DashboardConfig) -> Result<Option<TcpListener>> {
     if !config.enabled {
         return Ok(None);
     }
+    TERMINAL_INPUT.store(config.terminal_input, std::sync::atomic::Ordering::Relaxed);
     config.validate()?;
     TcpListener::bind((config.bind, config.port))
         .await
@@ -294,9 +306,11 @@ async fn handle(
             match term_request(
                 headers.map_or("", String::as_str),
                 &relative["api/term/".len()..],
+                host,
+                TERMINAL_INPUT.load(std::sync::atomic::Ordering::Relaxed),
             ) {
-                Ok((session, key)) => {
-                    crate::dashboard_term::serve(stream, &session, &key, client).await;
+                Ok((session, key, may_control)) => {
+                    crate::dashboard_term::serve(stream, &session, &key, client, may_control).await;
                     return;
                 }
                 Err(answer) => answer,
@@ -385,6 +399,19 @@ async fn read(relative: &str, latest: &mut Latest, client: &Path) -> (u16, &'sta
         "" | "index.html" => (200, "text/html; charset=utf-8", INDEX.to_owned()),
         "dashboard.css" => (200, "text/css; charset=utf-8", CSS.to_owned()),
         "dashboard.js" => (200, "text/javascript; charset=utf-8", JS.to_owned()),
+        "terminal.html" => (200, "text/html; charset=utf-8", TERMINAL_HTML.to_owned()),
+        "terminal.js" => (
+            200,
+            "text/javascript; charset=utf-8",
+            TERMINAL_JS.to_owned(),
+        ),
+        "xterm.mjs" => (200, "text/javascript; charset=utf-8", XTERM_JS.to_owned()),
+        "addon-fit.mjs" => (
+            200,
+            "text/javascript; charset=utf-8",
+            XTERM_FIT_JS.to_owned(),
+        ),
+        "xterm.css" => (200, "text/css; charset=utf-8", XTERM_CSS.to_owned()),
         "api/agents" => agents(client).await,
         "api/usage" => match ask(client, &["usage", "--json"], LISTING_TIMEOUT).await {
             Ok(output) => listed(output, "provider usage"),
@@ -803,19 +830,36 @@ fn pane_session(encoded: &str) -> std::result::Result<String, (u16, &'static str
         .ok_or_else(|| bad("the pane route takes a session, owner/repo#N or owner/repo~id"))
 }
 
-/// A terminal route's scratch session and its WebSocket key, or the answer
-/// that refuses it. `api/term` types at an agent, so it is held to a
+/// A terminal route's session, its WebSocket key, and whether the terminal
+/// may take control of an item's pane; or the answer that refuses it. It is
+/// a WebSocket upgrade or nothing.
+///
+/// A scratch session's terminal types at an agent, so it is held to a
 /// write's origin rule -- a Chrome extension's own -- on top of the
-/// capability every route has; and it is a WebSocket upgrade or nothing.
+/// capability every route has. An item's (#563) opens view only for any
+/// reader, and may take control only from an extension's origin (the write
+/// rule) or, where `dashboard.terminal_input` is on, from this page's own;
+/// the factory's `item_pane_input` is asked as well, when control is.
 fn term_request(
     request: &str,
     encoded: &str,
-) -> std::result::Result<(String, String), (u16, &'static str, String)> {
-    let session = percent_decode(encoded)
-        .filter(|session| session.len() <= MAX_SESSION)
-        .and_then(|session| crate::origin::Scratch::parse(&session))
-        .map(|s| s.to_string())
-        .ok_or_else(|| bad("the terminal route takes a scratch session, owner/repo~id"))?;
+    host: &str,
+    terminal_input: bool,
+) -> std::result::Result<(String, String, bool), (u16, &'static str, String)> {
+    let decoded = percent_decode(encoded).filter(|session| session.len() <= MAX_SESSION);
+    let scratch = decoded
+        .as_deref()
+        .and_then(crate::origin::Scratch::parse)
+        .map(|s| s.to_string());
+    let session = scratch
+        .clone()
+        .or_else(|| {
+            decoded
+                .as_deref()
+                .and_then(crate::origin::Origin::parse)
+                .map(|o| o.to_string())
+        })
+        .ok_or_else(|| bad("the terminal route takes a session, owner/repo#N or owner/repo~id"))?;
     let header = |wanted: &str| {
         request
             .split("\r\n")
@@ -825,7 +869,10 @@ fn term_request(
             .find(|(name, _)| name.trim().eq_ignore_ascii_case(wanted))
             .map(|(_, value)| value.trim())
     };
-    if !header("origin").is_some_and(|origin| origin.starts_with("chrome-extension://")) {
+    let extension =
+        header("origin").is_some_and(|origin| origin.starts_with("chrome-extension://"));
+    let own = header("origin") == Some(format!("http://{host}").as_str());
+    if scratch.is_some() && !extension {
         return Err((
             403,
             "application/json",
@@ -840,7 +887,11 @@ fn term_request(
         })
         && header("sec-websocket-version") == Some("13");
     match header("sec-websocket-key") {
-        Some(key) if upgrade && !key.is_empty() => Ok((session, key.to_string())),
+        Some(key) if upgrade && !key.is_empty() => Ok((
+            session,
+            key.to_string(),
+            scratch.is_none() && (extension || (own && terminal_input)),
+        )),
         _ => Err(bad(
             "the terminal route is a WebSocket (version 13) upgrade",
         )),
@@ -1693,22 +1744,49 @@ mod tests {
                  Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
             )
         };
-        let ok = term_request(&upgrade("chrome-extension://abc"), "o%2Fr~ab12").unwrap();
-        assert_eq!(ok, ("o/r~ab12".into(), "dGhlIHNhbXBsZSBub25jZQ==".into()));
+        let term =
+            |origin: &str, session: &str| term_request(&upgrade(origin), session, "h", false);
+        let ok = term("chrome-extension://abc", "o%2Fr~ab12").unwrap();
         assert_eq!(
-            term_request(&upgrade("chrome-extension://abc"), "o%2Fr%2342")
-                .unwrap_err()
-                .0,
+            ok,
+            ("o/r~ab12".into(), "dGhlIHNhbXBsZSBub25jZQ==".into(), false)
+        );
+        assert_eq!(
+            term("chrome-extension://abc", "nonsense").unwrap_err().0,
             400
         );
-        assert_eq!(
-            term_request(&upgrade("http://h"), "o%2Fr~ab12")
-                .unwrap_err()
-                .0,
-            403
-        );
+        assert_eq!(term("http://h", "o%2Fr~ab12").unwrap_err().0, 403);
         let plain = "GET /t/api/term/o%2Fr~ab12 HTTP/1.1\r\nHost: h\r\nOrigin: chrome-extension://abc\r\n\r\n";
-        assert_eq!(term_request(plain, "o%2Fr~ab12").unwrap_err().0, 400);
+        assert_eq!(
+            term_request(plain, "o%2Fr~ab12", "h", true).unwrap_err().0,
+            400
+        );
+    }
+
+    /// An item's live terminal (#563) opens view only for any reader, and
+    /// may take control only from an extension (the write rule) or, with
+    /// `dashboard.terminal_input` on, from this page's own origin.
+    #[test]
+    fn an_items_terminal_takes_control_only_where_the_server_allows_it() {
+        let upgrade = |origin: Option<&str>| {
+            let origin = origin.map_or(String::new(), |o| format!("Origin: {o}\r\n"));
+            format!(
+                "GET /t/api/term/o%2Fr%2342 HTTP/1.1\r\nHost: h\r\n{origin}\
+                 Upgrade: websocket\r\nConnection: Upgrade\r\n\
+                 Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: k\r\n\r\n"
+            )
+        };
+        let may_control = |origin: Option<&str>, terminal_input: bool| {
+            let (session, _, may) =
+                term_request(&upgrade(origin), "o%2Fr%2342", "h", terminal_input).unwrap();
+            assert_eq!(session, "o/r#42");
+            may
+        };
+        assert!(!may_control(Some("http://h"), false));
+        assert!(may_control(Some("http://h"), true));
+        assert!(may_control(Some("chrome-extension://abc"), false));
+        assert!(!may_control(None, true));
+        assert!(!may_control(Some("http://elsewhere"), true));
     }
     use std::os::unix::fs::PermissionsExt;
 

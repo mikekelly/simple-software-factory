@@ -626,6 +626,21 @@ pub(super) enum PaneCommand {
         /// The scratch session, as owner/repo~id.
         session: String,
     },
+    /// Stream an item session's herdr pane as `herdr terminal session`
+    /// NDJSON over stdin/stdout (pipes, not a PTY): control, or with
+    /// --observe view only. Control of a view-only pane exits 2.
+    Control {
+        /// The item session, as owner/repo#N.
+        session: String,
+        /// View only: never types, never resizes the pane.
+        #[arg(long)]
+        observe: bool,
+        /// The size control starts at.
+        #[arg(long, requires = "rows")]
+        cols: Option<u16>,
+        #[arg(long, requires = "cols")]
+        rows: Option<u16>,
+    },
 }
 
 #[derive(Subcommand)]

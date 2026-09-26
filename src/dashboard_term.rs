@@ -12,6 +12,14 @@
 //!   with `window-size latest`, the tmux window);
 //! - the socket closes when the attach ends (the session ended, or could not
 //!   be attached to: what it said is the last output), or the client goes.
+//!
+//! An item session's pane (#563) is herdr's, and is bridged instead to `ssf
+//! __pane control <session> [--observe]` over pipes: `herdr terminal session`
+//! NDJSON both ways. It opens view only (`observe`), and takes control only
+//! when the client asks (`{"type":"control"}`) and this server allows it
+//! (`may_control`, decided from the request) and the factory does
+//! (`item_pane_input`, decided where the config is); `{"type":"release"}`
+//! gives it back. See [`bridge_item`] for the messages.
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -78,7 +86,13 @@ impl Drop for Slot {
 
 /// Answer the upgrade and bridge the socket and the attach until either
 /// ends.
-pub(crate) async fn serve(mut stream: TcpStream, session: &str, key: &str, client: &Path) {
+pub(crate) async fn serve(
+    mut stream: TcpStream,
+    session: &str,
+    key: &str,
+    client: &Path,
+    may_control: bool,
+) {
     let Some(_slot) = Slot::take() else {
         let body = serde_json::json!({
             "error": format!("{MAX_TERMS} terminals are already open; close one and try again")
@@ -104,7 +118,12 @@ pub(crate) async fn serve(mut stream: TcpStream, session: &str, key: &str, clien
     }
     let mut ws = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
     tracing::debug!(session, "web API terminal opened");
-    if let Err(error) = bridge(&mut ws, session, client).await {
+    let bridged = if crate::origin::Origin::parse(session).is_some() {
+        bridge_item(&mut ws, session, client, may_control).await
+    } else {
+        bridge(&mut ws, session, client).await
+    };
+    if let Err(error) = bridged {
         let _ = ws
             .send(Message::binary(
                 format!("\r\nssf: {error:#}\r\n").into_bytes(),
@@ -284,9 +303,407 @@ async fn bridge(ws: &mut WebSocketStream<TcpStream>, session: &str, client: &Pat
     outcome
 }
 
+/// Lines a wheel notch scrolls herdr's history by. One `terminal.scroll` per
+/// notch: in a full-screen TUI with the mouse on, herdr passes each one to
+/// the app as one wheel event.
+const SCROLL_LINES: u64 = 3;
+
+/// How long a pane that went away is looked for again, one wait after
+/// another: a relaunch records its new pane in the state within seconds.
+const RELOCATE_WAITS: [u64; 8] = [1, 2, 4, 8, 10, 10, 10, 15];
+
+/// What a client's message asks of an item's terminal.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Ask {
+    /// A line for `herdr terminal session control`'s stdin: typed bytes, a
+    /// resize or a scroll. Only ever written while in control.
+    Herdr(String),
+    /// The browser's size, which control starts at.
+    Size(u16, u16),
+    Control,
+    Release,
+    Nothing,
+}
+
+/// What a client's WebSocket message asks: binary frames are typed bytes;
+/// text frames are JSON, `resize`, `scroll` (one wheel notch, `up` or
+/// `down`), `control` or `release`.
+pub(crate) fn ask_of(message: &Message) -> Ask {
+    use base64::Engine;
+    let line = |command: serde_json::Value| Ask::Herdr(format!("{command}\n"));
+    let text = match message {
+        Message::Binary(bytes) if !bytes.is_empty() => {
+            return line(serde_json::json!({
+                "type": "terminal.input",
+                "bytes": base64::engine::general_purpose::STANDARD.encode(bytes),
+            }));
+        }
+        Message::Text(text) => text.as_str(),
+        _ => return Ask::Nothing,
+    };
+    if let Some((cols, rows)) = resize_of(text) {
+        return Ask::Size(cols, rows);
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Ask::Nothing;
+    };
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("control") => Ask::Control,
+        Some("release") => Ask::Release,
+        Some("scroll") => match value.get("direction").and_then(|d| d.as_str()) {
+            Some(direction @ ("up" | "down")) => line(serde_json::json!({
+                "type": "terminal.scroll",
+                "lines": SCROLL_LINES,
+                "direction": direction,
+            })),
+            _ => Ask::Nothing,
+        },
+        _ => Ask::Nothing,
+    }
+}
+
+/// What one NDJSON line from herdr means for the socket.
+#[derive(Debug, PartialEq)]
+pub(crate) enum HerdrLine {
+    /// Terminal bytes to draw, at the size herdr drew them.
+    Frame {
+        bytes: Vec<u8>,
+        size: Option<(u64, u64)>,
+    },
+    /// The stream ended, and why.
+    Closed(String),
+    Other,
+}
+
+pub(crate) fn herdr_line(line: &str) -> HerdrLine {
+    use base64::Engine;
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return HerdrLine::Other;
+    };
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("terminal.frame") => {
+            let Some(bytes) = value
+                .get("bytes")
+                .and_then(|b| b.as_str())
+                .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+            else {
+                return HerdrLine::Other;
+            };
+            let dimension = |key: &str| value.get(key).and_then(|n| n.as_u64());
+            HerdrLine::Frame {
+                bytes,
+                size: dimension("width").zip(dimension("height")),
+            }
+        }
+        Some("terminal.closed") => HerdrLine::Closed(
+            value
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("closed")
+                .to_string(),
+        ),
+        _ => HerdrLine::Other,
+    }
+}
+
+/// Whether a stream that ended for `reason` is worth starting again: the
+/// harness exited, or the pane is gone, and a relaunch has a new one. A pane
+/// taken over by someone else is not: this view does not take it back.
+pub(crate) fn relocatable(reason: &str) -> bool {
+    reason.contains("exited") || reason.contains("not found") || reason.contains("no agent")
+}
+
+/// Why this server gives a terminal no control.
+const NO_CONTROL: &str = "this server takes typing into an item's pane only from the Chrome \
+                          extension, or from its own page where dashboard.terminal_input is on";
+
+/// How one run of `ssf __pane control` ended.
+enum End {
+    /// The client went.
+    Gone,
+    /// The client asked to control (`true`) or release (`false`).
+    Switch(bool),
+    /// herdr's `terminal.closed`, or what the command said when it stopped.
+    Closed(String),
+    /// Control was refused where the factory's config is.
+    Refused(String),
+}
+
+async fn say(ws: &mut WebSocketStream<TcpStream>, message: serde_json::Value) -> bool {
+    ws.send(Message::text(message.to_string())).await.is_ok()
+}
+
+/// Bridge the socket to an item's pane (#563), through `ssf __pane control`
+/// run by the factory's client (so a factory in a VM streams from the
+/// guest). Text frames to the client are JSON:
+///
+/// - `{"type":"mode","control":bool,"may_control":bool}` when the stream
+///   (re)starts (control once herdr has drawn for it): whether it is control,
+///   and whether this server would let it be;
+/// - `{"type":"size","cols":N,"rows":N}` when herdr's frames change size;
+/// - `{"type":"refused","reason":"…"}` for control that was not allowed;
+/// - `{"type":"notice","text":"…"}` for anything else worth saying.
+///
+/// Typed bytes, resizes and scrolls are written only while in control, so a
+/// view-only terminal is view only whatever its page sends.
+async fn bridge_item(
+    ws: &mut WebSocketStream<TcpStream>,
+    session: &str,
+    client: &Path,
+    may_control: bool,
+) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    let mut control = false;
+    let mut size: Option<(u16, u16)> = None;
+    let mut waits = RELOCATE_WAITS.iter();
+    loop {
+        let mut args = vec!["__pane".to_string(), "control".into(), session.to_string()];
+        if !control {
+            args.push("--observe".into());
+        } else if let Some((cols, rows)) = size {
+            args.extend([
+                "--cols".into(),
+                cols.to_string(),
+                "--rows".into(),
+                rows.to_string(),
+            ]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let mut command = crate::dashboard_transport::local_client_command(
+            client,
+            &args,
+            crate::server_catalog::service_local_context(),
+            crate::server_catalog::selected_vm_context()?.as_ref(),
+            crate::server_catalog::selected_target_identity()?.as_ref(),
+        );
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn().context("starting the pane stream")?;
+        let mut stdin = child.stdin.take().context("the pane stream's stdin")?;
+        let mut lines =
+            BufReader::new(child.stdout.take().context("the pane stream's stdout")?).lines();
+        let mut stderr = child.stderr.take().context("the pane stream's stderr")?;
+        let mode =
+            serde_json::json!({"type": "mode", "control": control, "may_control": may_control});
+        // Control is said once herdr has drawn for it: until then it may
+        // yet be refused.
+        let mut announced = !control;
+        if announced && !say(ws, mode.clone()).await {
+            return Ok(());
+        }
+        let mut drawn: Option<(u64, u64)> = None;
+        let end = loop {
+            tokio::select! {
+                line = lines.next_line() => match line {
+                    Ok(Some(line)) => match herdr_line(&line) {
+                        HerdrLine::Frame { bytes, size: at } => {
+                            waits = RELOCATE_WAITS.iter();
+                            if !announced {
+                                announced = true;
+                                if !say(ws, mode.clone()).await {
+                                    break End::Gone;
+                                }
+                            }
+                            if let Some((cols, rows)) = at.filter(|at| Some(*at) != drawn) {
+                                drawn = at;
+                                if !say(ws, serde_json::json!({"type": "size", "cols": cols, "rows": rows})).await {
+                                    break End::Gone;
+                                }
+                            }
+                            if ws.send(Message::binary(bytes)).await.is_err() {
+                                break End::Gone;
+                            }
+                        }
+                        HerdrLine::Closed(reason) => break End::Closed(reason),
+                        HerdrLine::Other => {}
+                    },
+                    Ok(None) | Err(_) => {
+                        let mut said = String::new();
+                        let _ = stderr.read_to_string(&mut said).await;
+                        let status = child.wait().await.ok().and_then(|s| s.code());
+                        let said = said.trim().to_string();
+                        break if control && status == Some(crate::pane::INPUT_REFUSED) {
+                            End::Refused(said)
+                        } else if said.is_empty() {
+                            End::Closed("the pane stream ended".into())
+                        } else {
+                            End::Closed(said)
+                        };
+                    }
+                },
+                message = ws.next() => match message {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break End::Gone,
+                    Some(Ok(message)) => match ask_of(&message) {
+                        Ask::Control if !control && !may_control => {
+                            if !say(ws, serde_json::json!({"type": "refused", "reason": NO_CONTROL})).await {
+                                break End::Gone;
+                            }
+                        }
+                        Ask::Control if !control => break End::Switch(true),
+                        Ask::Release if control => break End::Switch(false),
+                        Ask::Size(cols, rows) => {
+                            size = Some((cols, rows));
+                            if control {
+                                let line = serde_json::json!({"type": "terminal.resize", "cols": cols, "rows": rows});
+                                if stdin.write_all(format!("{line}\n").as_bytes()).await.is_err() {
+                                    break End::Closed("the pane stream stopped taking input".into());
+                                }
+                            }
+                        }
+                        Ask::Herdr(line)
+                            if control && stdin.write_all(line.as_bytes()).await.is_err() =>
+                        {
+                            break End::Closed("the pane stream stopped taking input".into());
+                        }
+                        _ => {}
+                    },
+                },
+            }
+        };
+        // Closing stdin detaches a controller cleanly, which gives the pane
+        // back its own size; an observer takes that as its cue to stop.
+        drop(stdin);
+        if tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
+        match end {
+            End::Gone => return Ok(()),
+            End::Switch(wanted) => control = wanted,
+            End::Refused(reason) => {
+                control = false;
+                if !say(ws, serde_json::json!({"type": "refused", "reason": reason})).await {
+                    return Ok(());
+                }
+            }
+            End::Closed(reason) if relocatable(&reason) => {
+                let Some(&wait) = waits.next() else {
+                    anyhow::bail!("{reason}; the pane did not come back");
+                };
+                let text = format!("{reason}; looking for the pane again in {wait}s");
+                if !say(ws, serde_json::json!({"type": "notice", "text": text})).await {
+                    return Ok(());
+                }
+                // The client may go, or change its mind, meanwhile.
+                let pause = tokio::time::sleep(std::time::Duration::from_secs(wait));
+                tokio::pin!(pause);
+                loop {
+                    tokio::select! {
+                        _ = &mut pause => break,
+                        message = ws.next() => match message {
+                            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return Ok(()),
+                            Some(Ok(message)) => match ask_of(&message) {
+                                Ask::Control => control = may_control,
+                                Ask::Release => control = false,
+                                Ask::Size(cols, rows) => size = Some((cols, rows)),
+                                _ => {}
+                            },
+                        },
+                    }
+                }
+            }
+            End::Closed(reason) => {
+                // Taken over elsewhere, or a failure: say so, and go on
+                // watching rather than take the pane back.
+                control = false;
+                let text = format!("{reason}; watching the pane again");
+                if !say(ws, serde_json::json!({"type": "notice", "text": text})).await {
+                    return Ok(());
+                }
+                let Some(&wait) = waits.next() else {
+                    anyhow::bail!("{reason}");
+                };
+                tokio::time::sleep(std::time::Duration::from_secs(wait.min(2))).await;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn herdr_lines_are_read() {
+        assert_eq!(
+            herdr_line(
+                r#"{"type":"terminal.frame","seq":1,"bytes":"aGk=","width":120,"height":40}"#
+            ),
+            HerdrLine::Frame {
+                bytes: b"hi".to_vec(),
+                size: Some((120, 40))
+            }
+        );
+        assert_eq!(
+            herdr_line(r#"{"type":"terminal.closed","reason":"terminal t exited"}"#),
+            HerdrLine::Closed("terminal t exited".into())
+        );
+        assert_eq!(
+            herdr_line(r#"{"type":"terminal.frame","bytes":"%%"}"#),
+            HerdrLine::Other
+        );
+        assert_eq!(herdr_line("not json"), HerdrLine::Other);
+    }
+
+    #[test]
+    fn client_messages_become_herdr_commands() {
+        assert_eq!(
+            ask_of(&Message::binary(b"hi".to_vec())),
+            Ask::Herdr("{\"bytes\":\"aGk=\",\"type\":\"terminal.input\"}\n".into())
+        );
+        assert_eq!(
+            ask_of(&Message::text(r#"{"type":"resize","cols":80,"rows":24}"#)),
+            Ask::Size(80, 24)
+        );
+        // One wheel notch is one scroll, whatever else the message says.
+        let Ask::Herdr(line) = ask_of(&Message::text(
+            r#"{"type":"scroll","direction":"up","lines":999}"#,
+        )) else {
+            panic!("a scroll is a herdr command");
+        };
+        assert!(
+            line.contains("\"terminal.scroll\"")
+                && line.contains("\"lines\":3")
+                && line.contains("\"up\""),
+            "{line}"
+        );
+        assert_eq!(
+            ask_of(&Message::text(r#"{"type":"scroll","direction":"left"}"#)),
+            Ask::Nothing
+        );
+        assert_eq!(
+            ask_of(&Message::text(r#"{"type":"control"}"#)),
+            Ask::Control
+        );
+        assert_eq!(
+            ask_of(&Message::text(r#"{"type":"release"}"#)),
+            Ask::Release
+        );
+        // Nothing a client says becomes a takeover or a raw herdr command.
+        assert_eq!(
+            ask_of(&Message::text(r#"{"type":"terminal.release"}"#)),
+            Ask::Nothing
+        );
+        assert_eq!(
+            ask_of(&Message::text(r#"{"type":"takeover"}"#)),
+            Ask::Nothing
+        );
+    }
+
+    #[test]
+    fn only_a_pane_that_went_away_is_looked_for_again() {
+        assert!(relocatable("terminal term_1 exited"));
+        assert!(relocatable("terminal target w1:p1 not found"));
+        assert!(relocatable("no agent is running in o/r#1's workspace"));
+        assert!(!relocatable("terminal attach taken over"));
+        assert!(!relocatable("detached"));
+    }
 
     #[test]
     fn resize_messages_are_read_and_bounded() {

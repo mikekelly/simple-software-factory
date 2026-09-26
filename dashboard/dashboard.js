@@ -127,6 +127,11 @@ function cardNode(card) {
   fill(article.querySelector(".harness"), stackLabel(card));
   fill(article.querySelector(".issue-title"), card.origin.title);
   issueLink(article.querySelector(".issue-link"), card.origin);
+  // The session's pane as a live terminal (#563), read-only unless this
+  // server and the factory let the page type.
+  const terminal = `terminal.html?session=${encodeURIComponent(card.owner || card.origin.id)}`;
+  const terminalLink = article.querySelector(".terminal-link");
+  if (terminalLink.getAttribute("href") !== terminal) terminalLink.href = terminal;
   // The card, not just its time: with no time to show, the model's own reason
   // for that is what belongs in the row (#439).
   fill(article.querySelector(".activity"), activityLabel(card));
