@@ -361,7 +361,7 @@ The protocol:
 
 Unlike the mirror, the terminal shows no redaction: it is the session's own
 terminal, as `tmux attach` in a shell on the factory shows it. The Chrome
-extension's floating terminal window uses it for scratch sessions.
+extension's floating terminal window uses it for scratch sessions and, as below, item sessions.
 
 An item session's terminal is `ssf __pane control <session> [--observe]` run
 over pipes, which runs `herdr terminal session observe|control` on the pane.

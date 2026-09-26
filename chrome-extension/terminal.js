@@ -1,5 +1,8 @@
-// The terminal page: a scratch session's live terminal (term-xterm.js, #491),
-// or else the pane mirror.
+// The terminal page: a live terminal (term-xterm.js): a scratch session's
+// (#491, tmux) or an item session's (#563, herdr).
+//
+// DEPRECATED, kept until #564 removes it: the pane mirror below (`start`) is
+// no longer opened for any session; an item's pane is the live terminal.
 //
 // The pane mirror (#414): one item session's agent pane, drawn as styled text
 // (pane-render.js, after collie) rather than by a terminal emulator, and typed
@@ -408,14 +411,12 @@ async function start() {
   }, 30000);
 }
 
-if (session.includes("~")) {
-  // A scratch session is a live terminal of its own (term-xterm.js, #491); an
-  // item's stays the mirror above.
-  scroller.hidden = true;
-  startTerm().catch((error) => say(String(error), true));
-} else {
-  start().catch((error) => say(String(error), true));
-}
+// Every session is a live terminal: a scratch session's (tmux, #491) or an
+// item's (herdr, #563). The mirror above (`start`) is unused until #564
+// removes it.
+scroller.hidden = true;
+startTerm().catch((error) => say(String(error), true));
+void start;
 
 async function startTerm() {
   const stored = (await chrome.storage.local.get("factories")).factories ?? [];
@@ -423,7 +424,20 @@ async function startTerm() {
     say("this terminal names no configured factory or no session", true);
     return;
   }
-  const { run } = await import("./term-xterm.js");
+  const { run, runItem } = await import("./term-xterm.js");
+  if (!session.includes("~")) {
+    runItem({
+      url,
+      session,
+      takesInput,
+      say,
+      box: document.getElementById("xterm"),
+      notice: document.getElementById("notice"),
+      typeButton,
+      reconnect: document.getElementById("reconnect"),
+    });
+    return;
+  }
   run({
     url,
     session,

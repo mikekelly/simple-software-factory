@@ -475,45 +475,31 @@ says so and offers **Reconnect**, and **Resume** to start a session that ended
 again. The terminal never moves on to another session: ssf's tmux sessions
 detach their terminal when they end.
 
-An **item**'s window is a mirror of the agent's pane, from `api/pane/<session>`.
-The pane is drawn as styled text rather than by a terminal emulator — the
-approach, and much of the code, of [collie](https://github.com/AltanS/collie)
-(`pane-render.js`, `pane-keys.js`; see [Credits](#credits)). The factory sends
-the pane's screen as herdr renders it, with only colour sequences in it, so
-there is nothing to emulate: the text is drawn at a fixed 13px in a monospace
-stack, rows 1.25em apart, and wraps at the window's width. The pane itself is never resized. A row
-that is a box's border or a rule is clipped at the right rather than wrapped,
-and a table — markdown, `+---+`, or box-drawn with crosses — keeps its columns
-and pans sideways in its own box (a trackpad, or Shift and the wheel). Block
-elements and Powerline caps are painted to their cell, so bars and prompt pills
-join up.
+An **item**'s window is also a live xterm.js terminal on `api/term/<session>`,
+which for an item streams the agent's herdr pane (`herdr terminal session
+observe|control`; see [docs/dashboard.md](../docs/dashboard.md)). It opens
+**read-only** at the pane's own size: nothing you type or paste is sent, and a
+notice under the title bar says so.
 
-The pane's history (up to 1000 rows, as the factory sends it) sits above its
-screen in the same scroller, and the wheel scrolls back through it without
-typing into the pane.
-The view follows the live screen while it is at the bottom; scrolled back, it
-stays where it is as the agent works, and a history that changed meanwhile is
-drawn once you are back at the bottom. Text you have selected in the terminal
-is not redrawn under you until you let go of the selection.
+Where the snapshot says the pane takes typing (`pane_input`: only where the
+factory's `item_pane_input` is on), the factory's Writes switch is on, and the
+factory gives this extension control, the terminal has a **Type** button. With
+Type on, the terminal asks for control of the pane, takes it at the window's
+size, and everything typed goes straight to the pane; the factory checks
+`item_pane_input` again and never takes the pane over from someone else. Type
+turns itself off, giving the pane back, when the tab is hidden, after half an
+hour with nothing typed, when the Writes switch is turned off, or when someone
+else takes the pane over, and the notice says why. herdr keeps the pane's
+scrollback, so the terminal keeps none: while typing, each wheel notch scrolls
+the pane one step, Shift+Enter sends a newline that does not submit (ESC CR),
+and a paste is always sent as a bracketed paste. A read-only view cannot
+scroll back. Speak to an item's agent otherwise by commenting on the item.
+When the socket closes the terminal says so and offers **Reconnect**.
 
-Where the snapshot says an item's pane takes typing (`pane_input`: only where
-the factory's `item_pane_input` is on), the terminal has a **Type** button. Typing goes to the
-pane only while it is on: each character is a keystroke (herdr's `pane
-send-keys`, with any space, Tab and Enter by name), as are Esc, Tab, Shift+Tab,
-the arrows, Backspace, Enter and Ctrl with a letter; an input method's text is
-sent once it is committed; and a paste goes as one bracketed paste in one write,
-its control characters dropped. A paste longer than one write takes (the
-factory reads 4096 bytes of a request, so about 4,000 plain characters) is not
-sent at all. Typing turns itself off when the tab is hidden, the stream stops,
-the factory refuses a keystroke or a paste is too long, or after half an hour
-with nothing done in the terminal, and says so on its status line. What is typed goes through the
-service worker to `api/pane/input`; typing is a write, so a factory whose Writes
-switch is off shows the pane read-only. Otherwise the terminal is view-only:
-speak to an item's agent by commenting on the item.
-
-When the factory says the pane cannot be read, or the stream fails three times
-in a row, the terminal stops and offers **Reconnect**. The pane is read about
-four times a second only while a terminal is open on it.
+The older pane mirror (`pane-render.js`, `pane-keys.js`, the mirror half of
+`terminal.js` and `api/pane/<session>`) is no longer opened for any session;
+it is kept until [#564](https://github.com/mikekelly/simple-software-factory/issues/564)
+removes it.
 
 ## Reaching a factory on a tailnet
 
@@ -545,8 +531,7 @@ forward, and keep tailnet ACLs restrictive.
 - The **service worker** also carries every write and the two listings the
   forms' pickers need: `api/assign`, `api/handover`, `api/release`, the
   scratch routes, `api/pane/input`, `api/agents` and `api/models/<harness>`,
-  and it reads the mirror's `api/pane/<session>` stream and opens a scratch
-  terminal's `api/term/<session>` WebSocket, passing each on a port. The terminal is the extension's own page (`terminal.html`), framed over
+  and it opens a terminal's `api/term/<session>` WebSocket, passing it on a port. The terminal is the extension's own page (`terminal.html`), framed over
   github.com and listed in `web_accessible_resources` for github.com alone; it
   talks to no factory itself, since Chrome's local-network rules can hold a
   request from a frame under a public page to a factory on a private or
@@ -595,7 +580,7 @@ forward, and keep tailnet ACLs restrictive.
   by the agent on #N*: that card is a pointer to the same session, and its own
   card carries the actions. A comment on the item still reaches the session that
   works it.
-- The item mirror draws the pane's rows at the window's width, not the pane's, so a
+- The (unused) item mirror draws the pane's rows at the window's width, not the pane's, so a
   line longer than the panel wraps and the pane's own column layout is kept
   only where it matters: in a clipped border row and a table's own box. A table
   the pane had already wrapped at its own width cannot be put back together, and
@@ -608,7 +593,7 @@ the painted-glyph rules in `terminal.css`) are ported from
 [collie](https://github.com/AltanS/collie) by Altan Sarisin, under the MIT
 license; each file carries the notice.
 
-The scratch terminal is [xterm.js](https://github.com/xtermjs/xterm.js) with
+The live terminal is [xterm.js](https://github.com/xtermjs/xterm.js) with
 its fit addon, vendored unmodified in `vendor/xterm/` (a Manifest V3 extension
 may load no remote code) from the npm registry: `@xterm/xterm` 6.0.0
 (`lib/xterm.mjs`, `css/xterm.css`) and `@xterm/addon-fit` 0.11.0
