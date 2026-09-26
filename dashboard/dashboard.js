@@ -2,6 +2,7 @@ const cardsNode = document.querySelector("#cards");
 const emptyNode = document.querySelector("#empty");
 const noticeNode = document.querySelector("#notice");
 const statusNode = document.querySelector("#refresh-status");
+const buildNode = document.querySelector("#build");
 const monitoredNode = document.querySelector("#monitored");
 const refreshButton = document.querySelector("#refresh");
 const template = document.querySelector("#card-template");
@@ -195,6 +196,7 @@ async function refresh() {
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || `status request failed (${response.status})`);
     render(body.cards, body.monitored_items || []);
+    fill(buildNode, body.build || "");
     if (body.warning) show(emptyNode, false);
     fill(noticeNode, body.warning ? `Status may be incomplete: ${body.warning}` : "");
     show(noticeNode, Boolean(body.warning));

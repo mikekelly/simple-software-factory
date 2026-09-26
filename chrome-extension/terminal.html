@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <title>ssf terminal</title>
     <link rel="stylesheet" href="vendor/xterm/xterm.css" />
+    <link rel="stylesheet" href="pane-render.css" />
     <link rel="stylesheet" href="terminal.css" />
   </head>
   <body>
@@ -13,8 +14,6 @@
       <button id="type" type="button" aria-pressed="false" hidden>Type</button>
       <button id="reconnect" type="button" hidden>Reconnect</button>
       <button id="resume" type="button" hidden>Resume</button>
-      <textarea id="keys" aria-label="Type into the pane" autocomplete="off"
-        autocapitalize="off" spellcheck="false" tabindex="-1"></textarea>
     </header>
     <p id="notice" role="status" hidden></p>
     <main id="scroller"><pre id="history"></pre><pre id="screen"></pre></main>

@@ -6,17 +6,20 @@
   <title>SSF terminal</title>
   <link rel="stylesheet" href="dashboard.css">
   <link rel="stylesheet" href="xterm.css">
+  <link rel="stylesheet" href="pane-render.css">
   <link rel="stylesheet" href="terminal.css">
 </head>
-<body>
+<body data-terminal-input="{{terminal_input}}">
   <div class="term-bar">
     <h1 id="title">Terminal</h1>
     <span id="status" class="status" aria-live="polite">connecting…</span>
     <button id="type" type="button" aria-pressed="false" hidden>Type</button>
     <button id="reconnect" type="button" hidden>Reconnect</button>
+    <span class="build">{{build}}</span>
   </div>
   <p id="notice" class="term-notice" role="status" hidden></p>
-  <div id="box"></div>
+  <main id="mirror"><pre id="history"></pre><pre id="screen"></pre></main>
+  <div id="box" hidden></div>
   <script type="module" src="terminal.js"></script>
 </body>
 </html>

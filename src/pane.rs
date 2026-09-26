@@ -3,10 +3,10 @@
 //! above it -- as JSON lines, one each time it changes, and `ssf __pane send`
 //! types into it.
 //!
-//! The mirror (`watch`, `send`, and the extension's `pane-render.js`) is to be
-//! removed once the extension moves over to the live terminal the server web
-//! dashboard already uses for an item's pane (#563): `ssf __pane control`,
-//! which streams `herdr terminal session observe|control`.
+//! The mirror is the read-only view of an item's pane, in the extension and
+//! on the server web page (#563); typing into it goes through the live
+//! terminal instead, `ssf __pane control`, which streams `herdr terminal
+//! session observe|control`.
 //!
 //! These run where the sessions run, as every factory command does: the web
 //! endpoint starts them through the same client transport as its status

@@ -1,0 +1,83 @@
+/* How pane-render.js's text is drawn: the extension's terminal page and the
+   server web page's (dashboard/terminal.html, which serves this file) both
+   link it. */
+:root {
+  /* The 16 indexed ANSI colours pane-render.js names, collie's palette. */
+  --ansi-0: #000000; --ansi-1: #cd3131; --ansi-2: #0dbc79; --ansi-3: #e5e510;
+  --ansi-4: #2472c8; --ansi-5: #bc3fbc; --ansi-6: #11a8cd; --ansi-7: #e5e5e5;
+  --ansi-8: #666666; --ansi-9: #f14c4c; --ansi-10: #23d18b; --ansi-11: #f5f543;
+  --ansi-12: #3b8eea; --ansi-13: #d670d6; --ansi-14: #29b8db; --ansi-15: #ffffff;
+}
+/* collie's mirror: its font stack at a fixed size, rows 1.25em apart, no
+   ligatures, and long lines wrapped at the reader's width. */
+pre { margin: 0; font-family: "Nerd Font Symbols", "Symbols Nerd Font", "JetBrains Mono",
+  "Cascadia Mono", "Cascadia Code", "Roboto Mono", ui-monospace, SFMono-Regular,
+  "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 13px;
+  line-height: 1.25; letter-spacing: normal; font-variant-ligatures: none;
+  white-space: pre-wrap; overflow-wrap: break-word; }
+
+/* A terminal-wide border row, kept to one row and clipped at the right. */
+.clip { display: inline-block; max-width: 100%; overflow: hidden;
+  vertical-align: bottom; white-space: pre; overflow-wrap: normal; }
+/* A table keeps its columns: it pans in its own box (a trackpad, or
+   Shift+wheel), while the prose around it wraps. No scrollbar of its own,
+   which would cover its last row. */
+.table-run { display: inline-block; width: 100%; max-width: 100%; vertical-align: bottom;
+  white-space: pre; overflow-wrap: normal; overflow-x: auto; overflow-y: hidden;
+  overscroll-behavior-x: contain; scrollbar-width: none; }
+.table-run::-webkit-scrollbar { display: none; }
+
+/* A block or Powerline glyph painted to its cell (collie's cell-glyphs): a
+   glyph fills its em box and the rows are 1.25em, so the font's own would come
+   out a quarter of a row short. The character stays as text, for selection and
+   copy; only its ink is emptied, and the paint takes the run's own colour. A
+   block is painted on a band that is the row; a Powerline cap on the span
+   itself, to meet the run background beside it. */
+@supports (height: 1lh) {
+  .cell-glyph { --ink: linear-gradient(currentColor, currentColor);
+    -webkit-text-fill-color: transparent; }
+  .cell-glyph:not([data-cell^="wedge-"], [data-cell^="round-"]) { position: relative; z-index: 0; }
+  .cell-glyph:not([data-cell^="wedge-"], [data-cell^="round-"])::before { content: "";
+    position: absolute; left: 0; right: 0; height: calc(1lh + 0.5px); margin-top: -0.5px;
+    z-index: -1; pointer-events: none; background-repeat: no-repeat; }
+  .cell-glyph[data-cell="full"]::before { background-image: var(--ink); }
+  .cell-glyph[data-cell="lower-1"]::before { background: var(--ink) 0 100% / 100% 12.5% no-repeat; }
+  .cell-glyph[data-cell="lower-2"]::before { background: var(--ink) 0 100% / 100% 25% no-repeat; }
+  .cell-glyph[data-cell="lower-3"]::before { background: var(--ink) 0 100% / 100% 37.5% no-repeat; }
+  .cell-glyph[data-cell="lower-4"]::before { background: var(--ink) 0 100% / 100% 50% no-repeat; }
+  .cell-glyph[data-cell="lower-5"]::before { background: var(--ink) 0 100% / 100% 62.5% no-repeat; }
+  .cell-glyph[data-cell="lower-6"]::before { background: var(--ink) 0 100% / 100% 75% no-repeat; }
+  .cell-glyph[data-cell="lower-7"]::before { background: var(--ink) 0 100% / 100% 87.5% no-repeat; }
+  .cell-glyph[data-cell="upper-1"]::before { background: var(--ink) 0 0 / 100% 12.5% no-repeat; }
+  .cell-glyph[data-cell="upper-4"]::before { background: var(--ink) 0 0 / 100% 50% no-repeat; }
+  .cell-glyph[data-cell="left-1"]::before { background: var(--ink) 0 0 / 12.5% 100% no-repeat; }
+  .cell-glyph[data-cell="left-2"]::before { background: var(--ink) 0 0 / 25% 100% no-repeat; }
+  .cell-glyph[data-cell="left-3"]::before { background: var(--ink) 0 0 / 37.5% 100% no-repeat; }
+  .cell-glyph[data-cell="left-4"]::before { background: var(--ink) 0 0 / 50% 100% no-repeat; }
+  .cell-glyph[data-cell="left-5"]::before { background: var(--ink) 0 0 / 62.5% 100% no-repeat; }
+  .cell-glyph[data-cell="left-6"]::before { background: var(--ink) 0 0 / 75% 100% no-repeat; }
+  .cell-glyph[data-cell="left-7"]::before { background: var(--ink) 0 0 / 87.5% 100% no-repeat; }
+  .cell-glyph[data-cell="right-1"]::before { background: var(--ink) 100% 0 / 12.5% 100% no-repeat; }
+  .cell-glyph[data-cell="right-4"]::before { background: var(--ink) 100% 0 / 50% 100% no-repeat; }
+  .cell-glyph[data-cell^="quad-"] {
+    --ul: var(--ink) 0 0 / 50% 50% no-repeat; --ur: var(--ink) 100% 0 / 50% 50% no-repeat;
+    --ll: var(--ink) 0 100% / 50% 50% no-repeat; --lr: var(--ink) 100% 100% / 50% 50% no-repeat; }
+  .cell-glyph[data-cell="quad-ll"]::before { background: var(--ll); }
+  .cell-glyph[data-cell="quad-lr"]::before { background: var(--lr); }
+  .cell-glyph[data-cell="quad-ul"]::before { background: var(--ul); }
+  .cell-glyph[data-cell="quad-ur"]::before { background: var(--ur); }
+  .cell-glyph[data-cell="quad-ul-ll-lr"]::before { background: var(--ul), var(--ll), var(--lr); }
+  .cell-glyph[data-cell="quad-ul-lr"]::before { background: var(--ul), var(--lr); }
+  .cell-glyph[data-cell="quad-ul-ur-ll"]::before { background: var(--ul), var(--ur), var(--ll); }
+  .cell-glyph[data-cell="quad-ul-ur-lr"]::before { background: var(--ul), var(--ur), var(--lr); }
+  .cell-glyph[data-cell="quad-ur-ll"]::before { background: var(--ur), var(--ll); }
+  .cell-glyph[data-cell="quad-ur-ll-lr"]::before { background: var(--ur), var(--ll), var(--lr); }
+  .cell-glyph[data-cell="wedge-right"] { background:
+    linear-gradient(to top right, currentColor 49.8%, transparent 50%) 0 0 / 100% 50% no-repeat,
+    linear-gradient(to bottom right, currentColor 49.8%, transparent 50%) 0 100% / 100% 50% no-repeat; }
+  .cell-glyph[data-cell="wedge-left"] { background:
+    linear-gradient(to top left, currentColor 49.8%, transparent 50%) 0 0 / 100% 50% no-repeat,
+    linear-gradient(to bottom left, currentColor 49.8%, transparent 50%) 0 100% / 100% 50% no-repeat; }
+  .cell-glyph[data-cell="round-right"] { background: var(--ink); border-radius: 0 100% 100% 0 / 0 50% 50% 0; }
+  .cell-glyph[data-cell="round-left"] { background: var(--ink); border-radius: 100% 0 0 100% / 50% 0 0 50%; }
+}

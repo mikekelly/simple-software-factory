@@ -475,31 +475,29 @@ says so and offers **Reconnect**, and **Resume** to start a session that ended
 again. The terminal never moves on to another session: ssf's tmux sessions
 detach their terminal when they end.
 
-An **item**'s window is also a live xterm.js terminal on `api/term/<session>`,
-which for an item streams the agent's herdr pane (`herdr terminal session
-observe|control`; see [docs/dashboard.md](../docs/dashboard.md)). It opens
-**read-only** at the pane's own size: nothing you type or paste is sent, and a
-notice under the title bar says so.
+An **item**'s window opens **read-only**, as the pane mirror: the factory's
+`api/pane/<session>` stream of the agent's herdr pane, its screen and the
+history above it, redacted and drawn as text (`pane-render.js`) at the
+window's width. Long lines wrap, and the wheel scrolls back through the
+history. Nothing you type or paste is sent, and a notice under the title bar
+says so.
 
 Where the snapshot says the pane takes typing (`pane_input`: only where the
-factory's `item_pane_input` is on), the factory's Writes switch is on, and the
-factory gives this extension control, the terminal has a **Type** button. With
-Type on, the terminal asks for control of the pane, takes it at the window's
-size, and everything typed goes straight to the pane; the factory checks
-`item_pane_input` again and never takes the pane over from someone else. Type
-turns itself off, giving the pane back, when the tab is hidden, after half an
-hour with nothing typed, when the Writes switch is turned off, or when someone
-else takes the pane over, and the notice says why. herdr keeps the pane's
-scrollback, so the terminal keeps none: while typing, each wheel notch scrolls
-the pane one step, Shift+Enter sends a newline that does not submit (ESC CR),
-and a paste is always sent as a bracketed paste. A read-only view cannot
-scroll back. Speak to an item's agent otherwise by commenting on the item.
-When the socket closes the terminal says so and offers **Reconnect**.
-
-The older pane mirror (`pane-render.js`, `pane-keys.js`, the mirror half of
-`terminal.js` and `api/pane/<session>`) is no longer opened for any session;
-it is kept until [#564](https://github.com/mikekelly/simple-software-factory/issues/564)
-removes it.
+factory's `item_pane_input` is on) and the factory's Writes switch is on, the
+window has a **Type** button. Type swaps the mirror for a live xterm.js
+terminal on `api/term/<session>` (`herdr terminal session control`; see
+[docs/dashboard.md](../docs/dashboard.md)), which asks for control of the
+pane, takes it at the window's size, and sends everything typed straight to
+the pane; the factory checks `item_pane_input` again and never takes the pane
+over from someone else. Type turns itself off, giving the pane back and
+showing the mirror again, when you turn it off, the tab is hidden, after half
+an hour with nothing typed, when the Writes switch is turned off, when the
+factory refuses control or someone else takes the pane over, or when the
+socket closes; the notice says why. While typing, each wheel notch scrolls the
+pane one step, Shift+Enter sends a newline that does not submit (ESC CR), and
+a paste is always sent as a bracketed paste. Speak to an item's agent
+otherwise by commenting on the item. When the mirror's stream stops the window
+says so and offers **Reconnect**.
 
 ## Reaching a factory on a tailnet
 
@@ -530,8 +528,8 @@ forward, and keep tailnet ACLs restrictive.
   text is ever parsed as HTML and no GitHub style leaks in.
 - The **service worker** also carries every write and the two listings the
   forms' pickers need: `api/assign`, `api/handover`, `api/release`, the
-  scratch routes, `api/pane/input`, `api/agents` and `api/models/<harness>`,
-  and it opens a terminal's `api/term/<session>` WebSocket, passing it on a port. The terminal is the extension's own page (`terminal.html`), framed over
+  scratch routes, `api/agents` and `api/models/<harness>`,
+  and it reads the mirror's `api/pane/<session>` stream and opens a terminal's `api/term/<session>` WebSocket, passing each on a port. The terminal is the extension's own page (`terminal.html`), framed over
   github.com and listed in `web_accessible_resources` for github.com alone; it
   talks to no factory itself, since Chrome's local-network rules can hold a
   request from a frame under a public page to a factory on a private or
@@ -580,7 +578,7 @@ forward, and keep tailnet ACLs restrictive.
   by the agent on #N*: that card is a pointer to the same session, and its own
   card carries the actions. A comment on the item still reaches the session that
   works it.
-- The (unused) item mirror draws the pane's rows at the window's width, not the pane's, so a
+- The item mirror draws the pane's rows at the window's width, not the pane's, so a
   line longer than the panel wraps and the pane's own column layout is kept
   only where it matters: in a clipped border row and a table's own box. A table
   the pane had already wrapped at its own width cannot be put back together, and
@@ -588,8 +586,8 @@ forward, and keep tailnet ACLs restrictive.
 
 ## Credits
 
-The terminal's renderer and key mapping (`pane-render.js`, `pane-keys.js`, and
-the painted-glyph rules in `terminal.css`) are ported from
+The mirror's renderer (`pane-render.js`, and the painted-glyph rules in
+`pane-render.css`) are ported from
 [collie](https://github.com/AltanS/collie) by Altan Sarisin, under the MIT
 license; each file carries the notice.
 

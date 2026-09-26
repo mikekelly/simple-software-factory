@@ -21,6 +21,30 @@ fn main() {
     let zip = archive(&files);
     let out = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
     fs::write(Path::new(&out).join("chrome-extension.zip"), zip).expect("write the zip");
+    commit();
+}
+
+/// The checkout's short commit, shown with the version on the dashboard
+/// (`SSF_COMMIT`); "unknown" where the build is not from a git checkout (a
+/// packaged tarball).
+fn commit() {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty())
+    };
+    if let Some(dir) = git(&["rev-parse", "--git-dir"]) {
+        // A commit or checkout moves HEAD and appends to its log.
+        println!("cargo:rerun-if-changed={dir}/HEAD");
+        println!("cargo:rerun-if-changed={dir}/logs/HEAD");
+    }
+    let sha = git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    println!("cargo:rustc-env=SSF_COMMIT={sha}");
 }
 
 fn collect(dir: &Path, prefix: &str, files: &mut Vec<(String, Vec<u8>)>) {

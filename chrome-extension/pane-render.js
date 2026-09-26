@@ -1,5 +1,3 @@
-// To be removed with the rest of the pane mirror (`ssf __pane watch|send`)
-// once the extension moves item panes to the live terminal (#563).
 // The pane mirror's renderer (#477): a pane's ANSI text, drawn as styled text
 // in a <pre>, not as a terminal emulator.
 //

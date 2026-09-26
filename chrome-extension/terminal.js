@@ -1,16 +1,15 @@
-// The terminal page: a live terminal (term-xterm.js): a scratch session's
-// (#491, tmux) or an item session's (#563, herdr).
-//
-// DEPRECATED, kept until #564 removes it: the pane mirror below (`start`) is
-// no longer opened for any session; an item's pane is the live terminal.
+// The terminal page: a scratch session's live terminal (term-xterm.js, #491),
+// or an item session's pane (#563): read-only, the pane mirror below; with
+// Type on, the live terminal (term-xterm.js runItem), which takes control of
+// the pane.
 //
 // The pane mirror (#414): one item session's agent pane, drawn as styled text
-// (pane-render.js, after collie) rather than by a terminal emulator, and typed
-// into where the factory allows it: the snapshot's `pane_input` for the
-// session, passed in the page address: an item's only where the factory's
-// `item_pane_input` is on (#439: its agent is otherwise spoken to by
-// commenting on the item). The factory enforces the
-// same rule on every request.
+// (pane-render.js, after collie) rather than by a terminal emulator, and
+// redacted by the factory. Type is offered where the factory allows typing:
+// the snapshot's `pane_input` for the session, passed in the page address
+// (`item_pane_input`, #439: its agent is otherwise spoken to by commenting on
+// the item), and the factory's Writes switch on the options page. The factory
+// enforces the same rule on every request.
 //
 // The factory reads the pane's visible screen a few times a second while
 // someone watches it and sends a frame only when it changed
@@ -20,27 +19,21 @@
 // through it. The text is drawn at a fixed size and wraps at the panel's
 // width, so the pane is never shrunk to fit and never resized.
 //
-// Typing is a mode the person turns on (Type) and that turns itself off when
-// the picture stops being one they are watching: the tab hidden, the stream
-// stopped, a write refused, or half an hour with nothing done here. What is
-// typed goes a keystroke at a time as herdr key names (pane-keys.js), and a
-// paste as text, to the service worker, which sends it as the write
-// `api/pane/input` -- a write like assign, so the factory's Writes switch
-// applies to it -- one request at a time, in order.
+// Typing is a mode the person turns on (Type), which swaps the mirror for the
+// live terminal until Type turns off: by the person, or by itself when the
+// tab is hidden, nothing is typed for half an hour, Writes goes off, or the
+// factory refuses control or the pane is taken over elsewhere. Every one of
+// those gives the pane back and shows the mirror again. A key or a paste
+// while read-only is not sent anywhere: a notice says so.
 //
 // This page is the extension's own, framed over the GitHub page by Open
 // (pane-overlay.js, #477), and it talks to no factory itself: a frame under
 // github.com is where Chrome's local-network rules can hold a request to a
 // factory on a private or tailnet address. The service worker reads the stream
 // with the extension's permission and passes it on a port (`ssf-pane`), as it
-// sends what is typed.
+// passes the live terminal's socket (`ssf-term`).
 import { factoryLabel, factoryUrl } from "./factory-url.js";
 import { render } from "./pane-render.js";
-import { fitsWrite, keyForInputType, keyForKeyDown, pasteBody, textToKeys } from "./pane-keys.js";
-
-/// The body bound of a write is 4096 bytes: typed keys go in batches of at
-/// most this many keys. A paste is one write, or none (pasteBody).
-const MAX_KEYS = 200;
 
 /// Failures in a row, with no frame between them, before the page stops
 /// asking: a reader that cannot start is not asked again every few seconds.
@@ -53,10 +46,6 @@ const RETRY_MS = 3000;
 /// service worker holding it awake: the frames it sends do not.
 const PING_MS = 20000;
 
-/// How long typing stays on with nothing done in the terminal: collie's idle
-/// pause.
-const IDLE_MS = 30 * 60 * 1000;
-
 /// How close to the bottom, in pixels, still counts as at the bottom.
 const BOTTOM_SLACK = 4;
 
@@ -66,7 +55,7 @@ const session = String(params.get("session") ?? "");
 const takesInput = params.get("input") === "1";
 const stateLine = document.getElementById("state");
 const typeButton = document.getElementById("type");
-const field = document.getElementById("keys");
+const noticeNode = document.getElementById("notice");
 const scroller = document.getElementById("scroller");
 const historyBox = document.getElementById("history");
 const screenBox = document.getElementById("screen");
@@ -75,12 +64,19 @@ document.getElementById("session").textContent = session;
 document.getElementById("session").hidden = window.top !== window;
 document.title = `${session} · ssf`;
 
-/// Whether what is typed goes to the pane: Type is on.
-let typing = false;
-
 function say(text, problem = false) {
   stateLine.textContent = text;
   stateLine.dataset.problem = String(problem);
+}
+
+let noticeTimer = null;
+/// A line under the header: why Type went off (kept), or that a key was not
+/// sent (for a few seconds).
+function notice(text, sticky = false) {
+  clearTimeout(noticeTimer);
+  noticeNode.textContent = text;
+  noticeNode.hidden = !text;
+  if (text && !sticky) noticeTimer = setTimeout(() => (noticeNode.hidden = true), 6000);
 }
 
 // The view follows the live screen while it is at the bottom, and stays where
@@ -165,45 +161,45 @@ document.addEventListener("selectionchange", () => {
 // A narrower or wider panel wraps the text anew.
 new ResizeObserver(follow).observe(scroller);
 
-async function start() {
-  const stored = (await chrome.storage.local.get("factories")).factories ?? [];
-  // Only a factory the options page holds is read: this page takes its
-  // factory from its own address.
-  if (!url || !session || !stored.some((item) => factoryUrl(item?.url) === url)) {
-    say("this terminal names no configured factory or no session", true);
-    return;
-  }
-
-  // An item's agent has somewhere else to be spoken to; a scratch session's
-  // pane is view-only only where this factory takes no writes.
+async function start(stored) {
   // Which factory the session runs on: the options page's name for it, or its
   // host.
   const item = stored.find((one) => factoryUrl(one?.url) === url);
   const on = ` \u00b7 on ${String(item?.label ?? "").trim() || factoryLabel(url)}`;
-  const viewOnly = session.includes("~")
-    ? "live · view only"
-    : "live · view only: comment on the item to speak to its agent";
   const reconnect = document.getElementById("reconnect");
+  const { runItem } = await import("./term-xterm.js");
+  const live = runItem({
+    url,
+    session,
+    say,
+    box: document.getElementById("xterm"),
+    notice,
+    onLeave: (why) => {
+      scroller.hidden = false;
+      follow();
+      if (why) notice(`Type is off: ${why}.`, true);
+      shown();
+    },
+  });
   let port = null;
   let retry = null;
   let failures = 0;
-  let live = false;
-  /// Why typing last turned itself off, said until it is turned on again.
-  let notice = "";
+  let streaming = false;
+  /// The factory's Writes switch, followed as the options page changes it:
+  /// absent is on, as the service worker reads it.
+  let writes = item?.writes !== false;
+  const canType = () => takesInput && writes;
 
-  function showLive() {
-    live = true;
-    typeButton.hidden = !takesInput;
-    if (!takesInput) say(viewOnly + on);
-    else if (typing) say(`live${on} · typing into the pane`);
-    else if (notice) say(`live${on} · typing turned off: ${notice}`, true);
-    else say(`live${on}`);
+  function shown() {
+    typeButton.hidden = !canType() || !(streaming || live.typing());
+    typeButton.setAttribute("aria-pressed", String(live.typing()));
+    if (live.typing()) return;
+    if (streaming) say(`live${on} \u00b7 read-only`);
   }
 
   function notLive() {
-    live = false;
-    stopTyping();
-    typeButton.hidden = true;
+    streaming = false;
+    shown();
   }
 
   function hangUp() {
@@ -217,7 +213,7 @@ async function start() {
   function stop(text) {
     hangUp();
     notLive();
-    say(text, true);
+    if (!live.typing()) say(text, true);
     reconnect.hidden = false;
   }
 
@@ -230,7 +226,7 @@ async function start() {
       stop(error ? `the stream stopped (${error})` : "the stream stopped");
       return;
     }
-    say("the stream stopped; reconnecting…", true);
+    if (!live.typing()) say("the stream stopped; reconnecting…", true);
     retry = setTimeout(watch, RETRY_MS);
   }
 
@@ -243,7 +239,8 @@ async function start() {
           drawHistory(String(frame.history ?? ""));
         } else {
           drawScreen(String(frame.screen ?? ""));
-          showLive();
+          streaming = true;
+          shown();
         }
       } catch (error) {
         say(`the factory sent a frame that could not be read (${error})`, true);
@@ -290,161 +287,67 @@ async function start() {
     }
   }, PING_MS);
 
-  // Typing. What is typed, in order: one request in the air at a time, and
-  // whatever was typed meanwhile goes in the next.
-  let queue = [];
-  let sending = false;
-  let composing = false;
-  let lastActivity = Date.now();
+  typeButton.addEventListener("click", () => {
+    if (live.typing()) return live.leave();
+    if (!canType()) return;
+    notice("");
+    scroller.hidden = true;
+    live.enter();
+    shown();
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes.factories) return;
+    const now = (changes.factories.newValue ?? []).find((one) => factoryUrl(one?.url) === url);
+    writes = now !== undefined && now?.writes !== false;
+    if (!writes) live.leave("writes were turned off for this factory");
+    shown();
+  });
 
-  function startTyping() {
-    if (!takesInput || !live) return;
-    typing = true;
-    notice = "";
-    lastActivity = Date.now();
-    typeButton.setAttribute("aria-pressed", "true");
-    field.value = "";
-    field.focus({ preventScroll: true });
-    showLive();
+  /// A key or a paste while read-only goes nowhere: said, so it is not
+  /// mistaken for typing. Copying (Ctrl or Cmd with a key) is not typing.
+  function readOnly() {
+    notice(
+      "Read-only: nothing was sent. " +
+        (canType()
+          ? "Turn on Type to type into this pane."
+          : !takesInput
+            ? "Comment on the item to speak to its agent."
+            : "Writes are off for this factory on the options page."),
+    );
   }
-
-  /// Turn typing off; `why`, when it was not the person who did, is said.
-  function stopTyping(why) {
-    if (!typing) return;
-    typing = false;
-    composing = false;
-    queue = [];
-    field.value = "";
-    field.blur();
-    typeButton.setAttribute("aria-pressed", "false");
-    notice = why ?? "";
-    if (live) showLive();
-  }
-
-  async function flush() {
-    if (sending) return;
-    sending = true;
-    while (queue.length) {
-      const input = queue.shift();
-      let reply;
-      try {
-        reply = await chrome.runtime.sendMessage({ type: "ssf:pane-input", url, session, ...input });
-      } catch (error) {
-        reply = { ok: false, error: `the extension's service worker did not answer (${error})` };
-      }
-      if (!reply?.ok) {
-        // Typing on into a pane that is not taking it would be typing blind.
-        stopTyping(`not typed (${reply?.error ?? "the factory did not answer"})`);
-      }
-    }
-    sending = false;
-  }
-
-  function sendKeys(keys) {
-    if (!typing || keys.length === 0) return;
-    lastActivity = Date.now();
-    for (const key of keys) {
-      const last = queue.at(-1);
-      if (last?.keys && last.keys.length < MAX_KEYS) last.keys.push(key);
-      else queue.push({ keys: [key] });
-    }
-    flush();
-  }
-
-  typeButton.addEventListener("click", () => (typing ? stopTyping() : startTyping()));
-  field.addEventListener("keydown", (event) => {
-    if (event.isComposing || event.keyCode === 229) return;
-    const key = keyForKeyDown(event);
-    if (key === undefined) return;
-    event.preventDefault();
-    sendKeys([key]);
+  addEventListener("keydown", (event) => {
+    if (live.typing() || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.target instanceof HTMLButtonElement && (event.key === "Enter" || event.key === " ")) return;
+    if (event.key.length === 1 || ["Enter", "Backspace", "Tab", "Delete"].includes(event.key)) readOnly();
   });
-  field.addEventListener("beforeinput", (event) => {
-    const key = keyForInputType(event.inputType);
-    if (key === null) return;
-    // Backspace inside an IME edits the candidate, not the pane.
-    if (event.isComposing && key === "Backspace") return;
-    event.preventDefault();
-    sendKeys([key]);
-  });
-  field.addEventListener("input", (event) => {
-    if (event.isComposing || composing) return;
-    const text = field.value;
-    field.value = "";
-    sendKeys(textToKeys(text));
-  });
-  // An IME's composition is sent once, when it is committed.
-  field.addEventListener("compositionstart", () => {
-    composing = true;
-  });
-  field.addEventListener("compositionend", (event) => {
-    composing = false;
-    const text = field.value || event.data || "";
-    field.value = "";
-    sendKeys(textToKeys(text));
-  });
-  field.addEventListener("paste", (event) => {
-    event.preventDefault();
-    if (!typing) return;
-    lastActivity = Date.now();
-    const body = pasteBody(session, event.clipboardData?.getData("text/plain") ?? "");
-    if (!body) return;
-    // A paste too long for one write is not sent in part: said, and typing
-    // turned off, so the person sees it did not go.
-    if (!fitsWrite(body)) return stopTyping("the paste is longer than the factory takes in one write");
-    queue.push({ text: body.text });
-    flush();
-  });
-  // A click in the terminal gives typing its field back, unless it was to
-  // select text.
-  scroller.addEventListener("mouseup", () => {
-    if (typing && getSelection()?.isCollapsed) field.focus({ preventScroll: true });
-  });
-  for (const name of ["pointerdown", "wheel", "keydown"]) {
-    addEventListener(name, () => (lastActivity = Date.now()), { capture: true, passive: true });
-  }
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") stopTyping("the tab was hidden");
-  });
-  setInterval(() => {
-    if (typing && Date.now() - lastActivity >= IDLE_MS) stopTyping("nothing was typed for a while");
-  }, 30000);
+  addEventListener("paste", () => live.typing() || readOnly());
 }
 
-// Every session is a live terminal: a scratch session's (tmux, #491) or an
-// item's (herdr, #563). The mirror above (`start`) is unused until #564
-// removes it.
-scroller.hidden = true;
-startTerm().catch((error) => say(String(error), true));
-void start;
-
-async function startTerm() {
-  const stored = (await chrome.storage.local.get("factories")).factories ?? [];
-  if (!url || !stored.some((item) => factoryUrl(item?.url) === url)) {
-    say("this terminal names no configured factory or no session", true);
-    return;
-  }
-  const { run, runItem } = await import("./term-xterm.js");
-  if (!session.includes("~")) {
-    runItem({
+function startScratch() {
+  scroller.hidden = true;
+  import("./term-xterm.js").then(({ run }) =>
+    run({
       url,
       session,
       takesInput,
       say,
       box: document.getElementById("xterm"),
-      notice: document.getElementById("notice"),
-      typeButton,
       reconnect: document.getElementById("reconnect"),
-    });
+      resume: document.getElementById("resume"),
+    }),
+  );
+}
+
+(async () => {
+  const stored = (await chrome.storage.local.get("factories")).factories ?? [];
+  // Only a factory the options page holds is read: this page takes its
+  // factory from its own address.
+  if (!url || !session || !stored.some((item) => factoryUrl(item?.url) === url)) {
+    say("this terminal names no configured factory or no session", true);
     return;
   }
-  run({
-    url,
-    session,
-    takesInput,
-    say,
-    box: document.getElementById("xterm"),
-    reconnect: document.getElementById("reconnect"),
-    resume: document.getElementById("resume"),
-  });
-}
+  // A scratch session is a live terminal of its own (#491); an item's is the
+  // mirror, and the live terminal while Type is on (#563).
+  if (session.includes("~")) startScratch();
+  else await start(stored);
+})().catch((error) => say(String(error), true));
