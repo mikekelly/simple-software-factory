@@ -626,6 +626,15 @@ pub(super) enum PaneCommand {
         /// The scratch session, as owner/repo~id.
         session: String,
     },
+    /// Spike (#561): run `herdr terminal session control` on an item
+    /// session's pane, NDJSON over stdin/stdout (pipes, not a PTY).
+    Control {
+        /// The item session, as owner/repo#N.
+        session: String,
+        /// `observe` instead of `control`: view only, never resizes.
+        #[arg(long)]
+        observe: bool,
+    },
 }
 
 #[derive(Subcommand)]

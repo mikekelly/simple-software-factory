@@ -408,7 +408,9 @@ async function start() {
   }, 30000);
 }
 
-if (session.includes("~")) {
+// Spike (#561): an item session's herdr pane is a live terminal too
+// (`herdr terminal session control`), unless the address says `live=0`.
+if (session.includes("~") || params.get("live") !== "0") {
   // A scratch session is a live terminal of its own (term-xterm.js, #491); an
   // item's stays the mirror above.
   scroller.hidden = true;

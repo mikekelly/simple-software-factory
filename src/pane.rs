@@ -353,6 +353,29 @@ pub(crate) async fn attach(session: &str) -> Result<()> {
     Err(anyhow::Error::new(error).context("running tmux attach"))
 }
 
+/// `ssf __pane control` (spike, #561): replace this process with `herdr
+/// terminal session control <pane>` (or `observe`) on an item session's
+/// pane. Its stdin and stdout are NDJSON, so this runs over pipes.
+pub(crate) async fn control(session: &str, observe: bool) -> Result<()> {
+    let cfg = Config::load()?;
+    let state = State::load()?;
+    let Target::Driver(driver, pane) = locate(&cfg, &state, session).await? else {
+        bail!("{session} runs in tmux; use __pane attach");
+    };
+    use std::os::unix::process::CommandExt;
+    // A view-only pane (item_pane_input off) is only ever observed.
+    let observe = observe || input_refusal(&cfg, session).is_some();
+    let mode = if observe { "observe" } else { "control" };
+    let error = std::process::Command::new(crate::config::herdr_command_path(driver.command()))
+        .args(["terminal", "session", mode, &pane])
+        .env_remove("HERDR_WORKSPACE_ID")
+        .env_remove("HERDR_TAB_ID")
+        .env_remove("HERDR_PANE_ID")
+        .env_remove("HERDR_ENV")
+        .exec();
+    Err(anyhow::Error::new(error).context("running herdr terminal session"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

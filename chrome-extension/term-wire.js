@@ -35,5 +35,7 @@ export function termSend(message, writes) {
   if (!writes) return null;
   if (message?.type === "input") return fromBase64(message.data);
   if (message?.type === "resize") return String(message.data);
+  // Spike (#561): a herdr pane's scrollback is herdr's, scrolled by message.
+  if (message?.type === "scroll") return String(message.data);
   return null;
 }

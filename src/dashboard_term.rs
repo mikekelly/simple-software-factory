@@ -104,7 +104,12 @@ pub(crate) async fn serve(mut stream: TcpStream, session: &str, key: &str, clien
     }
     let mut ws = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
     tracing::debug!(session, "web API terminal opened");
-    if let Err(error) = bridge(&mut ws, session, client).await {
+    let bridged = if crate::origin::Origin::parse(session).is_some() {
+        bridge_herdr(&mut ws, session, client).await
+    } else {
+        bridge(&mut ws, session, client).await
+    };
+    if let Err(error) = bridged {
         let _ = ws
             .send(Message::binary(
                 format!("\r\nssf: {error:#}\r\n").into_bytes(),
@@ -284,6 +289,147 @@ async fn bridge(ws: &mut WebSocketStream<TcpStream>, session: &str, client: &Pat
     outcome
 }
 
+/// Spike (#561): what a client's WebSocket message asks of `herdr terminal
+/// session control`, as its NDJSON command line. Binary frames are typed
+/// bytes; text frames are `resize`, `scroll` or `release` control.
+pub(crate) fn herdr_command_of(message: &Message) -> Option<String> {
+    use base64::Engine;
+    let command = match message {
+        Message::Binary(bytes) => serde_json::json!({
+            "type": "terminal.input",
+            "bytes": base64::engine::general_purpose::STANDARD.encode(bytes),
+        }),
+        Message::Text(text) => {
+            if let Some((cols, rows)) = resize_of(text.as_str()) {
+                serde_json::json!({"type": "terminal.resize", "cols": cols, "rows": rows})
+            } else {
+                let value: serde_json::Value = serde_json::from_str(text.as_str()).ok()?;
+                match value.get("type")?.as_str()? {
+                    "scroll" => {
+                        let lines = value.get("lines")?.as_u64()?.clamp(1, 1000);
+                        let direction = match value.get("direction")?.as_str()? {
+                            "up" => "up",
+                            _ => "down",
+                        };
+                        serde_json::json!({"type": "terminal.scroll", "lines": lines, "direction": direction})
+                    }
+                    "release" => serde_json::json!({"type": "terminal.release"}),
+                    _ => return None,
+                }
+            }
+        }
+        _ => return None,
+    };
+    Some(format!("{command}\n"))
+}
+
+/// Spike (#561): what one NDJSON line from herdr means for the socket.
+#[derive(Debug, PartialEq)]
+pub(crate) enum HerdrLine {
+    /// Terminal bytes to draw.
+    Frame(Vec<u8>),
+    /// The stream ended, and why.
+    Closed(String),
+    /// Anything else.
+    Other,
+}
+
+pub(crate) fn herdr_line(line: &str) -> HerdrLine {
+    use base64::Engine;
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return HerdrLine::Other;
+    };
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("terminal.frame") => value
+            .get("bytes")
+            .and_then(|b| b.as_str())
+            .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+            .map_or(HerdrLine::Other, HerdrLine::Frame),
+        Some("terminal.closed") => HerdrLine::Closed(
+            value
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("closed")
+                .to_string(),
+        ),
+        _ => HerdrLine::Other,
+    }
+}
+
+/// Spike (#561): bridge the socket to `ssf __pane control <session>`, which
+/// runs `herdr terminal session control` on the item's pane. NDJSON both
+/// ways, over pipes: a PTY's line discipline would mangle it.
+async fn bridge_herdr(
+    ws: &mut WebSocketStream<TcpStream>,
+    session: &str,
+    client: &Path,
+) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut command = crate::dashboard_transport::local_client_command(
+        client,
+        &["__pane", "control", session],
+        crate::server_catalog::service_local_context(),
+        crate::server_catalog::selected_vm_context()?.as_ref(),
+        crate::server_catalog::selected_target_identity()?.as_ref(),
+    );
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().context("starting the herdr bridge")?;
+    let mut stdin = child.stdin.take().context("the bridge's stdin")?;
+    let mut lines = BufReader::new(child.stdout.take().context("the bridge's stdout")?).lines();
+    let mut stderr = child.stderr.take().context("the bridge's stderr")?;
+    // Start at the browser's size once it says it; until then herdr keeps the
+    // pane's own.
+    let outcome: Result<()> = loop {
+        tokio::select! {
+            line = lines.next_line() => match line {
+                Ok(Some(line)) => match herdr_line(&line) {
+                    HerdrLine::Frame(bytes) => {
+                        if ws.send(Message::binary(bytes)).await.is_err() {
+                            break Ok(());
+                        }
+                    }
+                    HerdrLine::Closed(reason) => {
+                        let _ = ws
+                            .send(Message::binary(format!("\r\nssf: {reason}\r\n").into_bytes()))
+                            .await;
+                        break Ok(());
+                    }
+                    HerdrLine::Other => {}
+                },
+                Ok(None) | Err(_) => {
+                    let mut said = String::new();
+                    let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr, &mut said).await;
+                    let said = said.trim();
+                    break if said.is_empty() { Ok(()) } else { Err(anyhow::anyhow!("{said}")) };
+                }
+            },
+            message = ws.next() => match message {
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break Ok(()),
+                Some(Ok(message)) => {
+                    if let Some(command) = herdr_command_of(&message)
+                        && let Err(error) = stdin.write_all(command.as_bytes()).await
+                    {
+                        break Err(error).context("typing into the terminal");
+                    }
+                }
+            },
+        }
+    };
+    // Closing stdin ends herdr's stream cleanly, and releases the pane.
+    drop(stdin);
+    if tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
+        .await
+        .is_err()
+    {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+    outcome
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +444,27 @@ mod tests {
         assert_eq!(resize_of(r#"{"type":"resize","cols":120}"#), None);
         assert_eq!(resize_of(r#"{"type":"other"}"#), None);
         assert_eq!(resize_of("not json"), None);
+    }
+
+    #[test]
+    fn herdr_lines_and_commands_translate() {
+        assert_eq!(
+            herdr_line(r#"{"type":"terminal.frame","seq":1,"bytes":"aGk="}"#),
+            HerdrLine::Frame(b"hi".to_vec())
+        );
+        assert_eq!(
+            herdr_line(r#"{"type":"terminal.closed","reason":"gone"}"#),
+            HerdrLine::Closed("gone".into())
+        );
+        assert_eq!(
+            herdr_command_of(&Message::binary(b"hi".to_vec())).unwrap(),
+            "{\"bytes\":\"aGk=\",\"type\":\"terminal.input\"}\n"
+        );
+        assert!(
+            herdr_command_of(&Message::text(r#"{"type":"resize","cols":80,"rows":24}"#))
+                .unwrap()
+                .contains("terminal.resize")
+        );
     }
 
     /// RFC 6455's own example key and answer.

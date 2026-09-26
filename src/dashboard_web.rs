@@ -813,9 +813,12 @@ fn term_request(
 ) -> std::result::Result<(String, String), (u16, &'static str, String)> {
     let session = percent_decode(encoded)
         .filter(|session| session.len() <= MAX_SESSION)
-        .and_then(|session| crate::origin::Scratch::parse(&session))
-        .map(|s| s.to_string())
-        .ok_or_else(|| bad("the terminal route takes a scratch session, owner/repo~id"))?;
+        // Spike (#561): an item session (owner/repo#N) too, bridged to herdr.
+        .filter(|session| {
+            crate::origin::Scratch::parse(session).is_some()
+                || crate::origin::Origin::parse(session).is_some()
+        })
+        .ok_or_else(|| bad("the terminal route takes owner/repo~id or owner/repo#N"))?;
     let header = |wanted: &str| {
         request
             .split("\r\n")
@@ -1695,8 +1698,15 @@ mod tests {
         };
         let ok = term_request(&upgrade("chrome-extension://abc"), "o%2Fr~ab12").unwrap();
         assert_eq!(ok, ("o/r~ab12".into(), "dGhlIHNhbXBsZSBub25jZQ==".into()));
+        // Spike (#561): an item session is bridged to herdr.
         assert_eq!(
             term_request(&upgrade("chrome-extension://abc"), "o%2Fr%2342")
+                .unwrap()
+                .0,
+            "o/r#42"
+        );
+        assert_eq!(
+            term_request(&upgrade("chrome-extension://abc"), "not-a-session")
                 .unwrap_err()
                 .0,
             400

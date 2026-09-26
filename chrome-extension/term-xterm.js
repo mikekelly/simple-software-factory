@@ -18,13 +18,17 @@ const encoder = new TextEncoder();
 
 export function run({ url, session, takesInput, say, box, reconnect, resume }) {
   box.hidden = false;
+  // Spike (#561): an item session's herdr pane. Its frames position the
+  // cursor absolutely and repaint in place, so xterm keeps no scrollback;
+  // herdr keeps it, and the wheel scrolls herdr's.
+  const herdr = session.includes("#");
   const term = new Terminal({
     cursorBlink: true,
     disableStdin: !takesInput,
     fontFamily:
       '"JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
     fontSize: 13,
-    scrollback: 5000,
+    scrollback: herdr ? 0 : 5000,
     theme: { background: "#0d1117", foreground: "#e6edf3" },
   });
   const fit = new FitAddon();
@@ -110,6 +114,17 @@ export function run({ url, session, takesInput, say, box, reconnect, resume }) {
       if (!connected) return;
       const bytes = Uint8Array.from(text, (c) => c.charCodeAt(0) & 0xff);
       post({ type: "input", data: toBase64(bytes) });
+    });
+  }
+  if (herdr && takesInput) {
+    // Outside mouse mode the wheel scrolls herdr's scrollback; in it (a
+    // full-screen TUI), xterm reports the wheel to the app itself.
+    term.attachCustomWheelEventHandler((event) => {
+      if (term.modes.mouseTrackingMode !== "none" || !connected || event.deltaY === 0) return true;
+      const lines = Math.max(1, Math.round(Math.abs(event.deltaY) / 40));
+      const direction = event.deltaY < 0 ? "up" : "down";
+      post({ type: "scroll", data: JSON.stringify({ type: "scroll", lines, direction }) });
+      return false;
     });
   }
   term.onResize(sendSize);
