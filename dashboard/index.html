@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SSF agents</title>
   <link rel="stylesheet" href="dashboard.css">
+  <link rel="stylesheet" href="vendor/dockview/dockview.css">
+  <link rel="stylesheet" href="xterm.css">
+  <link rel="stylesheet" href="terminal.css">
 </head>
 <body>
   <header class="masthead">
@@ -19,7 +22,8 @@
       <a class="download" href="chrome-extension.zip" download>Download Chrome extension</a>
     </div>
   </header>
-  <main>
+  <div id="dock" class="dock dockview-theme-dark"></div>
+  <main id="agents">
     <div id="notice" class="notice" role="status" hidden></div>
     <section id="cards" class="cards" aria-label="Active SSF agents" aria-busy="true"></section>
     <section id="monitored" class="monitored" hidden>
@@ -51,6 +55,7 @@
       </div>
     </article>
   </template>
-  <script src="dashboard.js" defer></script>
+  <script src="vendor/dockview/dockview-core.min.js"></script>
+  <script type="module" src="dashboard.js"></script>
 </body>
 </html>

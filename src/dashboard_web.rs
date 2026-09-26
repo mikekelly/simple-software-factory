@@ -19,6 +19,11 @@ const JS: &str = include_str!("../dashboard/dashboard.js");
 const TERMINAL_HTML: &str = include_str!("../dashboard/terminal.html");
 const TERMINAL_JS: &str = include_str!("../dashboard/terminal.js");
 const TERMINAL_CSS: &str = include_str!("../dashboard/terminal.css");
+const TERM_VIEW_JS: &str = include_str!("../dashboard/term-view.js");
+/// dockview-core (MIT, `dashboard/vendor/dockview/LICENSE`): the page's
+/// tabbed, split and draggable panel layout (#574).
+const DOCKVIEW_JS: &str = include_str!("../dashboard/vendor/dockview/dockview-core.min.js");
+const DOCKVIEW_CSS: &str = include_str!("../dashboard/vendor/dockview/dockview.css");
 const XTERM_JS: &str = include_str!("../chrome-extension/vendor/xterm/xterm.mjs");
 const XTERM_CSS: &str = include_str!("../chrome-extension/vendor/xterm/xterm.css");
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -414,6 +419,17 @@ async fn read(relative: &str, latest: &mut Latest, client: &Path) -> (u16, &'sta
             "text/javascript; charset=utf-8",
             TERMINAL_JS.to_owned(),
         ),
+        "term-view.js" => (
+            200,
+            "text/javascript; charset=utf-8",
+            TERM_VIEW_JS.to_owned(),
+        ),
+        "vendor/dockview/dockview-core.min.js" => (
+            200,
+            "text/javascript; charset=utf-8",
+            DOCKVIEW_JS.to_owned(),
+        ),
+        "vendor/dockview/dockview.css" => (200, "text/css; charset=utf-8", DOCKVIEW_CSS.to_owned()),
         "xterm.mjs" => (200, "text/javascript; charset=utf-8", XTERM_JS.to_owned()),
         "xterm.css" => (200, "text/css; charset=utf-8", XTERM_CSS.to_owned()),
         "api/agents" => agents(client).await,
@@ -1691,13 +1707,14 @@ fn under_capability<'a>(token: &str, target: &'a str) -> std::result::Result<&'a
 }
 
 const SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n";
-/// The terminal page's: xterm.js draws with `<style>` elements and style
+/// The terminal page's and the dashboard's, which opens terminals in its
+/// panels (#574): xterm.js draws with `<style>` elements and style
 /// attributes of its own, so that page alone allows inline styles.
 const TERMINAL_SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n";
 
 /// The security headers `relative`'s answer carries.
 fn security_headers(relative: &str) -> &'static str {
-    if relative == "terminal.html" {
+    if matches!(relative, "terminal.html" | "" | "index.html") {
         TERMINAL_SECURITY_HEADERS
     } else {
         SECURITY_HEADERS
@@ -2259,8 +2276,9 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
     /// served whole under the capability, as a download, and refused
     /// without it.
     /// The terminal page is linked with its session in the query (#563): the
-    /// query is not part of the route, and only that page allows the inline
-    /// styles xterm.js draws with.
+    /// query is not part of the route, and only that page and the dashboard,
+    /// whose panels hold terminals (#574), allow the inline styles xterm.js
+    /// draws with.
     #[tokio::test]
     async fn serves_the_terminal_page_with_its_query_and_its_own_policy() {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -2277,7 +2295,20 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         assert!(css.starts_with("HTTP/1.1 200 "), "{css}");
         let index = fetch(address, "/secret/?x=1").await;
         assert!(index.starts_with("HTTP/1.1 200 "), "{index}");
-        assert!(!index.contains("unsafe-inline"), "{index}");
+        assert!(
+            index.contains("style-src 'self' 'unsafe-inline'"),
+            "{index}"
+        );
+        let css = fetch(address, "/secret/dashboard.css").await;
+        assert!(!css.contains("unsafe-inline"), "{css}");
+        for asset in [
+            "term-view.js",
+            "vendor/dockview/dockview-core.min.js",
+            "vendor/dockview/dockview.css",
+        ] {
+            let answer = fetch(address, &format!("/secret/{asset}")).await;
+            assert!(answer.starts_with("HTTP/1.1 200 "), "{asset}: {answer}");
+        }
         task.abort();
     }
 

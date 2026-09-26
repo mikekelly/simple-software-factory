@@ -131,3 +131,11 @@ dd { margin: 0; }
   .card { animation: enter .3s ease both; }
   @keyframes enter { from { opacity: 0; transform: translateY(5px); } }
 }
+
+/* The dockview layout (#574): the masthead above, the panels filling the rest. */
+body:has(#dock) { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+body:has(#dock) .masthead { padding: 1rem 0; }
+body:has(#dock) .masthead h1 { font-size: 1.6rem; }
+.dock { flex: 1; min-height: 0; }
+.dock-panel { height: 100%; overflow: auto; }
+.dock-panel > main { width: auto; padding: 1rem; }
