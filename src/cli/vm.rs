@@ -261,39 +261,6 @@ pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
             }
             Ok(())
         }
-        VmCommand::Login { harness } => {
-            let login = match harness {
-                Some(h) => factory_vm::login(&h).with_context(|| {
-                    format!(
-                        "no login flow for `{h}`; one of {}",
-                        factory_vm::LOGINS
-                            .iter()
-                            .map(|l| l.harness)
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                })?,
-                None => {
-                    let states = vm
-                        .logins()
-                        .context("asking the guest (is the VM up? `ssf vm status`)")?;
-                    match pick_login(&states)? {
-                        Some(l) => l,
-                        None => return Ok(()),
-                    }
-                }
-            };
-            if vm.login(login)? {
-                println!("{}: logged in inside the VM", login.harness);
-                Ok(())
-            } else {
-                bail!(
-                    "{}: no credential at ~/{} in the guest; see the output above",
-                    login.harness,
-                    login.credential
-                )
-            }
-        }
         VmCommand::Tailscale => exit_with(vm.tailscale()?),
         VmCommand::Attach => exit_with(vm.attach()?),
         VmCommand::Ssh { command } => exit_with(vm.shell(&command)?),

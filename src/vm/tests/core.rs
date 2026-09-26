@@ -846,13 +846,11 @@ fn ssh_args_pin_the_key_port_and_hosts_file() {
 fn every_known_agent_has_a_login_flow() {
     for a in crate::agents::list() {
         let l = login(&a.id).unwrap_or_else(|| panic!("no login for {}", a.id));
-        assert!(!l.argv.is_empty());
         assert!(
             !l.credential.starts_with('/'),
             "{} is home-relative",
             l.credential
         );
-        assert!(!l.hint.is_empty());
     }
     assert!(login("cursor").is_none());
 }
@@ -876,42 +874,4 @@ fn login_states_parse_the_script_output() {
     assert!(s[0].installed && s[0].logged_in);
     assert!(s[1].installed && !s[1].logged_in);
     assert!(!s[2].installed && !s[2].logged_in);
-}
-
-#[test]
-fn url_scanner_finds_the_first_complete_url_once() {
-    let mut sc = UrlScanner::default();
-    assert_eq!(
-        sc.feed(b"If the browser didn't open, visit: https://claude.com/oauth?code=tr"),
-        None
-    );
-    assert_eq!(
-        sc.feed(b"ue&state=x\r\nPaste code here >"),
-        Some("https://claude.com/oauth?code=true&state=x".into())
-    );
-    assert_eq!(sc.feed(b"https://second.example/\n"), None);
-    // Colour escapes around and inside the URL are dropped.
-    let mut sc = UrlScanner::default();
-    assert_eq!(
-        sc.feed(b"\x1b[1mvisit \x1b[4mhttps://auth.openai.com/codex/device\x1b[0m\n"),
-        Some("https://auth.openai.com/codex/device".into())
-    );
-    let mut sc = UrlScanner::default();
-    assert_eq!(sc.feed(b"no url here\n"), None);
-    // Two-byte escapes (cursor save, keypad mode) and an OSC title do
-    // not swallow the URL; the buffer stays bounded while nothing is pending.
-    let mut sc = UrlScanner::default();
-    assert_eq!(
-        sc.feed(b"\x1b7\x1b=\x1b]0;title\x07\x1b[?25lvisit https://x.example/a\n"),
-        Some("https://x.example/a".into())
-    );
-    let mut sc = UrlScanner::default();
-    for _ in 0..1000 {
-        assert_eq!(sc.feed(b"some plain output line\n"), None);
-    }
-    assert!(sc.text.len() < 64, "{}", sc.text.len());
-    assert_eq!(
-        sc.feed(b"then https://y.example/ done"),
-        Some("https://y.example/".into())
-    );
 }

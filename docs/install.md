@@ -305,19 +305,33 @@ ssf repo set OWNER/NAME --allowed-users alice,bob
 
 ## 8. Sign in the harness
 
-Ask now which harness the person already pays for, and whether any metered API spend is acceptable. Each harness is signed in once, by hand, where the agents run. ssf does not do first-run onboarding.
+Ask now which harness the person already pays for, and whether any metered API spend is acceptable. Each harness is signed in once, where the agents run, with the harness's own sign-in. The credential lands in the home directory there (for example `~/.claude/.credentials.json` in the guest), and every later session uses it. ssf does not sign harnesses in.
 
-```sh
-ssf vm login claude      # or codex, gemini, copilot, opencode, pi, omp, grok, crush
-```
+Do this step with the person, one harness at a time, through herdr. In VM mode run each `herdr` command below inside the guest with `ssf vm ssh herdr ...`; on a rented host, over SSH on that host; in host mode, on the host's own herdr as the Unix user that runs the sessions.
 
-Without a harness argument it lists those installed in the guest and asks. The harness's own login then runs inside the guest in this terminal: a URL to open here and a code to paste back, or a device code. The credential is written on the guest's data disk; nothing is copied from this machine. `ssf vm reset` keeps it, `ssf vm destroy` removes it. API keys go through the same command.
+1. **Open the harness** in a pane in the projects root (`/var/lib/ssf/projects` in the VM; `herdr.projects_dir` elsewhere), so folder trust given there covers every worktree under it:
 
-In host mode, use the harness's own login as the Unix user that runs the sessions, and verify a real request in a herdr-launched pane: a passing login check in your own shell does not prove that a pane can authenticate.
+   ```sh
+   herdr workspace create --cwd /var/lib/ssf/projects --label "claude login" --no-focus
+   herdr pane run PANE claude     # PANE: the pane id the command above printed
+   ```
 
-Per-harness flows and their quirks are in [platform-specifics.md](platform-specifics.md).
+2. **Clear the first-run screens.** Read the pane with `herdr pane read PANE` and answer with `herdr pane send-keys PANE KEY...`. Take the default on preference screens, or ask the person in one line if the choice matters; for Claude Code's "Try the new fullscreen renderer?" pick **Not now**. Accept folder trust. Read again after every key: screens change with every harness release.
 
-Check: `ssf vm status` lists the harness as logged in on its `logins:` line. `ssf vm login` is safe to re-run, and re-running it is also the fix when a login later expires under a running session.
+3. **Start the harness's own sign-in** (for example `/login`, typed with `herdr pane run PANE /login`), read the link off the screen and give it to the person as a clickable link. If the harness wants a code pasted back, the person gives it to you and you type it into the pane with `herdr pane send-text` and `send-keys PANE enter`. Tell them the code passes through this chat and expires within minutes. A sign-in that needs the browser to reach a `localhost` callback on the factory machine (OMP's loopback OAuth) cannot finish from the person's browser: pick a method that takes a pasted code or redirect URL, or an API key.
+
+4. **API-key harnesses.** Ask the person for the key only after they have agreed to metered spend, and say it passes through the chat.
+   - OpenCode: `opencode auth login` in the pane, pick the provider and paste the key; it is saved in `~/.local/share/opencode/auth.json`.
+   - Grok: `grok login --device-auth` signs in an xAI account; for a key, enter it through Grok's own interface when it asks.
+   - Crush: pick the provider and paste the key in Crush's own first-run screen; `crush login copilot` signs in with GitHub Copilot instead.
+
+   Enter keys through the harness's interface rather than writing its files by hand, so the harness writes the format it reads.
+
+5. **Confirm and quit.** `ssf doctor` shows the harness signed in where the sessions run (in VM mode, `ssf vm status` also lists it on its `logins:` line). Then quit the harness (`/exit`, `/quit` or `ctrl+c`, whatever it takes) and close the workspace.
+
+6. **If a screen makes no sense**, stop sending keys and tell the person where to look: the herdr machine (`ssf-default` for the local VM, saved in section 5, or Local in host mode), the workspace label (`claude login`) and the pane. They can finish it by hand there.
+
+Without an agent, the person does the same by hand: `ssf vm ssh` (or a shell on the host), run the harness, and use its own sign-in. Per-harness quirks are in [platform-specifics.md](platform-specifics.md#harness-notes). Signing in again is also the fix when a login later expires under a running session: ssf holds that session and resumes it once the harness is signed in.
 
 ## 9. Watch the first repository
 
@@ -386,7 +400,7 @@ Upgrade by installing the next release's package the same way it was installed; 
 | `ssf setup` | re-run freely; it validates, never destroys, and skips what is already done |
 | `ssf auth login` | re-run; a half-finished device flow leaves nothing behind. `ssf auth logout` first only if the wrong account was approved |
 | `ssf vm build` | re-run; it keeps an existing image and the data disk. `--force` remakes the image, and still keeps the data disk |
-| `ssf vm login` | re-run; it is also the fix for an expired login |
+| Sign in the harness (section 8) | repeat; it is also the fix for an expired login |
 | `ssf repo add` | re-run; it replaces that repository's settings |
 | `ssf doctor`, `ssf status`, `ssf models`, `ssf agents` | re-run at any time; reads, except that `ssf models claude` refreshes Claude Code's own catalogue |
 

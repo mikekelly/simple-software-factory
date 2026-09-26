@@ -8,8 +8,8 @@
 //! Every harness ssf launches has a row; a capability a harness lacks is an
 //! empty or `None` field, not a missing row. An id with no row is one ssf does
 //! not know. What stays elsewhere, because it is logic rather than data: the
-//! transcript readers (`sessions`), the sign-in probes (`login`), the VM login
-//! flows (`vm::LOGINS`) and the delivery channels' implementations, which a
+//! transcript readers (`sessions`), the sign-in probes (`login`), the guest
+//! credential checks (`vm::LOGINS`) and the delivery channels' implementations, which a
 //! row names.
 
 use crate::claude_delivery::Claude;

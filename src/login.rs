@@ -485,22 +485,26 @@ pub fn probe(harness: &str) -> Probe {
     }
 }
 
-/// The command that signs `harness` in, as a person would run it on the
-/// host; inside the VM the guest needs its own login, which `ssf vm login
-/// <harness>` (or `ssf vm ssh` and the same command) provides.
+/// How a person signs `harness` in: its own sign-in, run in the harness.
+/// Inside the VM the guest needs its own login, made over `ssf vm ssh`
+/// (or by an agent in a herdr pane, as the install guide's "Sign in the
+/// harness" step does).
 pub fn how_to_sign_in(harness: &str) -> String {
-    let host = match harness {
+    let cmd = match harness {
+        "claude" => "claude auth login".to_string(),
+        "codex" => "codex login --device-auth".to_string(),
         "gemini" => "gemini (pick the Google account option)".to_string(),
+        "copilot" => "copilot login --device-code".to_string(),
+        "opencode" => "opencode auth login".to_string(),
         "pi" | "omp" => format!("{harness}, then /login"),
-        other => match crate::vm::login(other) {
-            Some(l) => l.argv.join(" "),
-            None => format!("sign {other} in"),
-        },
+        "grok" => "grok login --device-auth".to_string(),
+        "crush" => "crush login copilot".to_string(),
+        other => format!("sign {other} in"),
     };
     if crate::vm::in_guest() {
-        format!("`ssf vm login {harness}` on the host (or `ssf vm ssh`, then `{host}`)")
+        format!("`ssf vm ssh`, then `{cmd}` (or the install guide's \"Sign in the harness\" step)")
     } else {
-        format!("`{host}` on the host")
+        format!("`{cmd}` on the host")
     }
 }
 

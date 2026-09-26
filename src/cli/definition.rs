@@ -516,15 +516,6 @@ pub(super) enum VmCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Sign a harness in inside the guest: its login runs there in this
-    /// terminal (a URL to open here and a code to paste back, or a device
-    /// code); the credential is written in the guest, nothing is copied from
-    /// this machine. Without a harness, pick one from those installed.
-    Login {
-        /// `claude`, `codex`, `gemini`, `copilot`, `opencode`, `pi`, `omp`,
-        /// `grok` or `crush`.
-        harness: Option<String>,
-    },
     /// Install Tailscale inside the guest on demand and enrol it in this
     /// terminal. The requested hostname is `ssf-vm`; Tailscale adds a numeric
     /// suffix when that name is already present in the tailnet.

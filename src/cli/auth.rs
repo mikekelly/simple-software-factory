@@ -420,48 +420,6 @@ pub(super) fn login_summary(states: &[factory_vm::LoginState]) -> String {
     parts.join(", ")
 }
 
-/// Terminal picker over the harnesses installed in the guest; `None` when
-/// the person picks nothing.
-pub(super) fn pick_login(
-    states: &[factory_vm::LoginState],
-) -> Result<Option<&'static factory_vm::Login>> {
-    let installed: Vec<&factory_vm::LoginState> = states.iter().filter(|s| s.installed).collect();
-    if installed.is_empty() {
-        bail!("no harness CLI is installed in the guest (`ssf vm build --force` for a new image)");
-    }
-    println!("Which harness to sign in inside the VM?");
-    for (i, s) in installed.iter().enumerate() {
-        println!(
-            "  {}) {}{}",
-            i + 1,
-            s.harness,
-            if s.logged_in { "  (logged in)" } else { "" }
-        );
-    }
-    println!("  q) nothing");
-    loop {
-        eprint!("> ");
-        std::io::stderr().flush()?;
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line)?;
-        let a = line.trim();
-        if a.is_empty() || a.eq_ignore_ascii_case("q") {
-            return Ok(None);
-        }
-        let chosen = match a.parse::<usize>() {
-            Ok(n) if (1..=installed.len()).contains(&n) => Some(installed[n - 1].harness.as_str()),
-            _ => installed
-                .iter()
-                .map(|s| s.harness.as_str())
-                .find(|h| h.eq_ignore_ascii_case(a)),
-        };
-        if let Some(l) = chosen.and_then(factory_vm::login) {
-            return Ok(Some(l));
-        }
-        eprintln!("a number from the list, a harness name, or q");
-    }
-}
-
 /// Terminal picker over gh's accounts; `None` means "sign in another one".
 pub(super) fn pick_account(accounts: &[ghcli::Account]) -> Result<Option<String>> {
     if accounts.is_empty() {

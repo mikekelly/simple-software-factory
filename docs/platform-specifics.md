@@ -281,19 +281,16 @@ behaves unusually inside a session.
 **Signing a harness in.** A harness that is not signed in blocks its
 sessions: ssf answers first-run trust dialogs from the pane, but a login
 prompt is the one dialog it cannot answer. Sign in as the same Unix user
-and `HOME` that runs herdr; in VM mode use `ssf vm login [HARNESS]`, which
-runs the harness's own login inside the guest in your terminal and writes
-the credential there, copying nothing from the host.
+and `HOME` that runs herdr; in VM mode that is the guest: an agent does it through herdr as in
+[install.md](install.md#8-sign-in-the-harness), or the person runs
+`ssf vm ssh`, starts the harness and uses its own sign-in. The credential is
+written there; nothing is copied from the host.
 
-**Loopback enrolment.** Some harnesses (OMP among them) complete their
-login by opening a short `http://localhost:<port>/...` URL that the browser
-must reach. Run the login on the computer with the browser; ssf detects the
-link and forwards that port from host loopback to guest loopback, binding
-only `127.0.0.1` and `::1`. If the port is taken, ssf stops the login with
-an error: free it and retry. Keep the login terminal open until enrolment
-finishes, then exit the harness to check the result. Running the login on a
-remote SSH host does not forward to the browser's computer. Device-code and
-pasted-API-key flows do not need any of this.
+**Loopback enrolment.** Some harnesses (OMP among them) can complete their
+login by opening a `http://localhost:<port>/...` URL that the browser must
+reach. The browser's computer is not the factory machine, so that callback
+does not arrive: choose a method that takes a pasted code or redirect URL, a
+device code, or an API key.
 
 **OMP and OpenRouter.** An API key in the daemon's environment does not
 reach herdr panes: ssf forwards no such key and has no environment-file

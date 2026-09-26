@@ -17,7 +17,6 @@ need to know they have `sudo` there, which their first prompt says.
 ssf setup                 # once: creates the public VM target `ssf-server`
 ssf vm build              # once: sizes, makes and provisions the guest (a few minutes)
 ssf vm status             # whether it runs, its daemon answers, its size, which harnesses are signed in
-ssf vm login              # sign a harness in inside the guest
 ssf status                # runs inside the guest from now on
 ssf vm attach             # herdr in the guest, in this terminal
 ```
@@ -267,34 +266,33 @@ it back.
 ## Harness logins
 
 The agents in the guest need their own sign-in: the guest has no keyring, no
-browser and none of the host's home directory. `ssf vm login [<harness>]` runs
-the harness's login inside the guest, in this terminal, using the flow that
-works without a browser next to it: a page to open here and a code to paste
-back, a device code, or, for Oh My Pi, a loopback OAuth callback that ssf
-forwards over SSH while the login runs. ssf opens the page in the host browser
-when it can and prints the URL either way, then says whether the credential
-landed. Without a harness it lists those installed in the guest and asks which.
-Nothing is copied from this machine.
+browser and none of the host's home directory. Each harness is signed in once
+with its own sign-in, run inside the guest; the credential it writes in the
+guest home is what every later session uses. Nothing is copied from this
+machine.
 
-| harness | what runs in the guest | the person does | credential (guest home) |
-|---|---|---|---|
-| claude | `claude auth login` | sign in on the page, paste the code back | `.claude/.credentials.json` |
-| codex | `codex login --device-auth` | enter the code on the page | `.codex/auth.json` |
-| gemini | `NO_BROWSER=true gemini` | pick a method, open the URL, paste the code, `/quit` | `.gemini/oauth_creds.json` |
-| copilot | `copilot login --device-code` | enter the code on the page | `.copilot/config.json` |
-| opencode | `opencode auth login` | pick provider and method; OAuth prints a URL and takes the code | `.local/share/opencode/auth.json` |
-| pi | `pi`, then `/login` | pick method and provider, open the URL, paste the code or redirect URL | `.pi/agent/auth.json` |
-| omp | `omp`, then `/login` | pick provider and method, open the loopback `/launch` URL, finish in the host browser, then exit | `.omp/agent/agent.db` |
-| grok | `grok login --device-auth` | confirm the code on the page | `.grok/auth.json` |
-| crush | `crush login copilot` | Enter, then the code on the page | `.config/github-copilot/apps.json` |
+- With an agent: step 8 of [install.md](install.md#8-sign-in-the-harness).
+  The agent opens the harness in a herdr pane in the guest, clears its
+  first-run screens, starts its sign-in, and hands the person the link.
+- Without one: `ssf vm ssh`, run the harness (`claude`, `codex`, ...), and use
+  its own sign-in (for example `/login`, or `codex login --device-auth`).
 
-Run the OMP login on the computer running the browser: ssf detects the
-`http://localhost:<port>/launch` link and forwards that port from host loopback
-to guest loopback, binding only `127.0.0.1` and `::1`. If either cannot be
-bound, ssf stops the login with an error; free the port and retry. The tunnel
-closes when the login command exits, and ssf forwards bytes without logging or
-saving callback URLs, codes or tokens. The same commands take API keys where a
-harness offers that, as does the harness's environment variable.
+The guest's browser-less flows are a page to open on this computer and a code
+to paste back, a device code, or an API key. A sign-in that needs the browser
+to reach a `localhost` callback in the guest (OMP's loopback OAuth) does not
+work from here; pick another method.
+
+| harness | credential (guest home) |
+|---|---|
+| claude | `.claude/.credentials.json` |
+| codex | `.codex/auth.json` |
+| gemini | `.gemini/oauth_creds.json` |
+| copilot | `.copilot/config.json` |
+| opencode | `.local/share/opencode/auth.json` |
+| pi | `.pi/agent/auth.json` |
+| omp | `.omp/agent/agent.db` |
+| grok | `.grok/auth.json` |
+| crush | `.config/github-copilot/apps.json` |
 
 The credential stays in the guest home on the data disk: `ssf vm reset` keeps
 it, `ssf vm destroy` removes it. `ssf vm status` shows one entry per harness
@@ -304,12 +302,12 @@ it, `ssf vm destroy` removes it. `ssf vm status` shows one entry per harness
 A credential copied in with `[vm] files` is the same session as the one on the
 host, not a second login: a logout on either side, or Claude Code's token
 rotation on expiry, ends both, and a guest agent that runs `claude auth logout`
-signs the person out on the host. `ssf vm login` gives the guest a login of its
-own and never logs anything out.
+signs the person out on the host. Signing in inside the guest gives it a login
+of its own.
 
 When a login expires or is revoked under a running session, ssf notices (the
-session shows as blocked and its item gets one comment naming
-`ssf vm login <harness>`), holds its activity, and resumes on its own once the
+session shows as blocked and its item gets one comment saying how
+to sign in again), holds its activity, and resumes on its own once the
 guest is signed in again; see
 [sessions.md](sessions.md#a-harness-that-is-not-signed-in). The first sign-in
 during an install is step 8 of [install.md](install.md#8-sign-in-the-harness).

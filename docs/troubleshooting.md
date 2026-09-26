@@ -51,7 +51,7 @@ One row per check `ssf doctor` makes, in the order it makes them.
 | `bot SSH key ...` | the signing key exists | without it commits are unsigned and pushes are HTTPS only; re-run `ssf auth login` to recreate it |
 | `<driver> driver: CLI ... not found` | the driver binary is on PATH | install it with the command the line prints; a driver in `~/.local/bin` is found, but check the service's PATH if not |
 | `<driver>: <error>` | the driver answers | start it; see [herdr not running](#herdr-not-running-or-wrong-version) |
-| `<harness> not signed in` | each harness in use is signed in where the daemon runs | run the command the line prints; in a VM, `ssf vm login <harness>` |
+| `<harness> not signed in` | each harness in use is signed in where the daemon runs | run the command the line prints; in a VM, `ssf vm ssh`, run the harness and use its own sign-in (or [install.md step 8](install.md#8-sign-in-the-harness)) |
 | `data disk ... full` | guest disk under 85 % used | see [VM out of disk or memory](#vm-out-of-disk-or-memory) |
 | `guest memory: ... short` | the guest has headroom | see [VM out of disk or memory](#vm-out-of-disk-or-memory) |
 | `0 repositories configured` | at least one repository is watched | `ssf repo add owner/repo --harness ...`; see [repositories.md](repositories.md) |
@@ -120,7 +120,7 @@ order.
 
 | Symptom | Check | Remedy |
 | --- | --- | --- |
-| A session shows `BLOCKED:` | `ssf status`, or `blocked_sessions` in `ssf status --json` | the line names the harness and the fix. Most often the harness's sign-in lapsed: sign in again (`ssf vm login <harness>` in a VM, the harness's own login on the host) and ssf resumes the session and delivers what it held. See [sessions.md](sessions.md) |
+| A session shows `BLOCKED:` | `ssf status`, or `blocked_sessions` in `ssf status --json` | the line names the harness and the fix. Most often the harness's sign-in lapsed: sign in again with the harness's own login, in the guest in a VM (`ssf vm ssh`, or [install.md step 8](install.md#8-sign-in-the-harness)) and ssf resumes the session and delivers what it held. See [sessions.md](sessions.md) |
 | Blocked with `reason: setup incomplete` | the harness's first-run setup | finish it in the harness itself, then the session resumes |
 | Blocked with `reason: could not be started` | the model or effort the item is pinned to | start the harness by hand in the workspace, or `ssf handover` with a model and effort it accepts |
 | Deliveries queue but never arrive | the delivery record | a write whose receipt the harness never confirmed is held, never resent and never pasted, to avoid duplicating a first prompt. Inspect the journal and the target transcript, then decide. See [drivers.md](drivers.md) and [internals.md](internals.md) |
