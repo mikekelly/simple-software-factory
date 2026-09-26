@@ -638,6 +638,12 @@ pub(super) enum PaneCommand {
         #[arg(long, requires = "cols")]
         rows: Option<u16>,
     },
+    /// Whether the session's pane takes typing: exits 2, saying why, where
+    /// the factory keeps it view-only (item_pane_input).
+    InputCheck {
+        /// The session, as owner/repo#N or owner/repo~id.
+        session: String,
+    },
 }
 
 #[derive(Subcommand)]

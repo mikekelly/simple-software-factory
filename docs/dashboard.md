@@ -400,6 +400,13 @@ socket closes with the reason otherwise). The protocol:
   it again. A stream whose pane went away, or that someone else controls, is
   started again after 1, 2, 4, 8, 10, 10, 10 and 15 seconds, and then the
   sockets close.
+- `item_pane_input` is checked (`ssf __pane input-check`) as each viewer
+  joins and every minute while the stream runs; found off, the stream ends
+  for every viewer with the reason.
+- The server pings each viewer every 20 seconds and drops one that has sent
+  nothing, a pong included, for 60 seconds. When the viewer whose size the
+  pane has leaves, the pane takes the size of the latest viewer left that
+  sent one.
 
 ### Snapshot fields a client can rely on
 

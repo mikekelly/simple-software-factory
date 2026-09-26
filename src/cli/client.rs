@@ -843,6 +843,15 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 }
                 Ok(())
             }
+            PaneCommand::InputCheck { session } => {
+                if let Some(why) =
+                    crate::pane::input_refusal(&crate::config::Config::load()?, &session)
+                {
+                    eprintln!("{why}");
+                    std::process::exit(crate::pane::INPUT_REFUSED);
+                }
+                Ok(())
+            }
             PaneCommand::Send {
                 session,
                 text,

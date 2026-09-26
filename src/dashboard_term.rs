@@ -309,6 +309,11 @@ const SCROLL_LINES: u64 = 3;
 /// state within seconds.
 const RETRY_WAITS: [u64; 8] = [1, 2, 4, 8, 10, 10, 10, 15];
 
+/// How often a viewer is pinged, and how long one may say nothing (a pong
+/// counts) before it is taken for gone.
+const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
+const LIVENESS: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// How long a new viewer has to say who it is before it is named for it.
 const HELLO_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -450,11 +455,51 @@ enum In {
     Size(u16, u16),
     /// Draw the whole screen again, for a viewer that joined late.
     Redraw,
+    /// The factory keeps the pane view-only now: end the stream for all.
+    Refuse(String),
+}
+
+/// Runs `ssf __pane input-check` for a pane: whether it still takes typing.
+pub(crate) type Check = std::sync::Arc<dyn Fn() -> Result<tokio::process::Command> + Send + Sync>;
+
+/// How often a running stream asks again whether its pane takes typing.
+const RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Why the factory keeps the pane view-only, where `check` says it does.
+/// A check that fails otherwise (a slow VM, say) is not a refusal.
+async fn refusal(check: &Check) -> Option<String> {
+    let mut command = check().ok()?;
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .ok()?
+        .ok()?;
+    (out.status.code() == Some(crate::pane::INPUT_REFUSED))
+        .then(|| String::from_utf8_lossy(&out.stderr).trim().to_string())
+}
+
+/// End `session`'s running stream, if there is one, for every viewer.
+fn refuse(session: &str, why: &str) {
+    if let Some(stream) = STREAMS
+        .lock()
+        .unwrap()
+        .get(session)
+        .and_then(std::sync::Weak::upgrade)
+    {
+        let _ = stream.input.send(In::Refuse(why.to_string()));
+    }
 }
 
 /// Starts `ssf __pane control` for a pane, at a size or the pane's own.
 pub(crate) type Spawn =
     std::sync::Arc<dyn Fn(Option<(u16, u16)>) -> Result<tokio::process::Command> + Send + Sync>;
+
+/// A viewer on a stream's list: its id, name, and the size it last asked for.
+type ViewerEntry = (u64, String, Option<(u16, u16)>);
 
 /// One pane's control stream (#563), shared by every viewer of it: herdr
 /// lets one client control a pane, so this server holds one and fans it out.
@@ -462,7 +507,10 @@ pub(crate) type Spawn =
 pub(crate) struct Stream {
     input: tokio::sync::mpsc::UnboundedSender<In>,
     output: tokio::sync::broadcast::Sender<Out>,
-    viewers: std::sync::Mutex<Vec<(u64, String)>>,
+    /// Each viewer: its id, name, and the size it last asked for.
+    viewers: std::sync::Mutex<Vec<ViewerEntry>>,
+    /// The viewer whose size the pane has.
+    sizer: std::sync::Mutex<Option<u64>>,
 }
 
 impl Stream {
@@ -472,7 +520,7 @@ impl Stream {
             .lock()
             .unwrap()
             .iter()
-            .map(|(_, n)| n.clone())
+            .map(|(_, n, _)| n.clone())
             .collect();
         let _ = self.output.send(Out::Text(
             serde_json::json!({"type": "viewers", "names": names}).to_string(),
@@ -495,15 +543,36 @@ impl Viewer {
     fn ask(&self, ask: In) {
         let _ = self.stream.input.send(ask);
     }
+
+    /// The pane takes this viewer's size: it is the latest to ask.
+    fn resize(&self, cols: u16, rows: u16) {
+        for viewer in self.stream.viewers.lock().unwrap().iter_mut() {
+            if viewer.0 == self.id {
+                viewer.2 = Some((cols, rows));
+            }
+        }
+        *self.stream.sizer.lock().unwrap() = Some(self.id);
+        self.ask(In::Size(cols, rows));
+    }
 }
 
 impl Drop for Viewer {
     fn drop(&mut self) {
-        self.stream
-            .viewers
-            .lock()
-            .unwrap()
-            .retain(|(id, _)| *id != self.id);
+        let mut viewers = self.stream.viewers.lock().unwrap();
+        viewers.retain(|(id, _, _)| *id != self.id);
+        // The pane stops following a viewer that went: it takes the size of
+        // the latest one left to have said its own.
+        let mut sizer = self.stream.sizer.lock().unwrap();
+        if *sizer == Some(self.id) {
+            *sizer = None;
+            if let Some(&(id, _, Some((cols, rows)))) =
+                viewers.iter().rev().find(|(_, _, size)| size.is_some())
+            {
+                *sizer = Some(id);
+                let _ = self.stream.input.send(In::Size(cols, rows));
+            }
+        }
+        drop((viewers, sizer));
         self.stream.tell_viewers();
     }
 }
@@ -516,6 +585,7 @@ pub(crate) fn join(
     name: String,
     size: Option<(u16, u16)>,
     spawn: Spawn,
+    check: Check,
 ) -> (Viewer, tokio::sync::broadcast::Receiver<Out>) {
     let mut streams = STREAMS.lock().unwrap();
     let stream = match streams.get(session).and_then(std::sync::Weak::upgrade) {
@@ -527,16 +597,25 @@ pub(crate) fn join(
                 input,
                 output: output.clone(),
                 viewers: Default::default(),
+                sizer: Default::default(),
             });
             let weak = std::sync::Arc::downgrade(&stream);
             streams.insert(session.to_string(), weak.clone());
-            tokio::spawn(pump(session.to_string(), weak, asks, output, size, spawn));
+            tokio::spawn(pump(
+                session.to_string(),
+                weak,
+                asks,
+                output,
+                size,
+                spawn,
+                check,
+            ));
             stream
         }
     };
     let receiver = stream.output.subscribe();
     let id = VIEWER_IDS.fetch_add(1, Ordering::SeqCst);
-    stream.viewers.lock().unwrap().push((id, name));
+    stream.viewers.lock().unwrap().push((id, name, size));
     drop(streams);
     stream.tell_viewers();
     let _ = stream.input.send(In::Redraw);
@@ -564,8 +643,9 @@ async fn pump(
     output: tokio::sync::broadcast::Sender<Out>,
     mut size: Option<(u16, u16)>,
     spawn: Spawn,
+    check: Check,
 ) {
-    let reason = run_pump(&mut asks, &output, &mut size, &spawn).await;
+    let reason = run_pump(&mut asks, &output, &mut size, &spawn, &check).await;
     // Off the list first, and under its lock, so a viewer joining now
     // either hears the end or starts a stream of its own.
     let mut streams = STREAMS.lock().unwrap();
@@ -586,6 +666,7 @@ async fn run_pump(
     output: &tokio::sync::broadcast::Sender<Out>,
     size: &mut Option<(u16, u16)>,
     spawn: &Spawn,
+    check: &Check,
 ) -> Option<String> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     let say = |message: serde_json::Value| {
@@ -612,8 +693,16 @@ async fn run_pump(
         };
         let mut lines = BufReader::new(stdout).lines();
         let mut drawn: Option<(u64, u64)> = None;
+        let mut recheck =
+            tokio::time::interval_at(tokio::time::Instant::now() + RECHECK_EVERY, RECHECK_EVERY);
         let end = loop {
             tokio::select! {
+                // `item_pane_input` turned off meanwhile ends the stream.
+                _ = recheck.tick() => {
+                    if let Some(why) = refusal(check).await {
+                        break End::Refused(why);
+                    }
+                }
                 line = lines.next_line() => match line {
                     Ok(Some(line)) => match herdr_line(&line) {
                         HerdrLine::Frame { bytes, size: at } => {
@@ -644,6 +733,7 @@ async fn run_pump(
                 ask = asks.recv() => {
                     let line = match ask {
                         None => break End::Gone,
+                        Some(In::Refuse(why)) => break End::Refused(why),
                         Some(In::Line(line)) => line,
                         Some(In::Size(cols, rows)) => {
                             *size = Some((cols, rows));
@@ -692,6 +782,7 @@ async fn run_pump(
                 _ = &mut pause => break,
                 ask = asks.recv() => match ask {
                     None => return None,
+                    Some(In::Refuse(why)) => return Some(why),
                     Some(In::Size(cols, rows)) => *size = Some((cols, rows)),
                     Some(_) => {}
                 },
@@ -714,17 +805,42 @@ async fn bridge_item(
     session: &str,
     client: &Path,
 ) -> Result<()> {
+    // A first message that is not `hello` is handled as any other, once
+    // the viewer has joined.
+    let mut first = None;
     let (name, size) = match tokio::time::timeout(HELLO_WAIT, ws.next()).await {
+        Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => return Ok(()),
         Ok(Some(Ok(message))) => match ask_of(&message) {
             Ask::Hello(name, size) => (name, size),
-            _ => (viewer_name(""), None),
+            _ => {
+                first = Some(message);
+                (viewer_name(""), None)
+            }
         },
-        Ok(_) => return Ok(()),
         Err(_) => (viewer_name(""), None),
     };
     let vm = crate::server_catalog::selected_vm_context()?;
     let identity = crate::server_catalog::selected_target_identity()?;
     let (client, owned) = (client.to_path_buf(), session.to_string());
+    let check: Check = {
+        let (client, owned, vm, identity) =
+            (client.clone(), owned.clone(), vm.clone(), identity.clone());
+        std::sync::Arc::new(move || {
+            Ok(crate::dashboard_transport::local_client_command(
+                &client,
+                &["__pane", "input-check", &owned],
+                crate::server_catalog::service_local_context(),
+                vm.as_ref(),
+                identity.as_ref(),
+            ))
+        })
+    };
+    // Every viewer is checked as it joins, and a pane the factory keeps
+    // view-only now ends a running stream for everyone.
+    if let Some(why) = refusal(&check).await {
+        refuse(session, &why);
+        anyhow::bail!("{why}");
+    }
     let spawn: Spawn = std::sync::Arc::new(move |size: Option<(u16, u16)>| {
         let mut args = vec!["__pane".to_string(), "control".into(), owned.clone()];
         if let Some((cols, rows)) = size {
@@ -744,9 +860,29 @@ async fn bridge_item(
             identity.as_ref(),
         ))
     });
-    let (viewer, mut heard) = join(session, name, size, spawn);
+    let (viewer, mut heard) = join(session, name, size, spawn, check);
+    let apply = |message: &Message| match ask_of(message) {
+        Ask::Herdr(line) => viewer.ask(In::Line(line)),
+        Ask::Size(cols, rows) => viewer.resize(cols, rows),
+        Ask::Hello(..) | Ask::Nothing => {}
+    };
+    if let Some(message) = first {
+        apply(&message);
+    }
+    // A viewer that says nothing, not even a pong, for LIVENESS is gone
+    // (asleep, say, with no FIN): it holds the pane no longer.
+    let mut ping = tokio::time::interval(PING_EVERY);
+    let mut heard_at = tokio::time::Instant::now();
     loop {
         tokio::select! {
+            _ = ping.tick() => {
+                if heard_at.elapsed() >= LIVENESS {
+                    return Ok(());
+                }
+                if ws.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    return Ok(());
+                }
+            },
             out = heard.recv() => match out {
                 Ok(Out::Bytes(bytes)) => {
                     if ws.send(Message::binary(bytes)).await.is_err() {
@@ -765,11 +901,10 @@ async fn bridge_item(
             },
             message = ws.next() => match message {
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return Ok(()),
-                Some(Ok(message)) => match ask_of(&message) {
-                    Ask::Herdr(line) => viewer.ask(In::Line(line)),
-                    Ask::Size(cols, rows) => viewer.ask(In::Size(cols, rows)),
-                    Ask::Hello(..) | Ask::Nothing => {}
-                },
+                Some(Ok(message)) => {
+                    heard_at = tokio::time::Instant::now();
+                    apply(&message);
+                }
             },
         }
     }
@@ -890,6 +1025,11 @@ echo released > '{}'"#,
         })
     }
 
+    /// A check that always finds the pane taking typing.
+    fn allowed() -> Check {
+        std::sync::Arc::new(|| Ok(tokio::process::Command::new("true")))
+    }
+
     /// The next bytes a viewer is sent, skipping JSON messages.
     async fn next_bytes(heard: &mut tokio::sync::broadcast::Receiver<Out>) -> String {
         loop {
@@ -928,7 +1068,13 @@ echo released > '{}'"#,
         let gone = std::env::temp_dir().join(format!("ssf-shared-{}", std::process::id()));
         let _ = std::fs::remove_file(&gone);
         let session = "o/shared#1";
-        let (a, mut heard_a) = join(session, "@alice".into(), Some((100, 30)), fake_pane(&gone));
+        let (a, mut heard_a) = join(
+            session,
+            "@alice".into(),
+            Some((100, 30)),
+            fake_pane(&gone),
+            allowed(),
+        );
         assert_eq!(next_viewers(&mut heard_a).await, ["@alice"]);
         assert_eq!(next_bytes(&mut heard_a).await, "started 100x30");
         // The second viewer joins the same stream (no second start), and
@@ -938,6 +1084,7 @@ echo released > '{}'"#,
             "dashboard".into(),
             Some((50, 10)),
             fake_pane(&gone),
+            allowed(),
         );
         assert_eq!(next_viewers(&mut heard_a).await, ["@alice", "dashboard"]);
         assert_eq!(next_viewers(&mut heard_b).await, ["@alice", "dashboard"]);
@@ -952,11 +1099,16 @@ echo released > '{}'"#,
             assert_eq!(next_bytes(&mut heard_a).await, text);
             assert_eq!(next_bytes(&mut heard_b).await, text);
         }
-        // The latest resize is the pane's.
-        b.ask(In::Size(120, 40));
+        // The latest resize is the pane's; once its viewer goes, the pane
+        // takes the size of the latest one left that said its own.
+        b.resize(120, 40);
         assert!(next_bytes(&mut heard_a).await.contains("\"cols\":120"));
+        assert!(next_bytes(&mut heard_b).await.contains("\"cols\":120"));
+        a.resize(90, 20);
+        assert!(next_bytes(&mut heard_b).await.contains("\"cols\":90"));
         drop(a);
         assert_eq!(next_viewers(&mut heard_b).await, ["dashboard"]);
+        assert!(next_bytes(&mut heard_b).await.contains("\"cols\":120"));
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(!gone.exists(), "released while a viewer remained");
         drop(b);
@@ -969,9 +1121,45 @@ echo released > '{}'"#,
         .expect("the pane is released when the last viewer goes");
         // The next viewer starts a stream of its own.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let (_c, mut heard_c) = join(session, "extension".into(), None, fake_pane(&gone));
+        let (_c, mut heard_c) = join(
+            session,
+            "extension".into(),
+            None,
+            fake_pane(&gone),
+            allowed(),
+        );
         assert_eq!(next_viewers(&mut heard_c).await, ["extension"]);
         assert_eq!(next_bytes(&mut heard_c).await, "started none");
+        let _ = std::fs::remove_file(&gone);
+    }
+
+    /// A refusal found when someone joins (`item_pane_input` turned off)
+    /// ends a running stream for every viewer, and a refusing check says why.
+    #[tokio::test]
+    async fn a_refusal_on_joining_ends_the_running_stream() {
+        let gone = std::env::temp_dir().join(format!("ssf-refuse-{}", std::process::id()));
+        let (_a, mut heard) = join("o/later#3", "@a".into(), None, fake_pane(&gone), allowed());
+        assert_eq!(next_bytes(&mut heard).await, "started none");
+        let check: Check = std::sync::Arc::new(|| {
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", "echo 'o/later#3 is view-only now' >&2; exit 2"]);
+            Ok(command)
+        });
+        let why = refusal(&check).await.unwrap();
+        assert_eq!(why, "o/later#3 is view-only now");
+        assert_eq!(refusal(&allowed()).await, None);
+        refuse("o/later#3", &why);
+        let end = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                Out::End(reason) => break reason,
+                _ => continue,
+            }
+        };
+        assert_eq!(end, why);
         let _ = std::fs::remove_file(&gone);
     }
 
@@ -984,7 +1172,7 @@ echo released > '{}'"#,
             command.args(["-c", "echo \"o/r#7's pane is view-only\" >&2; exit 2"]);
             Ok(command)
         });
-        let (_a, mut heard) = join("o/refused#7", "@a".into(), None, refused);
+        let (_a, mut heard) = join("o/refused#7", "@a".into(), None, refused, allowed());
         let end = loop {
             match tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
                 .await
