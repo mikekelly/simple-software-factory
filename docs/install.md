@@ -309,7 +309,7 @@ Ask now which harness the person already pays for, and whether any metered API s
 
 Do this step with the person, one harness at a time, through herdr. In VM mode run each `herdr` command below inside the guest with `ssf vm ssh herdr ...`; on a rented host, over SSH on that host; in host mode, on the host's own herdr as the Unix user that runs the sessions.
 
-1. **Open the harness** in a pane in the projects root (`/var/lib/ssf/projects` in the VM; `herdr.projects_dir` elsewhere), so folder trust given there covers every worktree under it:
+1. **Open the harness** in a pane in the projects root (`/var/lib/ssf/projects` in the VM; `herdr.projects_dir` elsewhere). Folder trust given there does not cover the repositories under it; first-run screens that are global, such as sign-in and preference screens, are cleared once here:
 
    ```sh
    herdr workspace create --cwd /var/lib/ssf/projects --label "claude login" --no-focus
