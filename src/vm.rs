@@ -82,7 +82,7 @@ const WAIT_BACKSTOP_MARGIN: Duration = Duration::from_secs(30);
 /// Commands that act on the daemon and so run inside the guest when the
 /// factory is there (`run` only as `run --once`; plain `run` supervises the
 /// VM from the host). `__request` is the web endpoint's own use of the
-/// daemon protocol, and `__pane` its pane mirror's.
+/// daemon protocol, and `__pane` its live terminals'.
 pub const FORWARDED: [&str; 21] = [
     "status",
     "peers",

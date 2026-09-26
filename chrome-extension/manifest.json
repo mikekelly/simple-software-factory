@@ -25,8 +25,6 @@
         "terminal.js",
         "terminal.css",
         "factory-url.js",
-        "pane-render.js",
-        "pane-keys.js",
         "term-xterm.js",
         "term-wire.js",
         "vendor/xterm/xterm.mjs",

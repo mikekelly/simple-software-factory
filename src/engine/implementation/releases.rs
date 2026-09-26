@@ -841,7 +841,7 @@ pub(crate) fn forget_stale_launch_token() {
 
 /// The environment in front of the wrapper: each of `env` as `VAR='value' `,
 /// except the bot token. A herdr pane starts by showing the command it runs,
-/// and the pane mirror shows the pane in a browser, so the token is never on
+/// and a live terminal shows the pane in a browser, so the token is never on
 /// that line: it is written (mode 0600) to `token_file` by `write` and the
 /// wrapper is told where, with `SSF_GITHUB_TOKEN_FILE`. A token that cannot
 /// be written is left out, and the wrapper finds the bot's token as any
@@ -932,7 +932,7 @@ mod launch_command_tests {
     }
 
     /// The bot token never appears on the launch line -- a pane shows the
-    /// command it starts, and the pane mirror shows the pane -- but reaches
+    /// command it starts, and a live terminal shows the pane -- but reaches
     /// the session through a file only its owner can read.
     #[test]
     fn the_launch_line_names_a_token_file_never_the_token() {

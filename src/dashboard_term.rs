@@ -2,7 +2,7 @@
 //! upgrades to a WebSocket attached to a scratch session's tmux session.
 //!
 //! The attach is `ssf __pane attach <session>` run through the same client
-//! transport as the pane mirror (so a factory in a VM is attached to in the
+//! transport as the status stream (so a factory in a VM is attached to in the
 //! guest, over `ssh -t`), inside a PTY this process opens. The protocol:
 //!
 //! - binary frames, both ways, are terminal bytes: what the PTY printed, and

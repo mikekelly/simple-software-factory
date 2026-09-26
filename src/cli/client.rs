@@ -821,16 +821,6 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             std::process::exit(i32::from(!answer.ok));
         }
         Command::Pane { command } => match command {
-            PaneCommand::Watch {
-                session,
-                interval_ms,
-            } => {
-                crate::pane::watch(
-                    &session,
-                    std::time::Duration::from_millis(interval_ms.max(50)),
-                )
-                .await
-            }
             PaneCommand::Attach { session } => crate::pane::attach(&session).await,
             PaneCommand::Control {
                 session,
@@ -847,17 +837,6 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 if let Some(why) =
                     crate::pane::input_refusal(&crate::config::Config::load()?, &session)
                 {
-                    eprintln!("{why}");
-                    std::process::exit(crate::pane::INPUT_REFUSED);
-                }
-                Ok(())
-            }
-            PaneCommand::Send {
-                session,
-                text,
-                keys,
-            } => {
-                if let Some(why) = crate::pane::send(&session, text.as_deref(), &keys).await? {
                     eprintln!("{why}");
                     std::process::exit(crate::pane::INPUT_REFUSED);
                 }

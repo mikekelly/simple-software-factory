@@ -821,10 +821,11 @@ pub struct DaemonConfig {
     /// and nothing else changes.
     #[serde(default = "default_true")]
     pub event_comments: bool,
-    /// Whether a person may type into an item session's agent pane from the
-    /// web pane mirror (`api/pane/input`), for every repository that does
-    /// not decide for itself. Off, the default: an item's pane is shown
-    /// only, and its agent is spoken to by commenting on the item (#439).
+    /// Whether a person may type into an item session's agent pane from its
+    /// live terminal (`api/term/<session>`, #563), for every repository that
+    /// does not decide for itself. Off, the default: no terminal is offered
+    /// for an item's pane, and its agent is spoken to by commenting on the
+    /// item (#439).
     /// A scratch session, which has no item, always takes typing.
     #[serde(default)]
     pub item_pane_input: bool,
