@@ -280,11 +280,7 @@ pub fn legacy_service_active() -> bool {
                     && launchctl_says_running(&String::from_utf8_lossy(&output.stdout))
             });
     }
-    Command::new("systemctl")
-        .args(["--user", "is-active", "--quiet", SERVICE])
-        .stdin(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    systemctl_user(&["is-active", "--quiet", SERVICE]).is_ok_and(|output| output.status.success())
 }
 
 pub fn named_service_enabled_or_active(name: &str) -> Result<bool> {
@@ -306,10 +302,7 @@ pub fn named_service_enabled_or_active(name: &str) -> Result<bool> {
     }
     let unit = format!("ssf@{name}.service");
     for action in ["is-enabled", "is-active"] {
-        let output = Command::new("systemctl")
-            .args(["--user", action, "--quiet", &unit])
-            .stdin(Stdio::null())
-            .output()
+        let output = systemctl_user(&[action, "--quiet", &unit])
             .with_context(|| format!("checking {unit}"))?;
         if output.status.success() {
             return Ok(true);
@@ -385,14 +378,14 @@ pub fn service_active() -> bool {
             Err(_) => false,
         };
     }
-    let mut cmd = Command::new("systemctl");
-    if !crate::vm::in_guest() {
-        cmd.arg("--user");
+    let unit = service_unit();
+    let probe = ["is-active", "--quiet", &unit];
+    if crate::vm::in_guest() {
+        systemctl(&probe)
+    } else {
+        systemctl_user(&probe)
     }
-    cmd.args(["is-active", "--quiet", &service_unit()])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    .is_ok_and(|output| output.status.success())
 }
 
 /// `launchctl print` output for a service that runs has `state = running`.
@@ -588,6 +581,62 @@ fn target_launchd_action(action: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// How long a `systemctl --user` probe may run. Without a user bus (a VM
+/// guest, a bare SSH login) systemctl can hang instead of failing, and a
+/// probe that never returns stalls the status watch behind the dashboard.
+const SYSTEMCTL_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `systemctl --user args` with its output, killed and reported as an error
+/// once it has run for [`SYSTEMCTL_PROBE_TIMEOUT`].
+pub fn systemctl_user(args: &[&str]) -> Result<std::process::Output> {
+    systemctl(&[&["--user"], args].concat())
+}
+
+/// `systemctl args`, bounded like [`systemctl_user`].
+fn systemctl(args: &[&str]) -> Result<std::process::Output> {
+    use std::io::Read;
+    let mut child = Command::new("systemctl")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("running systemctl {}", args.join(" ")))?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let deadline = std::time::Instant::now() + SYSTEMCTL_PROBE_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            // The readers are not joined: they end when the pipes close.
+            bail!(
+                "systemctl {} did not finish within {}s",
+                args.join(" "),
+                SYSTEMCTL_PROBE_TIMEOUT.as_secs()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 #[cfg(test)]

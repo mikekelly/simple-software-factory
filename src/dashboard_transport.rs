@@ -20,6 +20,9 @@ pub(crate) struct StatusSource {
     control_dir: Option<PathBuf>,
     child: Option<Child>,
     output: Option<BufReader<ChildStdout>>,
+    /// The tail of the stream's stderr, read as it is written: a child
+    /// whose stderr pipe fills blocks on the write and stops streaming.
+    errors: Option<tokio::task::JoinHandle<String>>,
 }
 
 impl StatusSource {
@@ -56,6 +59,7 @@ impl StatusSource {
             control_dir,
             child: None,
             output: None,
+            errors: None,
         })
     }
 
@@ -80,24 +84,45 @@ impl StatusSource {
                 .stdout
                 .take()
                 .context("SSF status stream has no output")?;
+            self.errors = child
+                .stderr
+                .take()
+                .map(|stderr| tokio::spawn(stderr_tail(stderr)));
             self.child = Some(child);
             self.output = Some(BufReader::new(output));
         }
         let mut line = String::new();
-        let read = tokio::time::timeout(
+        let read = match tokio::time::timeout(
             Duration::from_secs(30),
             self.output.as_mut().unwrap().read_line(&mut line),
         )
         .await
-        .context("SSF status stream timed out")?
-        .context("reading SSF status stream")?;
+        {
+            Ok(read) => read.context("reading SSF status stream")?,
+            Err(elapsed) => {
+                // Start a fresh stream on the next refresh rather than wait
+                // on one that has stopped; dropping the child kills it.
+                self.output = None;
+                self.child = None;
+                if let Some(errors) = self.errors.take() {
+                    errors.abort();
+                }
+                return Err(elapsed).context("SSF status stream timed out");
+            }
+        };
         if read == 0 {
             self.output = None;
             let mut child = self.child.take().context("SSF status stream stopped")?;
-            let mut detail = String::new();
-            if let Some(mut stderr) = child.stderr.take() {
-                let _ = stderr.read_to_string(&mut detail).await;
-            }
+            let detail = match self.errors.take() {
+                Some(errors) => {
+                    // A grandchild holding the pipe open must not hang this.
+                    match tokio::time::timeout(Duration::from_secs(2), errors).await {
+                        Ok(Ok(detail)) => detail,
+                        _ => String::new(),
+                    }
+                }
+                None => String::new(),
+            };
             let status = child
                 .wait()
                 .await
@@ -114,6 +139,20 @@ impl StatusSource {
         }
         Ok(payload)
     }
+}
+
+/// Read `stderr` to its end, keeping only the last few KiB.
+async fn stderr_tail(mut stderr: tokio::process::ChildStderr) -> String {
+    const KEEP: usize = 4096;
+    let mut tail = Vec::new();
+    let mut buf = [0u8; 4096];
+    while let Ok(n @ 1..) = stderr.read(&mut buf).await {
+        tail.extend_from_slice(&buf[..n]);
+        if tail.len() > KEEP {
+            tail.drain(..tail.len() - KEEP);
+        }
+    }
+    String::from_utf8_lossy(&tail).into_owned()
 }
 
 impl Drop for StatusSource {
@@ -409,6 +448,27 @@ mod tests {
                 .unwrap(),
             expected
         );
+    }
+
+    #[tokio::test]
+    async fn stderr_is_drained_as_written_and_its_tail_kept() {
+        // Far more stderr than a pipe holds: unread, the child would block
+        // before it reached the final line.
+        let mut child = Command::new("sh")
+            .args(["-c", "yes noise | head -c 300000 >&2; echo end >&2"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let tail = tokio::time::timeout(
+            Duration::from_secs(10),
+            stderr_tail(child.stderr.take().unwrap()),
+        )
+        .await
+        .unwrap();
+        assert!(tail.len() <= 4096);
+        assert!(tail.ends_with("end\n"));
+        child.wait().await.unwrap();
     }
 
     #[tokio::test]

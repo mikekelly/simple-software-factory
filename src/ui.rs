@@ -396,21 +396,15 @@ pub fn service_enabled() -> bool {
         return service_active();
     }
     let unit = platform::service_unit();
-    Command::new("systemctl")
-        .args(["--user", "is-enabled", "--quiet", &unit])
-        .stdin(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    platform::systemctl_user(&["is-enabled", "--quiet", &unit])
+        .is_ok_and(|output| output.status.success())
 }
 
 pub fn service_failed() -> bool {
     let unit = platform::service_unit();
     !platform::is_macos()
-        && Command::new("systemctl")
-            .args(["--user", "is-failed", "--quiet", &unit])
-            .stdin(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+        && platform::systemctl_user(&["is-failed", "--quiet", &unit])
+            .is_ok_and(|output| output.status.success())
 }
 
 /// What to do with a service command (`systemctl`, `brew services`) that
@@ -484,10 +478,7 @@ pub(crate) fn legacy_service_enabled_or_active() -> Result<bool> {
         return Ok(enabled || platform::legacy_service_active());
     }
     for action in ["is-enabled", "is-active"] {
-        let output = Command::new("systemctl")
-            .args(["--user", action, "--quiet", platform::SERVICE])
-            .stdin(std::process::Stdio::null())
-            .output()
+        let output = platform::systemctl_user(&[action, "--quiet", platform::SERVICE])
             .context("checking the legacy singleton service")?;
         if output.status.success() {
             return Ok(true);
