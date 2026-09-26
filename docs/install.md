@@ -256,7 +256,7 @@ ssf auth login --web
 ssf auth status
 ```
 
-`--web` runs gh's device flow: the terminal prints a one-time code and `https://github.com/login/device`, which the person opens in the window where the bot is signed in. Over SSH, or where no browser should open, prefix `BROWSER=true`. `--user <bot>` checks the approved account is the intended one. In VM mode the credential is written inside the guest. Where OAuth apps are forbidden, use a classic personal access token instead: `printf '%s' "$TOKEN" | ssf auth login --token`. A fine-grained token reads as missing every scope.
+`--web` runs gh's device flow: the terminal prints a one-time code and `https://github.com/login/device`, which the person opens in the window where the bot is signed in. Over SSH, or where no browser should open, prefix `BROWSER=true`. Start it only when the person is ready to approve, finish it before section 8's harness sign-in, and tell them the code lasts about 15 minutes. `--user <bot>` checks the approved account is the intended one. In VM mode the credential is written inside the guest. Where OAuth apps are forbidden, use a classic personal access token instead: `printf '%s' "$TOKEN" | ssf auth login --token`. A fine-grained token reads as missing every scope.
 
 Scopes: `repo`, `project` (boards), `admin:public_key` and `admin:ssh_signing_key` (key enrollment). `--no-keys` skips the key and needs only `repo`, at the cost of unsigned commits.
 
@@ -318,7 +318,10 @@ Do this step with the person, one harness at a time, through herdr. In VM mode r
 
 2. **Clear the first-run screens.** Read the pane with `herdr pane read PANE` and answer with `herdr pane send-keys PANE KEY...`. Take the default on preference screens, or ask the person in one line if the choice matters; for Claude Code's "Try the new fullscreen renderer?" pick **Not now**; finish Oh My Pi's setup wizard here too, since it is kept per user and covers every later repository. Accept folder trust. Read again after every key: screens change with every harness release.
 
-3. **Start the harness's own sign-in** (for example `/login`, typed with `herdr pane run PANE /login`), read the link off the screen and give it to the person as a clickable link. If the harness wants a code pasted back, the person gives it to you and you type it into the pane with `herdr pane send-text` and `send-keys PANE enter`. Tell them the code passes through this chat and expires within minutes. A sign-in that needs the browser to reach a `localhost` callback on the factory machine (OMP's loopback OAuth) cannot finish from the person's browser: pick a method that takes a pasted code or redirect URL, or an API key.
+3. **Start the harness's own sign-in** (for example `/login`, typed with `herdr pane run PANE /login`) only when the person is ready for it; never run two sign-ins at once, since each code expires while the person is busy with the other.
+   - **The link.** `herdr pane read` returns screen rows, so a long URL is split across lines. Rejoin it before handing it over, for example `herdr pane read PANE | tr -d '\n' | grep -o 'https://[^ ]*'`, and check it against the screen. The person's browser may be on another computer, so do not open it on the factory machine: give the URL as text, alone in a fenced code block so it copies whole even where the terminal wraps it.
+   - **The code.** Many sign-ins, Claude Code's included, show a code in the browser after the person approves (Claude's looks like `<code>#<state>`) while the harness waits at a prompt such as `Paste code here if prompted >`. Approving in the browser is not enough: ask for the code, type it with `herdr pane send-text PANE '<code>'` and `herdr pane send-keys PANE enter`, and tell the person it passes through this chat and expires within minutes. Check the result (`claude auth status` shows `loggedIn: true`, or `ssf doctor`) before going on.
+   - A sign-in that needs the browser to reach a `localhost` callback on the factory machine (OMP's loopback OAuth) cannot finish from the person's browser: pick a method that takes a pasted code or redirect URL, or an API key.
 
 4. **API-key harnesses.** Ask the person for the key only after they have agreed to metered spend, and say it passes through the chat.
    - OpenCode: `opencode auth login` in the pane, pick the provider and paste the key; it is saved in `~/.local/share/opencode/auth.json`.
@@ -327,7 +330,7 @@ Do this step with the person, one harness at a time, through herdr. In VM mode r
 
    Enter keys through the harness's interface rather than writing its files by hand, so the harness writes the format it reads.
 
-5. **Confirm and quit.** `ssf doctor` shows the harness signed in where the sessions run (in VM mode, `ssf vm status` also lists it on its `logins:` line). Then quit the harness (`/exit`, `/quit` or `ctrl+c`, whatever it takes) and close the workspace.
+5. **Relaunch, confirm and quit.** Some first-run screens appear only on a later launch (Claude Code's fullscreen-renderer question came on the second), so quit the harness and run it again in the same pane, clearing any screen as in step 2, until a launch reaches the prompt with nothing to answer. `ssf doctor` shows the harness signed in where the sessions run (in VM mode, `ssf vm status` also lists it on its `logins:` line). Then quit the harness (`/exit`, `/quit` or `ctrl+c`, whatever it takes) and close the workspace.
 
 6. **If a screen makes no sense**, stop sending keys and tell the person where to look: the herdr machine (`ssf-default` for the local VM, saved in section 5, or Local in host mode), the workspace label (`claude login`) and the pane. They can finish it by hand there.
 
