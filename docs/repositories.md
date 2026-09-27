@@ -116,7 +116,7 @@ anything below; the other settings are:
 | `--instructions` | extra text appended to this repository's initial prompt |
 | `--prompt-file` | where the repository's agent guidance lives (default `SSF.md`) |
 | `--allowed-users` | who may drive this repository |
-| `--event-comments` | whether daemon events are posted as short `ssf` blocks on items |
+| `--event-comments` | whether daemon events are posted as short `🤖 ssf` comments on items |
 | `--git-name` / `--git-email` / `--git-signing-key` / `--git-credential` (`repo set`) | commit identity and who pushes |
 
 Enrollment is picked up on the daemon's next poll (`daemon.poll_interval_secs`,

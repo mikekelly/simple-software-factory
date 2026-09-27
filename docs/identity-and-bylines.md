@@ -155,19 +155,20 @@ session.
 
 ### The daemon speaking
 
-The third kind of bot post is the daemon's own: the short `ssf` blocks it leaves
+The third kind of bot post is the daemon's own: the short `🤖 ssf` comments it leaves
 on an item when it attaches a session, brings one back, holds its deliveries,
 gives up on a binding or releases a workspace (the list is in [What ssf says on
 the item](sessions.md#what-ssf-says-on-the-item)). Its first line is the byline
-`🤖 ssf`, with no item because the daemon is not a session, and a tag naming the
-item posted on with an `event` field:
+`🤖 ssf` and what happened, with no item because the daemon is not a session, and
+a tag naming the item posted on with an `event` field:
 
 ```
-🤖 ssf <!-- ssf: origin=owner/repo#N event=attached -->
+🤖 ssf attaching agent to issue <!-- ssf: origin=owner/repo#N event=attached -->
 ```
 
-The `🤖 ssf` byline directly before a tag with the `event` field is what tells it
-apart; a bot post with an `event=` tag but a session's byline, a pasted example
+The `🤖 ssf` byline (with or without the text after it; older posts have a bare
+`🤖 ssf`) at the start of the first line, before a tag with the `event` field, is
+what tells it apart; a bot post with an `event=` tag but a session's byline, a pasted example
 say, is the session's. Such a post is neither a person's (it is not delivered as
 human input) nor a session's (it is not delivered to the item's session or to
 subscribers, is not counted in `posts_by_session` or `untagged_posts`, and is

@@ -23,7 +23,47 @@ fn ssf_texts_never_look_like_a_login_prompt() {
             first_message_owed: false,
         };
         let o = Origin::new("o/r", 5).unwrap();
+        // A first prompt with the #588 history lead, both callouts and a
+        // tagged event.
+        let item: Issue = serde_json::from_value(serde_json::json!({
+            "number": 5, "title": "Fix it", "body": "b", "html_url": "https://gh/5",
+            "state": "open", "state_reason": "reopened", "user": {"login": "alice"},
+            "created_at": "t", "updated_at": "t"
+        }))
+        .unwrap();
+        let repo_cfg = crate::config::RepoConfig {
+            name: "o/r".into(),
+            harness: h.into(),
+            ..Default::default()
+        };
+        let daemon_cfg = crate::config::DaemonConfig::default();
+        let reopen = serde_json::json!({"event":"reopened","id":3,"actor":{"login":"alice"},
+            "created_at":"2026-09-03T10:00:00Z"});
+        let history = [prompt::render_event(&reopen, false, &daemon_cfg, "bot").unwrap()];
+        let first = prompt::initial_prompt(
+            &item,
+            &history,
+            &prompt::PromptContext {
+                repo: &repo_cfg,
+                daemon: &daemon_cfg,
+                bot_login: "bot",
+                driver: crate::config::DriverKind::Herdr,
+                pr: None,
+                triggers: &[],
+                owner: None,
+                delegated_by: None,
+                handed_over_from: Some(&name),
+                projects: &[],
+                global_prompt: None,
+                global_harness_prompt: None,
+                project_prompt: None,
+                harness_prompt: None,
+                vm_guest: false,
+                pushes_as: None,
+            },
+        );
         let texts = [
+            first,
             prompt::login_back_prompt(&prompt::LoginBack {
                 harness: &name,
                 since: &b.since,
@@ -442,9 +482,8 @@ async fn a_handover_replaces_the_session_in_the_same_workspace() {
     assert_eq!(posts.len(), 2, "{posts:?}");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
-             ```ssf\n\
-             ssf handing over issue:\n\
+        "🤖 ssf handing over issue <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```\n\
              from: Claude Code\n\
              from model: the harness's default\n\
              from effort: the harness's default\n\
@@ -457,13 +496,11 @@ async fn a_handover_replaces_the_session_in_the_same_workspace() {
     );
     assert_eq!(
         posts[1].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=attached -->\n\n\
-             ```ssf\n\
-             ssf attaching agent to issue:\n\
+        "🤖 ssf attaching agent to issue <!-- ssf: origin=o/r#5 event=attached -->\n\n\
+             ```\n\
              harness: Pi\n\
              model: openai/gpt-6\n\
              effort: high\n\
-             driver: herdr\n\
              branch: bot/issue-5\n\
              handed over from: Claude Code\n\
              ```"

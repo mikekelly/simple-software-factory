@@ -183,19 +183,17 @@ ordinary way an item changes stack.
 
 Most of what the daemon does is only in its journal. The moments a person reading the
 issue needs are posted on the item itself, as the bot, so the timeline tells the whole
-story. Each is one short comment: the byline `🤖 ssf` and one fenced `ssf` block of `key:
-value` lines, nothing else.
+story. Each is one short comment: the byline `🤖 ssf` with what happened, and one fenced
+block of `key: value` lines, nothing else.
 
 > **bot-login** commented
 >
-> 🤖 ssf
+> 🤖 ssf attaching agent to issue
 >
-> ```ssf
-> ssf attaching agent to issue:
+> ```
 > harness: <harness>
 > model: <model>
 > effort: <level>
-> driver: herdr
 > branch: bot/issue-N-short-title
 > ```
 
@@ -203,7 +201,7 @@ The events, and nothing else:
 
 | Event | When | Lines |
 |-------|------|-------|
-| `attached` | a session is started for the item: on onboarding (`ssf attaching agent to issue:`), or again once its workspace had to be re-created or was kept (`ssf attaching agent to issue again:`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `driver`; `branch`; `handed off from: owner/repo#M` for a delegated item; `handed over from: <harness>` after a handover; on a re-creation `re-created: workspace gone` and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept` and `conversation: resumed`, `fresh` or `kept` |
+| `attached` | a session is started for the item: on onboarding (`🤖 ssf attaching agent to issue`), or again once its workspace had to be re-created or was kept (`🤖 ssf attaching agent to issue again`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `branch`; `handed off from: owner/repo#M` for a delegated item; `handed over from: <harness>` after a handover; on a re-creation `re-created: workspace gone` and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept` and `conversation: resumed`, `fresh` or `kept` |
 | `attached` | a pull request bound to another item's session rather than given one of its own | `session: owner/repo#M`, `shares: workspace of #M` |
 | `resumed` | the harness was started again in its existing workspace: the startup pass after a daemon or machine restart, or a terminal found gone at delivery time | `harness`, `conversation: resumed` or `fresh`, `after: restart` or `after: lost terminal` |
 | `blocked` | deliveries are held because the harness is at its sign-in prompt, its first-run setup is incomplete, or it could not be started at all | `harness`; `reason: not signed in` with `fix:` the command that signs it in, `reason: setup incomplete`, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
@@ -217,8 +215,8 @@ under a live session, only `from` is written, followed by `from stack: unknown (
 harness on the pane is not the record's)`: ssf has no model, effort or command of that
 session's to report.
 
-The first line carries the origin tag with an `event` field (`🤖 ssf <!-- ssf:
-origin=owner/repo#N event=attached -->`, see [Identity and
+The first line carries the origin tag with an `event` field (`🤖 ssf attaching agent to
+issue <!-- ssf: origin=owner/repo#N event=attached -->`, see [Identity and
 bylines](identity-and-bylines.md#bylines-and-origin-tags-which-session-posted-what)),
 and the daemon reads it back: an event post is not a person typing as the bot, and it is
 not activity. It is delivered to no session, `ssf status` does not count it, and it is

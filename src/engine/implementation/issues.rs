@@ -413,6 +413,8 @@ impl Engine {
                     origin: None,
                     assignee: None,
                     state_change: false,
+                    actor: Some(login.to_string()),
+                    at: Some(at.clone()),
                 });
             }
         }

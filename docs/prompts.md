@@ -90,9 +90,20 @@ are `2026-09-04 17:40Z`, or `17:40Z` when the date is today's.
 The first message is not a delta but a catch-up: a session started fresh on the
 item, the first session, a restart whose harness cannot resume its
 conversation, a handover, a reassignment, is given the item's story before the
-message that prompted it. That story is the one view in which a session's own
-earlier posts are replayed, so it can read what it already said and promised.
-Live follow-up messages leave them out.
+message that prompted it. That story is the one view in which the bot's earlier
+posts are replayed, so the new session can read what was already said and
+promised. It arrives under `## History (before this session started)`, with a
+lead line saying that everything in it predates this session, that the bot's
+posts there were earlier sessions' (context, not commitments), and to act on the
+latest request; when the item was closed and reopened, or handed over, a line says
+so and to check the previous session's branch and pull request before starting
+over. Live follow-up messages leave the bot's own posts out.
+
+Relayed events are delimited so ssf's words and the item's cannot blur: the
+story's events are wrapped in `<history>`...`</history>`, a later message's in
+`<new-activity>`...`</new-activity>`, and each event in
+`<github-event kind="commented" actor="@ann" at="2026-09-04T17:40:00Z">`...`</github-event>`.
+ssf's own lines keep their plain `[ssf]` prefix outside the tags.
 
 A busy item holds more than a session should be handed before it has done any
 work, and most of it does not bear on what brought the session up, so the story

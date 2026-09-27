@@ -815,9 +815,8 @@ fn probe_returning(e: &mut Engine, state: LoginState, fingerprint: Option<&str>)
 
 fn resumed_block(conversation: &str) -> String {
     format!(
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=resumed -->\n\n\
-             ```ssf\n\
-             ssf resuming agent on issue:\n\
+        "🤖 ssf resuming agent on issue <!-- ssf: origin=o/r#5 event=resumed -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              conversation: {conversation}\n\
              after: lost terminal\n\

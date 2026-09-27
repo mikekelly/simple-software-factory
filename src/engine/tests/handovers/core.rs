@@ -89,13 +89,15 @@ async fn a_new_harness_at_its_sign_in_prompt_blocks_the_new_session() {
     assert!(b.reported);
     let posts = stub.post_bodies();
     assert_eq!(posts.len(), 2, "{posts:?}");
-    assert!(posts[0].1.contains("ssf handing over issue:"), "{posts:?}");
+    assert!(
+        posts[0].1.contains("🤖 ssf handing over issue <!--"),
+        "{posts:?}"
+    );
     assert_eq!(
         posts[1].1,
         format!(
-            "🤖 ssf <!-- ssf: origin=o/r#5 event=blocked -->\n\n\
-                 ```ssf\n\
-                 ssf holding deliveries to agent on issue:\n\
+            "🤖 ssf holding deliveries to agent on issue <!-- ssf: origin=o/r#5 event=blocked -->\n\n\
+                 ```\n\
                  harness: Pi\n\
                  reason: not signed in\n\
                  fix: {}\n\
@@ -137,12 +139,14 @@ async fn a_new_harness_that_will_not_start_blocks_the_item() {
     // The item says both, in order, and nothing says a session attached.
     let posts = stub.post_bodies();
     assert_eq!(posts.len(), 2, "{posts:?}");
-    assert!(posts[0].1.contains("ssf handing over issue:"), "{posts:?}");
+    assert!(
+        posts[0].1.contains("🤖 ssf handing over issue <!--"),
+        "{posts:?}"
+    );
     assert_eq!(
         posts[1].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=blocked -->\n\n\
-             ```ssf\n\
-             ssf holding deliveries to agent on issue:\n\
+        "🤖 ssf holding deliveries to agent on issue <!-- ssf: origin=o/r#5 event=blocked -->\n\n\
+             ```\n\
              harness: Pi\n\
              reason: could not be started: pi exited at once: ambiguous model gpt-5.5\n\
              fix: start Pi by hand in the workspace, or fix the model or effort and hand over again\n\
@@ -245,17 +249,19 @@ async fn a_handover_closes_an_outstanding_hold_on_the_item() {
     assert_eq!(posts.len(), 3, "{posts:?}");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=unblocked -->\n\n\
-             ```ssf\n\
-             ssf resuming deliveries to agent on issue:\n\
+        "🤖 ssf resuming deliveries to agent on issue <!-- ssf: origin=o/r#5 event=unblocked -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              held for: 20 min\n\
              conversation: handed over\n\
              ```"
     );
-    assert!(posts[1].1.contains("ssf handing over issue:"), "{posts:?}");
     assert!(
-        posts[2].1.contains("ssf attaching agent to issue:"),
+        posts[1].1.contains("🤖 ssf handing over issue <!--"),
+        "{posts:?}"
+    );
+    assert!(
+        posts[2].1.contains("🤖 ssf attaching agent to issue <!--"),
         "{posts:?}"
     );
     let log = d.log();
@@ -413,7 +419,7 @@ async fn a_started_harness_behind_a_start_block_is_told_before_the_block_lifts()
     assert!(
         posts[0]
             .1
-            .contains("ssf resuming deliveries to agent on issue:"),
+            .contains("🤖 ssf resuming deliveries to agent on issue <!--"),
         "{posts:?}"
     );
 }
@@ -463,7 +469,7 @@ async fn a_handover_blocked_at_the_sign_in_prompt_is_told_when_a_person_signs_in
     assert!(
         posts[0]
             .1
-            .contains("ssf resuming deliveries to agent on issue:"),
+            .contains("🤖 ssf resuming deliveries to agent on issue <!--"),
         "{posts:?}"
     );
 }

@@ -292,6 +292,8 @@ fn the_prompt_states_the_rules_before_the_item() {
         pushes_as: None,
     };
     let ev = Rendered {
+        actor: None,
+        at: None,
         key: "k".into(),
         text: "- [t] @alice commented (https://gh/7#c1):\n  > go".into(),
         origin: None,
@@ -311,7 +313,7 @@ fn the_prompt_states_the_rules_before_the_item() {
         "[ssf] GitHub issue #7",
         "## Project boards",
         "## Description",
-        "## Activity so far",
+        "## History (before this session started)",
     ];
     let mut last = 0;
     for (i, needle) in order.iter().enumerate() {
@@ -325,7 +327,11 @@ fn the_prompt_states_the_rules_before_the_item() {
     // Only the item's own part is after the guidance; the guidance names
     // no item content.
     let (how, item) = split_item(&p);
-    for item_part in ["## Description", "## Activity so far", "## Project boards"] {
+    for item_part in [
+        "## Description",
+        "## History (before this session started)",
+        "## Project boards",
+    ] {
         assert!(!how.contains(item_part), "{p}");
         assert!(item.contains(item_part), "{p}");
     }
@@ -380,7 +386,7 @@ fn a_sign_in_phrase_in_the_description_is_not_a_login_prompt() {
     assert!(
         p.contains(
             "\n\n## Description\n\n  > The pane kept saying:\n  > \n  > Login expired · Please \
-run /login\n  > \n  > so I gave up.\n\n## Activity so far\n\n(no activity yet)\n"
+run /login\n  > \n  > so I gave up.\n\n## History (before this session started)\n\n(no activity yet)\n"
         ),
         "{p}"
     );
@@ -444,6 +450,8 @@ fn initial_prompt_is_the_bare_minimum() {
         pushes_as: None,
     };
     let ev = Rendered {
+        actor: None,
+        at: None,
         key: "k".into(),
         text: "- [2026-09-04T20:45:16Z] @OverlayBot assigned @OverlayBot".into(),
         origin: None,
@@ -452,7 +460,7 @@ fn initial_prompt_is_the_bare_minimum() {
     };
     let p = initial_prompt(&issue, &[ev], &ctx);
     assert!(
-        p.chars().count() < 2500,
+        p.chars().count() < 2800,
         "initial prompt is {} chars:\n{p}",
         p.chars().count()
     );
@@ -735,7 +743,12 @@ accurate; which column fits is your call.\n\n## Description"
     // boards, then the description and the activity.
     let (how, item) = split_item(&p);
     assert!(item.find("## Project boards").unwrap() < item.find("## Description").unwrap());
-    assert!(item.find("## Description").unwrap() < item.find("## Activity so far").unwrap());
+    assert!(
+        item.find("## Description").unwrap()
+            < item
+                .find("## History (before this session started)")
+                .unwrap()
+    );
     // No column is prescribed for any situation: the option names appear
     // only in the board listing, never in the instructions.
     assert!(!how.contains("card"));

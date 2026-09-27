@@ -383,6 +383,86 @@ fn project_boards(ctx: &PromptContext) -> String {
     s.trim_end().to_string()
 }
 
+/// The tag around a first message's replay of the item's timeline.
+const HISTORY: &str = "history";
+/// The tag around the events a later message delivers.
+const NEW_ACTIVITY: &str = "new-activity";
+
+/// An attribute value as a tag carries it: only characters that cannot
+/// end the value or the tag.
+fn attr(v: &str) -> String {
+    v.chars()
+        .filter(|c| !matches!(c, '"' | '<' | '>' | '&') && !c.is_control())
+        .collect()
+}
+
+/// One relayed GitHub event, delimited so that where ssf's words end and
+/// the item's begin cannot blur: `<github-event kind=".." actor="@.."
+/// at="..">`, the rendered lines, `</github-event>`.
+fn event_block(e: &Rendered) -> String {
+    let mut open = String::from("<github-event");
+    let kind = e.key.split(':').next().unwrap_or("");
+    if !kind.is_empty() {
+        open.push_str(&format!(" kind=\"{}\"", attr(kind)));
+    }
+    if let Some(actor) = e.actor.as_deref().filter(|a| !a.is_empty()) {
+        open.push_str(&format!(" actor=\"@{}\"", attr(actor)));
+    }
+    if let Some(at) = e.at.as_deref().filter(|a| !a.is_empty()) {
+        open.push_str(&format!(" at=\"{}\"", attr(at)));
+    }
+    format!("{open}>\n{}\n</github-event>", e.text)
+}
+
+/// `events` as a `<tag>` block of `event_block`s, ending with a newline.
+fn wrapped(tag: &str, events: &[Rendered]) -> String {
+    let mut s = format!("<{tag}>\n");
+    for e in events {
+        s.push_str(&event_block(e));
+        s.push('\n');
+    }
+    s.push_str(&format!("</{tag}>\n"));
+    s
+}
+
+/// What a first message says above the replayed history: that all of it
+/// predates this session, that the bot's posts in it are earlier
+/// sessions', and -- when the item was reopened or handed over -- that
+/// work may already exist. `events` is the whole timeline, not only the
+/// part shown.
+fn history_lead(issue: &Issue, events: &[Rendered], ctx: &PromptContext, any: bool) -> String {
+    let bot = ctx.bot_login;
+    let mut s = String::new();
+    if any {
+        s.push_str(&format!(
+            "Everything below happened before this session was spawned. Posts by @{bot} here \
+were made by earlier sessions, not by you: their plans and promises are context, not your \
+commitments. Act on the latest request.\n"
+        ));
+    }
+    let n = issue.number;
+    if let Some(from) = ctx.handed_over_from {
+        s.push_str(&format!(
+            "A previous session on {from} worked on #{n} and handed it over to you: check its \
+branch, pull request and last comments before starting over.\n"
+        ));
+    }
+    // The rendered event gives the time; the item's own state_reason
+    // still tells of a reopen when `reopened` is in `ignored_events`.
+    let reopened = events.iter().rev().find(|e| e.key.starts_with("reopened:"));
+    if reopened.is_some() || issue.state_reason.as_deref() == Some("reopened") {
+        let at = reopened
+            .and_then(|e| e.at.as_deref())
+            .map(|a| format!(" (last reopened {a})"))
+            .unwrap_or_default();
+        s.push_str(&format!(
+            "#{n} was closed and reopened{at}: a previous session may have worked on it -- check \
+for its branch and pull request before starting over.\n"
+        ));
+    }
+    s
+}
+
 /// A message: `head`, then the events under a blank line (when there are
 /// any), then `tail` under another; no stray blank lines when a part is
 /// empty.
@@ -390,10 +470,7 @@ fn assemble(head: &str, events: &[Rendered], tail: &str) -> String {
     let mut s = head.to_string();
     if !events.is_empty() {
         s.push_str("\n\n");
-        for e in events {
-            s.push_str(&e.text);
-            s.push('\n');
-        }
+        s.push_str(&wrapped(NEW_ACTIVITY, events));
     }
     if !tail.is_empty() {
         s.push_str(if events.is_empty() { "\n\n" } else { "\n" });
@@ -427,20 +504,25 @@ pub fn initial_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
         // draws its own dialog (#372).
         quote_lines(body)
     });
-    s.push_str("\n\n## Activity so far\n\n");
+    s.push_str("\n\n## History (before this session started)\n\n");
     let (shown, omitted) = first_prompt_events(events, ctx);
+    // The handover and reopen callouts hold even with no events shown.
+    let lead = history_lead(issue, events, ctx, !shown.is_empty());
+    if shown.is_empty() {
+        if !lead.is_empty() {
+            s.push_str(&lead);
+            s.push('\n');
+        }
+        s.push_str("(no activity yet)\n");
+        return s;
+    }
+    s.push_str(&lead);
     if let Some(note) = omitted_notice(issue, ctx, shown.len(), omitted) {
         s.push_str(&note);
         s.push('\n');
     }
-    if shown.is_empty() {
-        s.push_str("(no activity yet)\n");
-    } else {
-        for e in shown {
-            s.push_str(&e.text);
-            s.push('\n');
-        }
-    }
+    s.push('\n');
+    s.push_str(&wrapped(HISTORY, shown));
     s
 }
 
@@ -466,7 +548,7 @@ fn first_prompt_events<'a>(events: &'a [Rendered], ctx: &PromptContext) -> (&'a 
         let mut used = 0;
         let mut keep = 0;
         for e in events[from..].iter().rev() {
-            let size = e.text.chars().count() + 1;
+            let size = event_block(e).chars().count() + 1;
             if keep > 0 && used + size > max_chars {
                 break;
             }
@@ -679,7 +761,7 @@ pub fn tracked_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
             ctx.because_of(&human)
         ));
     }
-    s.push_str("\n\nActivity so far:\n\n");
+    s.push_str("\n\nHistory so far (before this message):\n\n");
     let (shown, omitted) = first_prompt_events(events, ctx);
     if let Some(note) = omitted_notice(issue, ctx, shown.len(), omitted) {
         s.push_str(&note);
@@ -687,10 +769,8 @@ pub fn tracked_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
     }
     if shown.is_empty() {
         s.push_str("(no activity yet)\n");
-    }
-    for e in shown {
-        s.push_str(&e.text);
-        s.push('\n');
+    } else {
+        s.push_str(&wrapped(HISTORY, shown));
     }
     match ctx.pr {
         Some(pr) if pr.same_repo(&ctx.repo.name) => s.push_str(&format!(
@@ -1050,10 +1130,8 @@ pub fn reassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext
     );
     if events.is_empty() {
         s.push_str("(no new activity)\n");
-    }
-    for e in events {
-        s.push_str(&e.text);
-        s.push('\n');
+    } else {
+        s.push_str(&wrapped(NEW_ACTIVITY, events));
     }
     s.push_str("\nResume work on it.");
     s

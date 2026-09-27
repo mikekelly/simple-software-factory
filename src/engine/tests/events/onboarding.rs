@@ -39,13 +39,11 @@ async fn onboarding_posts_one_attached_event_and_no_more_after_that() {
     assert_eq!(posts[0].0, "/repos/o/r/issues/5/comments");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=attached -->\n\n\
-             ```ssf\n\
-             ssf attaching agent to issue:\n\
+        "🤖 ssf attaching agent to issue <!-- ssf: origin=o/r#5 event=attached -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              model: fable-5.1\n\
              effort: high\n\
-             driver: herdr\n\
              branch: bot/issue-5-t\n\
              ```"
     );
@@ -205,13 +203,11 @@ async fn a_session_opened_issue_waits_for_assignment_then_gets_its_own_session()
     assert_eq!(posts[0].0, "/repos/o/r/issues/7/comments");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#7 event=attached -->\n\n\
-             ```ssf\n\
-             ssf attaching agent to issue:\n\
+        "🤖 ssf attaching agent to issue <!-- ssf: origin=o/r#7 event=attached -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              model: the harness's default\n\
              effort: the harness's default\n\
-             driver: herdr\n\
              branch: bot/issue-7-child\n\
              ```"
     );
@@ -357,9 +353,8 @@ async fn releasing_or_purging_a_workspace_posts_released() {
     assert_eq!(posts[0].0, "/repos/o/r/issues/1/comments");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#1 event=released -->\n\n\
-             ```ssf\n\
-             ssf releasing workspace of pull request:\n\
+        "🤖 ssf releasing workspace of pull request <!-- ssf: origin=o/r#1 event=released -->\n\n\
+             ```\n\
              by: ssf release\n\
              forced: yes\n\
              branch: bot/issue-1\n\
@@ -384,9 +379,8 @@ async fn releasing_or_purging_a_workspace_posts_released() {
     assert_eq!(posts[0].0, "/repos/o/r/issues/2/comments");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#2 event=released -->\n\n\
-             ```ssf\n\
-             ssf releasing workspace of pull request:\n\
+        "🤖 ssf releasing workspace of pull request <!-- ssf: origin=o/r#2 event=released -->\n\n\
+             ```\n\
              by: ssf purge\n\
              forced: yes\n\
              branch: bot/issue-2\n\
@@ -421,9 +415,8 @@ async fn giving_up_on_a_binding_posts_gave_up_once() {
     assert_eq!(posts.len(), 1, "{posts:?}");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=gave-up -->\n\n\
-             ```ssf\n\
-             ssf giving up on agent binding for issue:\n\
+        "🤖 ssf giving up on agent binding for issue <!-- ssf: origin=o/r#5 event=gave-up -->\n\n\
+             ```\n\
              failures: 5\n\
              last error: driver delivery: no such terminal (it was closed)\n\
              next: re-onboarding the item\n\
@@ -523,9 +516,8 @@ async fn a_given_up_owner_relaunched_for_a_dependent_posts_resumed() {
     assert_eq!(posts[0].0, "/repos/o/r/issues/5/comments");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=resumed -->\n\n\
-             ```ssf\n\
-             ssf resuming agent on issue:\n\
+        "🤖 ssf resuming agent on issue <!-- ssf: origin=o/r#5 event=resumed -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              conversation: fresh\n\
              after: lost terminal\n\
@@ -569,13 +561,11 @@ async fn onboarding_onto_a_kept_workspace_posts_attached_again() {
     assert_eq!(posts.len(), 1, "{posts:?}");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=attached -->\n\n\
-             ```ssf\n\
-             ssf attaching agent to issue again:\n\
+        "🤖 ssf attaching agent to issue again <!-- ssf: origin=o/r#5 event=attached -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              model: the harness's default\n\
              effort: the harness's default\n\
-             driver: herdr\n\
              branch: bot/issue-5-t\n\
              workspace: kept\n\
              conversation: fresh\n\
@@ -625,13 +615,11 @@ async fn a_gone_workspace_is_re_created_and_the_item_told() {
     assert_eq!(posts.len(), 1, "{posts:?}");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=attached -->\n\n\
-             ```ssf\n\
-             ssf attaching agent to issue again:\n\
+        "🤖 ssf attaching agent to issue again <!-- ssf: origin=o/r#5 event=attached -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              model: the harness's default\n\
              effort: the harness's default\n\
-             driver: herdr\n\
              branch: bot/issue-5-fix-the-widget\n\
              re-created: workspace gone\n\
              conversation: resumed\n\
@@ -670,9 +658,8 @@ async fn a_bound_pull_request_is_attached_as_one() {
     assert_eq!(posts.len(), 1, "{posts:?}");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#8 event=attached -->\n\n\
-             ```ssf\n\
-             ssf attaching agent to pull request:\n\
+        "🤖 ssf attaching agent to pull request <!-- ssf: origin=o/r#8 event=attached -->\n\n\
+             ```\n\
              session: o/r#1\n\
              shares: workspace of #1\n\
              ```"
@@ -706,7 +693,7 @@ async fn a_delegated_item_is_attached_with_its_parent_named() {
     assert!(
         posts[0]
             .1
-            .ends_with("driver: herdr\nbranch: bot/issue-7-child\nhanded off from: o/r#1\n```"),
+            .ends_with("branch: bot/issue-7-child\nhanded off from: o/r#1\n```"),
         "{}",
         posts[0].1
     );
@@ -805,9 +792,8 @@ async fn a_relaunch_posts_resumed_with_why() {
     assert_eq!(posts.len(), 1, "{posts:?}");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=resumed -->\n\n\
-             ```ssf\n\
-             ssf resuming agent on issue:\n\
+        "🤖 ssf resuming agent on issue <!-- ssf: origin=o/r#5 event=resumed -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              conversation: resumed\n\
              after: lost terminal\n\
@@ -829,12 +815,12 @@ async fn a_relaunch_posts_resumed_with_why() {
     let posts = stub.post_bodies();
     assert_eq!(posts.len(), 1, "{posts:?}");
     assert!(
-            posts[0].1.ends_with(
-                "ssf resuming agent on issue:\nharness: Claude Code\nconversation: fresh\nafter: restart\n```"
-            ),
-            "{}",
-            posts[0].1
-        );
+        posts[0]
+            .1
+            .ends_with("\n\n```\nharness: Claude Code\nconversation: fresh\nafter: restart\n```"),
+        "{}",
+        posts[0].1
+    );
 }
 
 /// A harness that comes up at a question ssf does not know holds its own

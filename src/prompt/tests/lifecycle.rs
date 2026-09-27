@@ -114,6 +114,8 @@ fn followup_says_a_bound_pull_request_is_yours_when_assigned() {
     assert!(assigned.assigns("bot"));
     assert!(!assigned.assigns("alice"));
     let status = Rendered {
+        actor: None,
+        at: None,
         key: "project_v2_item_status_changed:10".into(),
         text: "- [t] @bot project v2 item status changed".into(),
         origin: None,
@@ -124,7 +126,14 @@ fn followup_says_a_bound_pull_request_is_yours_when_assigned() {
     assert_eq!(
         f,
         "[ssf] New activity on #83 \"VM: omp does not run\":\n\n\
-- 2026-01-05 15:04Z @bot assigned @bot\n- [t] @bot project v2 item status changed\n\n\
+<new-activity>\n\
+<github-event kind=\"assigned\" actor=\"@bot\" at=\"2026-01-05T15:04:00Z\">\n\
+- 2026-01-05 15:04Z @bot assigned @bot\n\
+</github-event>\n\
+<github-event kind=\"project_v2_item_status_changed\">\n\
+- [t] @bot project v2 item status changed\n\
+</github-event>\n\
+</new-activity>\n\n\
 #83 is now assigned to @bot. You filed it, so it is yours: work on it in this workspace; \
 nobody else is spawned for it.",
         "{f}"
@@ -161,11 +170,13 @@ nobody else is spawned for it.",
     let f = followup_prompt(&filed, std::slice::from_ref(&assigned), &own);
     assert_eq!(
         f,
-        "[ssf] New activity on #83:\n\n- 2026-01-05 15:04Z @bot assigned @bot\n"
+        "[ssf] New activity on #83:\n\n<new-activity>\n<github-event kind=\"assigned\" actor=\"@bot\" at=\"2026-01-05T15:04:00Z\">\n- 2026-01-05 15:04Z @bot assigned @bot\n</github-event>\n</new-activity>\n"
     );
     // A label on a filed issue is activity like any other: no label
     // asks anything of ssf since #115.
     let labelled = Rendered {
+        actor: None,
+        at: None,
         key: "labeled:12".into(),
         text: "- [t] @alice added label \"review\"".into(),
         origin: None,
@@ -175,7 +186,7 @@ nobody else is spawned for it.",
     let f = followup_prompt(&filed, &[labelled], &ctx);
     assert_eq!(
         f,
-        "[ssf] New activity on #83 \"VM: omp does not run\":\n\n- [t] @alice added label \"review\"\n"
+        "[ssf] New activity on #83 \"VM: omp does not run\":\n\n<new-activity>\n<github-event kind=\"labeled\">\n- [t] @alice added label \"review\"\n</github-event>\n</new-activity>\n"
     );
 }
 
@@ -212,6 +223,8 @@ fn fyi_prompts() {
         pushes_as: None,
     };
     let ev = Rendered {
+        actor: None,
+        at: None,
         key: "k".into(),
         text: "- [t] @alice commented (u):\n  > hi".into(),
         origin: None,
@@ -228,11 +241,11 @@ fn fyi_prompts() {
     );
     // The item is named once, in the header; the owner is not.
     assert!(p.starts_with(
-        "[ssf] FYI: new activity on issue #5 \"Thing\" (https://gh/5):\n\n- [t] @alice"
+        "[ssf] FYI: new activity on issue #5 \"Thing\" (https://gh/5):\n\n<new-activity>\n<github-event kind=\"k\">\n- [t] @alice"
     ));
     assert!(!p.contains("owned by"));
     // One line of boilerplate after the activity, no more.
-    assert!(p.ends_with("  > hi\n\nFor information only; `ssf unsub 5` stops these messages."));
+    assert!(p.ends_with("  > hi\n</github-event>\n</new-activity>\n\nFor information only; `ssf unsub 5` stops these messages."));
     assert!(!p.contains("again unless"));
     let p = fyi_prompt(&issue, &[], &ctx, None, false, Fyi::Closed);
     assert_eq!(
@@ -291,6 +304,8 @@ fn owned_items_get_tracking_and_closing_notes() {
         pushes_as: None,
     };
     let ev = Rendered {
+        actor: None,
+        at: None,
         key: "k".into(),
         text: "- [t] @alice requested a review from @bot".into(),
         origin: None,
@@ -301,7 +316,7 @@ fn owned_items_get_tracking_and_closing_notes() {
     // A review asked on an owned pull request is the session's own to
     // deal with, like any other trigger: no reviewer session exists.
     assert!(p.starts_with(
-            "[ssf] Now tracking pull request #4 \"Fix it\" (https://gh/4) for this session, because this session opened it. It reached ssf because it requested a review from @bot; that is for you to act on.\n\nActivity so far:\n\n- [t] @alice requested a review from @bot\n"
+            "[ssf] Now tracking pull request #4 \"Fix it\" (https://gh/4) for this session, because this session opened it. It reached ssf because it requested a review from @bot; that is for you to act on.\n\nHistory so far (before this message):\n\n<history>\n<github-event kind=\"k\">\n- [t] @alice requested a review from @bot\n</github-event>\n</history>\n"
         ), "{p}");
     assert!(!p.contains("reviewer session"));
     assert!(!p.contains("SSF_ISSUE"));
