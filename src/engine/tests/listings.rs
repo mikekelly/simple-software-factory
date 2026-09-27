@@ -1092,3 +1092,29 @@ async fn purge_judges_a_checkout_whose_workspace_is_gone_by_the_checkout() {
         d.log()
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn assigning_an_ignored_bot_opened_issue_onboards_it_before_the_assignee_listing_catches_up()
+{
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let r = repo();
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    e.state.repo_mut(&r.name).ignored.insert(
+        18,
+        Ignored::new(&issue(18, "bot", None), &["created".to_string()]),
+    );
+    // A person assigned the bot: the creator listing already shows it,
+    // the assignee listing does not yet (#598).
+    *stub.created.lock().unwrap() = vec![assigned_item(18, "bot", "u2")];
+    stub.set_timeline(18, vec![assigned_by(1, "alice")]);
+
+    e.tick_repo(&r).await.unwrap();
+
+    let rs = &e.state.repos[&r.name];
+    assert!(!rs.ignored.contains_key(&18), "re-ignored as created-only");
+    assert_eq!(rs.issues[&18].triggers, vec!["assigned", "created"]);
+    assert_eq!(d.launches().len(), 1, "no session started");
+}

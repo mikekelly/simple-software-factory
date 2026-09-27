@@ -307,7 +307,7 @@ impl Engine {
                 e.2.push(trigger.to_string());
             }
         };
-        let (assigned_numbers, issues_etag) = match assigned {
+        let (mut assigned_numbers, issues_etag) = match assigned {
             Conditional::Modified { value, etag } => {
                 let nums: Vec<u64> = value.iter().map(|i| i.number).collect();
                 for i in value {
@@ -367,6 +367,21 @@ impl Engine {
                 (rs.created_numbers.clone(), None)
             }
         };
+        // The assignee listing can lag the item's own assignees (#598): an
+        // item found through another listing that is already assigned to
+        // the bot carries that trigger now, not on some later pass.
+        for (n, (issue, _, triggers)) in items.iter_mut() {
+            if issue
+                .as_ref()
+                .is_some_and(|i| i.is_assigned_to(&self.login))
+                && !triggers.iter().any(|t| t == "assigned")
+            {
+                triggers.insert(0, "assigned".to_string());
+                if !assigned_numbers.contains(n) {
+                    assigned_numbers.push(*n);
+                }
+            }
+        }
         debug!(
             repo = repo.name,
             count = items.len(),
