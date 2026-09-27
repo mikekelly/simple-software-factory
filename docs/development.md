@@ -319,18 +319,21 @@ without waiting for an Omarchy release. Everything Omarchy's builder needs
 is in that directory plus the tag tarball, which it downloads
 unauthenticated: the repository has to be public for the build to work.
 
-Cutting a release: run the `cut-release` workflow with the new version,
-from Actions or with
+Cutting a release is one command. Run the `cut-release` workflow with the
+new version, from Actions or with
 
 ```sh
 gh workflow run cut-release.yml -f version=X.Y.Z
 ```
 
-It does steps 1 and 2 below on `master` (bump, pin
-`packaging/release/PKGBUILD` to the bump commit's archive, tag), builds the
-packages with `release.yml`, publishes the release and pushes the Homebrew
-formula with `homebrew.yml`. Rerunning it with the same version after a
-failure resumes from the build. The manual steps it automates:
+and watch it to completion. Everything else is automatic: it does steps 1
+and 2 below on `master` (bump, pin `packaging/release/PKGBUILD` to the bump
+commit's archive, tag), builds the packages with `release.yml`, publishes
+the release and pushes the Homebrew formula with `homebrew.yml`. Do not tag
+by hand: a hand-pushed tag only builds a draft release. A failed step is a
+bug in the workflow to fix, not a step to finish by hand; rerunning with
+the same version after a failure resumes from the build. The steps it
+automates, for reference:
 
 1. Bump `version` in `Cargo.toml`, `cargo build` (updates `Cargo.lock`),
    commit, tag `vX.Y.Z` and push the tag. The tag must be plain `vX.Y.Z`
@@ -356,7 +359,9 @@ failure resumes from the build. The manual steps it automates:
    builds the .deb, .rpm and the bare binary for the machine's architecture
    into `packaging/linux/dist/`
    (it needs `nfpm` and the musl target, and says so).
-   The same tag runs `.github/workflows/homebrew.yml`, which renders
+   After publishing, `cut-release` calls `.github/workflows/homebrew.yml`
+   (a release published with the workflow's own token starts no run of its
+   own), which renders
    `packaging/homebrew/ssf.rb` (the formula's source of truth; the
    `url` and `sha256` of the tag tarball go in, see
    `packaging/homebrew/render.sh`) and pushes it to the tap
