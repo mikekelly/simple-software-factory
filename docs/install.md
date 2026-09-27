@@ -501,6 +501,30 @@ Also check `herdr machine list` shows the factory machine (section 5), and that 
 
 Two lines are expected to fail before the first issue and need no action: the repository's checkout (cloned when the first session starts) and the `gh`, `git` and `ssf` command links (written when the first agent starts). Anything else, work through [troubleshooting.md](troubleshooting.md) (`ssf skill troubleshoot`).
 
+### Optional: the web dashboard and Chrome extension
+
+Ask one yes/no question: "Do you want the web dashboard and the Chrome extension, which shows each agent's state on the GitHub issue and pull request pages?" If no, move on.
+
+If yes, the listener belongs to the machine running `ssf-server` (the host in VM mode). Bind it to that machine's Tailscale address when it is on the tailnet, so only tailnet devices can reach it; otherwise keep the loopback default, which serves that machine alone. Never bind anything else; [dashboard.md](dashboard.md#bind-rules) has the rules.
+
+```sh
+ssf config set dashboard.enabled true
+ssf config set dashboard.bind "$(tailscale ip -4)"   # tailnet; skip for loopback
+systemctl --user restart ssf.service   # ssf@NAME.service for a named target
+journalctl --user -u ssf.service | grep 'Server web dashboard'
+```
+
+On macOS, restart with `launchctl kickstart -k gui/$(id -u)/dev.ssf.server.NAME` and find the URL with `grep 'Server web dashboard' ~/Library/Logs/ssf/NAME.log` ([operate.md](operate.md) names the agent and log).
+
+Hand the capability URL it logs (`http://ADDRESS:8787/<secret>/`) to the person, as a secret: it grants access to the factory. Then, in Chrome on their machine:
+
+1. Open the URL and use its **Download Chrome extension** link. Chrome warns about an insecure download because it is plain HTTP; choose **Keep**. (`ssf chrome-extension` writes the same zip on the command line.)
+2. Unzip it.
+3. Open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked** and select the unzipped directory, the one holding `manifest.json`.
+4. The extension's options page opens by itself: **Add a factory**, paste the capability URL, **Save and allow**, and accept Chrome's permission prompt.
+
+Opening any issue in a watched repository then shows the overlay. Details in [dashboard.md](dashboard.md) and the [extension README](../chrome-extension/README.md).
+
 ## 11. Upgrading, stopping, uninstalling
 
 Upgrade by installing the next release's package the same way it was installed; the package restarts the active service, which in VM mode takes the guest down and up on the new binary and resumes the interrupted sessions. Standalone binaries are replaced in pairs with the daemon stopped. Configuration, state, keys and VM disks survive an upgrade. See [operate.md](operate.md) (`ssf skill operate`).
@@ -521,6 +545,7 @@ Upgrade by installing the next release's package the same way it was installed; 
 - [ ] Guest on a server: the resident agent (if any) and the person's laptop each pass `ssh <entry> true`, show the factory in `herdr machine list`, and get an answer from `ssf status`; the laptop uses its own key through `ProxyJump`; `working-with-ssf` is installed globally on the laptop, and the resident agent has it loaded in its own harness (listed by a new session), or `ssf skill` in its standing instructions where the harness has no skills.
 - [ ] `working-with-ssf` skill installed on this machine and, when separate, where the sessions run, as the sessions' user.
 - [ ] The person was asked about reaching the factory from other devices; Tailscale enrolled if yes.
+- [ ] The person was asked about the web dashboard and Chrome extension; if yes, the listener binds to loopback or a Tailscale address and the extension has the factory saved.
 - [ ] Bot account created; `ssf auth status` names it.
 - [ ] Bot has Write on the repository, verified with `push: true`, and board access if there is a board.
 - [ ] Allowed users are deliberate; `*` only with the person's consent.

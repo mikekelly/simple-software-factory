@@ -47,8 +47,8 @@ in the [dashboard guide](../docs/dashboard.md).
    repository checkout you can instead select this `chrome-extension/`
    directory directly.
 
-4. Open the extension's options page (the toolbar icon, or **Details → Extension
-   options**) and add one entry per factory: press **Add a factory**, give it a
+4. The extension's options page opens by itself on first install; later, reach
+   it from the toolbar icon or **Details → Extension options**. Add one entry per factory: press **Add a factory**, give it a
    label and the capability URL, and press **Save and allow**. Saving is the
    whole of it: the same click stores the factory in `chrome.storage.local` and
    asks Chrome for permission for that factory's address, which is what lets the
