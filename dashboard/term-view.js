@@ -16,6 +16,68 @@
 // a paste is always sent as a bracketed paste.
 import { Terminal } from "./xterm.mjs";
 
+// The colour scheme (#574): "system" follows the OS, or "light" / "dark"
+// pinned by the masthead's switch; kept per browser as `ssf-theme` and
+// applied as `data-theme` on <html>, which the pages' tokens key on.
+const THEME_KEY = "ssf-theme";
+const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+const XTERM_THEMES = {
+  light: {
+    background: "#ffffff", foreground: "#1d1d1f", cursor: "#1d1d1f", cursorAccent: "#ffffff",
+    selectionBackground: "rgba(0, 122, 255, .22)",
+    black: "#1d1d1f", red: "#c41a16", green: "#007400", yellow: "#826b28", blue: "#0b4fe0",
+    magenta: "#a626a4", cyan: "#0e7a8a", white: "#8e8e93",
+    brightBlack: "#6e6e73", brightRed: "#e0342f", brightGreen: "#248a3d", brightYellow: "#a0781a",
+    brightBlue: "#007aff", brightMagenta: "#bf5af2", brightCyan: "#0a8ea0", brightWhite: "#3a3a3c",
+  },
+  dark: {
+    background: "#1c1c1e", foreground: "#e5e5ea", cursor: "#e5e5ea", cursorAccent: "#1c1c1e",
+    selectionBackground: "rgba(10, 132, 255, .35)",
+    black: "#3a3a3c", red: "#ff6961", green: "#63d17a", yellow: "#e5c07b", blue: "#5ea1ff",
+    magenta: "#d38cf5", cyan: "#6cd2e0", white: "#d1d1d6",
+    brightBlack: "#8e8e93", brightRed: "#ff8a84", brightGreen: "#86e29b", brightYellow: "#f2d59a",
+    brightBlue: "#82b8ff", brightMagenta: "#e2adf8", brightCyan: "#93e2ec", brightWhite: "#ffffff",
+  },
+};
+const liveTerms = new Set();
+
+/// The stored preference: "system", "light" or "dark".
+export function themePreference() {
+  try {
+    const value = localStorage.getItem(THEME_KEY);
+    if (value === "light" || value === "dark") return value;
+  } catch {}
+  return "system";
+}
+
+function resolvedTheme() {
+  const pref = document.documentElement.dataset.theme;
+  return pref === "light" || pref === "dark" ? pref : darkQuery.matches ? "dark" : "light";
+}
+
+function repaintTerms() {
+  for (const term of liveTerms) term.options.theme = XTERM_THEMES[resolvedTheme()];
+}
+
+/// Apply (and, with `store`, remember) a preference.
+export function setThemePreference(pref, store = true) {
+  if (pref === "light" || pref === "dark") document.documentElement.dataset.theme = pref;
+  else delete document.documentElement.dataset.theme;
+  if (store) {
+    try {
+      if (pref === "light" || pref === "dark") localStorage.setItem(THEME_KEY, pref);
+      else localStorage.removeItem(THEME_KEY);
+    } catch {}
+  }
+  repaintTerms();
+}
+
+setThemePreference(themePreference(), false);
+darkQuery.addEventListener("change", repaintTerms);
+addEventListener("storage", (event) => {
+  if (event.key === THEME_KEY || event.key === null) setThemePreference(themePreference(), false);
+});
+
 const IDLE_MS = 30 * 60 * 1000;
 /// Pixels of a smooth (trackpad) scroll that count as one wheel notch.
 const NOTCH_PX = 50;
@@ -50,13 +112,14 @@ export function mountTerminal(host, session) {
   const term = new Terminal({
     cursorBlink: true,
     fontFamily:
-      '"JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+      '"SF Mono", SFMono-Regular, ui-monospace, Menlo, "JetBrains Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace',
     fontSize: FONT_PX,
     macOptionIsMeta: true,
     scrollback: 0,
-    theme: { background: "#0a1112", foreground: "#e6edf3" },
+    theme: XTERM_THEMES[resolvedTheme()],
   });
   term.open(box);
+  liveTerms.add(term);
 
   const encoder = new TextEncoder();
   let ws = null;
@@ -171,6 +234,7 @@ export function mountTerminal(host, session) {
         viewersNode.textContent = (message.names ?? []).map(String).join(", ");
         statusNode.textContent = control ? "live · in control" : `view only · ${holder ?? "no one"} in control`;
         host.classList.toggle("term-view-only", !control);
+        host.classList.add("term-live");
         takeButton.hidden = control;
         if (control && !had) {
           notice("");
@@ -188,7 +252,7 @@ export function mountTerminal(host, session) {
       viewersNode.textContent = "";
       control = false;
       takeButton.hidden = true;
-      host.classList.remove("term-view-only");
+      host.classList.remove("term-view-only", "term-live");
       statusNode.textContent = "disconnected";
       reconnectButton.hidden = false;
       term.write("\r\n\x1b[2m[the terminal closed]\x1b[0m\r\n");
@@ -277,6 +341,7 @@ export function mountTerminal(host, session) {
       clearTimeout(fitTimer);
       clearTimeout(noticeTimer);
       observer.disconnect();
+      liveTerms.delete(term);
       term.dispose();
       host.replaceChildren();
     },

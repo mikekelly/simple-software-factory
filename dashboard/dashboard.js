@@ -1,4 +1,18 @@
-import { mountTerminal } from "./term-view.js";
+import { mountTerminal, setThemePreference, themePreference } from "./term-view.js";
+
+// The masthead's System / Light / Dark switch.
+const themeButtons = document.querySelectorAll(".theme-switch button");
+function showTheme(pref) {
+  for (const button of themeButtons) button.setAttribute("aria-pressed", String(button.value === pref));
+}
+for (const button of themeButtons) {
+  button.addEventListener("click", () => {
+    setThemePreference(button.value);
+    showTheme(button.value);
+  });
+}
+showTheme(themePreference());
+addEventListener("storage", () => showTheme(themePreference()));
 
 const cardsNode = document.querySelector("#cards");
 const emptyNode = document.querySelector("#empty");
@@ -231,6 +245,7 @@ const LAYOUT_KEY = "ssf.dashboard.layout";
 const agentsNode = document.querySelector("#agents");
 const { createDockview } = window["dockview-core"];
 const dock = createDockview(document.querySelector("#dock"), {
+  theme: { name: "ssf", className: "dockview-theme-ssf" },
   createComponent({ name }) {
     const element = document.createElement("div");
     element.className = "dock-panel";
