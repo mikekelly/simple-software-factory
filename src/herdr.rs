@@ -127,6 +127,12 @@ fn is_not_found(e: &anyhow::Error) -> bool {
     msg.contains("not_found") || msg.contains("not found")
 }
 
+/// The label of a scratch session's workspace, which has no item number:
+/// the repository's name and the worktree's.
+pub fn scratch_label(repo: &str, name: &str) -> String {
+    format!("{}-{name}", repo.rsplit('/').next().unwrap_or(repo))
+}
+
 pub fn make_id(workspace_id: &str, path: &str) -> String {
     format!("{workspace_id}@{path}")
 }
@@ -694,7 +700,7 @@ impl Herdr {
         // A scratch session's workspace is labelled by its name, since it
         // has no item number.
         let label = if number == crate::driver::NO_ITEM {
-            format!("{}-{name}", repo.rsplit('/').next().unwrap_or(repo))
+            scratch_label(repo, name)
         } else {
             workspace_label(repo, number)
         };
@@ -712,6 +718,14 @@ impl Herdr {
             path,
             branch: Some(branch),
         })
+    }
+
+    /// A workspace on a checkout that already exists: a scratch session's
+    /// plain worktree from when it ran in tmux (#491), moving to a pane
+    /// (#565). Nothing is created or removed on disk.
+    pub async fn open_worktree(&self, repo_root: &str, label: &str, path: &str) -> Result<String> {
+        let ws = self.open(repo_root, path, label).await?;
+        Ok(make_id(&ws, path))
     }
 
     pub async fn worktree_exists(&self, id: &str) -> Result<bool> {
@@ -1420,75 +1434,18 @@ accepting the successful Enter without retrying: {e:#}"
         crate::codex_delivery::available(&info, mailbox).await
     }
 
-    pub async fn deliver(
+    /// Start the harness again in a workspace whose agent is gone, with
+    /// nothing typed into it: resume its conversation when `relaunch` has a
+    /// resume command and the resume stays up, else a fresh harness. `held`
+    /// (a session-bound channel with an outstanding delivery) refuses the
+    /// fresh start. Returns the pane, whether it resumed, and whether the
+    /// resumed agent is already at work.
+    async fn start_again(
         &self,
         workspace_id: &str,
-        preferred_handle: Option<&str>,
         relaunch: &Relaunch<'_>,
-        text: &str,
-    ) -> Result<Delivery> {
-        let (ws, _) = split_id(workspace_id);
-        let agents = self.agents().await?;
-        let live: Vec<&Agent> = agents.iter().filter(|a| a.workspace_id == ws).collect();
-        let channel = crate::harness::channel(relaunch.harness);
-        let target = if channel.session_bound() {
-            // A saved pane is an address, not a preference. Never deliver to a
-            // neighbour if its agent exits or its pane hosts a different harness.
-            match preferred_handle {
-                Some(handle) => live
-                    .iter()
-                    .find(|a| a.pane_id == handle && a.kind == relaunch.harness),
-                None => {
-                    let candidates: Vec<_> =
-                        live.iter().filter(|a| a.kind == relaunch.harness).collect();
-                    if candidates.len() > 1 {
-                        bail!(
-                            "{} delivery has multiple live sessions and no saved pane",
-                            relaunch.harness
-                        );
-                    }
-                    candidates.first().copied()
-                }
-            }
-        } else {
-            preferred_handle
-                .and_then(|h| live.iter().find(|a| a.pane_id == h))
-                .or_else(|| live.first())
-        }
-        .map(|a| a.pane_id.clone());
-        if let Some(handle) = target {
-            match relaunch.first_prompt {
-                FirstPrompt::No => {
-                    channel
-                        .deliver(self, &handle, relaunch.channel, text)
-                        .await?
-                }
-                FirstPrompt::Send => self.send_first_prompt(&handle, text).await?,
-                FirstPrompt::Recover => self.recover_first_prompt(&handle, text).await?,
-            }
-            return Ok(Delivery {
-                handle,
-                relaunched: false,
-                resumed: false,
-            });
-        }
-        // An earlier attempt at this event, or a binding to one conversation,
-        // is settled in that conversation: a session-bound channel with one
-        // outstanding is resumed or nothing, never started afresh.
-        let recorded = relaunch
-            .channel
-            .is_some_and(|(mailbox, sequence)| channel.has_record(mailbox, sequence, text));
-        let held = channel.session_bound()
-            && (recorded
-                || relaunch
-                    .channel
-                    .is_some_and(|(mailbox, _)| channel.has_binding(mailbox)));
-        if held && relaunch.resume_command.is_none() {
-            bail!(
-                "{} has an outstanding native delivery journal but no saved session to resume (no terminal fallback)",
-                relaunch.harness
-            );
-        }
+        held: bool,
+    ) -> Result<(String, bool, bool)> {
         let mut resumed = false;
         let mut handle = None;
         // A resumed agent already at work takes the message as a steering
@@ -1574,6 +1531,98 @@ keeping it"
                 .await?
             }
         };
+        Ok((handle, resumed, at_work))
+    }
+
+    /// Start the harness again in a workspace with no live agent, typing
+    /// nothing (a scratch session waits at its composer for the person at
+    /// its terminal, #487): see `start_again`.
+    pub async fn restart(&self, workspace_id: &str, relaunch: &Relaunch<'_>) -> Result<Delivery> {
+        if let Some(handle) = self.live_handle(workspace_id, None).await? {
+            return Ok(Delivery {
+                handle,
+                relaunched: false,
+                resumed: false,
+            });
+        }
+        let (handle, resumed, _) = self.start_again(workspace_id, relaunch, false).await?;
+        Ok(Delivery {
+            handle,
+            relaunched: true,
+            resumed,
+        })
+    }
+
+    pub async fn deliver(
+        &self,
+        workspace_id: &str,
+        preferred_handle: Option<&str>,
+        relaunch: &Relaunch<'_>,
+        text: &str,
+    ) -> Result<Delivery> {
+        let (ws, _) = split_id(workspace_id);
+        let agents = self.agents().await?;
+        let live: Vec<&Agent> = agents.iter().filter(|a| a.workspace_id == ws).collect();
+        let channel = crate::harness::channel(relaunch.harness);
+        let target = if channel.session_bound() {
+            // A saved pane is an address, not a preference. Never deliver to a
+            // neighbour if its agent exits or its pane hosts a different harness.
+            match preferred_handle {
+                Some(handle) => live
+                    .iter()
+                    .find(|a| a.pane_id == handle && a.kind == relaunch.harness),
+                None => {
+                    let candidates: Vec<_> =
+                        live.iter().filter(|a| a.kind == relaunch.harness).collect();
+                    if candidates.len() > 1 {
+                        bail!(
+                            "{} delivery has multiple live sessions and no saved pane",
+                            relaunch.harness
+                        );
+                    }
+                    candidates.first().copied()
+                }
+            }
+        } else {
+            preferred_handle
+                .and_then(|h| live.iter().find(|a| a.pane_id == h))
+                .or_else(|| live.first())
+        }
+        .map(|a| a.pane_id.clone());
+        if let Some(handle) = target {
+            match relaunch.first_prompt {
+                FirstPrompt::No => {
+                    channel
+                        .deliver(self, &handle, relaunch.channel, text)
+                        .await?
+                }
+                FirstPrompt::Send => self.send_first_prompt(&handle, text).await?,
+                FirstPrompt::Recover => self.recover_first_prompt(&handle, text).await?,
+            }
+            return Ok(Delivery {
+                handle,
+                relaunched: false,
+                resumed: false,
+            });
+        }
+        // An earlier attempt at this event, or a binding to one conversation,
+        // is settled in that conversation: a session-bound channel with one
+        // outstanding is resumed or nothing, never started afresh.
+        let recorded = relaunch
+            .channel
+            .is_some_and(|(mailbox, sequence)| channel.has_record(mailbox, sequence, text));
+        let held = channel.session_bound()
+            && (recorded
+                || relaunch
+                    .channel
+                    .is_some_and(|(mailbox, _)| channel.has_binding(mailbox)));
+        if held && relaunch.resume_command.is_none() {
+            bail!(
+                "{} has an outstanding native delivery journal but no saved session to resume (no terminal fallback)",
+                relaunch.harness
+            );
+        }
+        let (handle, resumed, at_work) = self.start_again(workspace_id, relaunch, held).await?;
         // A channel that takes the event here has the harness's own
         // conversation to take it in (a Pi/OMP launch resumes its transcript).
         if channel

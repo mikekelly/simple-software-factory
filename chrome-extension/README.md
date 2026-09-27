@@ -463,25 +463,18 @@ sessions and each gets its own, set a little down and right of the last; a
 click on a window brings it to the front, and Open on a session whose window is
 already open brings that window forward.
 
-A **scratch session**'s window is a live terminal: [xterm.js](https://xtermjs.org/)
-attached to the session's tmux session through the factory's `api/term/<session>`
-WebSocket (`ws://`, or `wss://` for an `https://` factory URL). It is sized to
-the window, and the tmux session follows its size; everything the terminal
-takes (keys, paste, mouse) goes straight to the session. On a factory whose Writes switch is off it is view-only. When the
-socket closes — the session ended (its harness exited, or it was killed), the
-factory went away, or the extension's service worker stopped — the terminal
-says so and offers **Reconnect**, and **Resume** to start a session that ended
-again. The terminal never moves on to another session: ssf's tmux sessions
-detach their terminal when they end.
-
-An **item**'s window is also a live xterm.js terminal on `api/term/<session>`,
-which for an item is one viewer of the agent's herdr pane (`herdr terminal
+A session's window is a live [xterm.js](https://xtermjs.org/) terminal on the
+factory's `api/term/<session>` WebSocket (`ws://`, or `wss://` for an
+`https://` factory URL): one viewer of the agent's herdr pane (`herdr terminal
 session control`, shared by the factory among everyone watching; see
-[docs/dashboard.md](../docs/dashboard.md)). **Show agent** appears only where
-the snapshot says the pane takes typing (`pane_input`: where the factory's
-`item_pane_input` is on) and the factory's Writes switch is on; the worker
-refuses to open an item's terminal while Writes is off, and turning Writes off
-closes it.
+[docs/dashboard.md](../docs/dashboard.md)). A scratch session's and an item's
+work the same way. An item's **Show agent** appears only where the snapshot
+says the pane takes typing (`pane_input`: where the factory's
+`item_pane_input` is on); a scratch session's pane always takes typing. The
+worker refuses to open a terminal while the factory's Writes switch is off,
+and turning Writes off closes it. A scratch session still running in tmux,
+from before scratch sessions moved to herdr, has no terminal here until it is
+next started.
 
 It is a full terminal, shared like a tmux session, but one viewer at a time
 holds control: only the controller's typing, paste and wheel reach the pane,
@@ -497,7 +490,8 @@ it tries again. herdr keeps the pane's scrollback, so the terminal keeps none:
 each wheel notch scrolls the pane one step, Shift+Enter sends a newline that
 does not submit (ESC CR), and a paste is always sent as a bracketed paste.
 Half an hour with nothing typed disconnects it. When the socket closes the
-terminal says so and offers **Reconnect**.
+terminal says so and offers **Reconnect** (and, for a scratch session,
+**Resume**, to start one that ended again).
 
 ## Reaching a factory on a tailnet
 

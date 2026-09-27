@@ -19,7 +19,7 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/mikekelly/simple-software-factory"
 license=('MIT')
 # openssh: `ssf auth login` makes the bot's key with ssh-keygen and the bot pushes over ssh.
-depends=('gcc-libs' 'glibc' 'jq' 'systemd' 'github-cli' 'herdr' 'openssh' 'tmux')
+depends=('gcc-libs' 'glibc' 'jq' 'systemd' 'github-cli' 'herdr' 'openssh')
 makedepends=('cargo')
 checkdepends=('git')
 optdepends=(
@@ -29,6 +29,7 @@ optdepends=(
   'libarchive: bsdtar, unpacks the Ubuntu root tarball for the microVM image'
   'e2fsprogs: mkfs.ext4, makes the microVM disks'
   'curl: downloads Firecracker, gvproxy, the guest kernel and Ubuntu root'
+  'tmux: reaches scratch sessions still running in tmux from before they moved to herdr'
 )
 install=ssf.install
 # !debug: no ssf-debug split package. !lto: makepkg's -flto would reach

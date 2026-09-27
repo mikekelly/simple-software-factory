@@ -708,7 +708,7 @@ fn is_login(login: &str) -> bool {
 ///
 /// Every terminal types at an agent, so it is held to a write's origin rule
 /// -- a Chrome extension's own -- on top of the capability every route has.
-/// An item's (#563) is also opened from this page's own origin where
+/// Any session's (#563, #565) is also opened from this page's own origin where
 /// `dashboard.terminal_input` is on; the factory's `item_pane_input` is
 /// asked as well, where the config is, when its stream starts.
 fn term_request(
@@ -718,12 +718,10 @@ fn term_request(
     terminal_input: bool,
 ) -> std::result::Result<(String, String), (u16, &'static str, String)> {
     let decoded = percent_decode(encoded).filter(|session| session.len() <= MAX_SESSION);
-    let scratch = decoded
+    let session = decoded
         .as_deref()
         .and_then(crate::origin::Scratch::parse)
-        .map(|s| s.to_string());
-    let session = scratch
-        .clone()
+        .map(|s| s.to_string())
         .or_else(|| {
             decoded
                 .as_deref()
@@ -743,13 +741,9 @@ fn term_request(
     let extension =
         header("origin").is_some_and(|origin| origin.starts_with("chrome-extension://"));
     let own = header("origin") == Some(format!("http://{host}").as_str());
-    if !(extension || (scratch.is_none() && own && terminal_input)) {
-        let error = if scratch.is_some() {
-            "the terminal takes typing, so only an extension's origin may open it"
-        } else {
-            "the terminal takes typing, so only an extension's origin, or this page's where \
-             dashboard.terminal_input is on, may open it"
-        };
+    if !(extension || (own && terminal_input)) {
+        let error = "the terminal takes typing, so only an extension's origin, or this page's \
+                     where dashboard.terminal_input is on, may open it";
         return Err((
             403,
             "application/json",
@@ -1378,8 +1372,9 @@ pub const BUILD: &str = concat!(
 mod tests {
     use super::*;
 
-    /// `api/term` (#491): a scratch session only, a WebSocket upgrade only,
-    /// and only from an extension's origin, since it takes typing.
+    /// `api/term` for a scratch session (#491, #565): a WebSocket upgrade
+    /// only, and, since it takes typing, only from an extension's origin or
+    /// -- with `dashboard.terminal_input` on -- this page's, as an item's.
     #[test]
     fn the_terminal_route_takes_a_scratch_upgrade_from_an_extension() {
         let upgrade = |origin: &str| {
@@ -1398,6 +1393,7 @@ mod tests {
             400
         );
         assert_eq!(term("http://h", "o%2Fr~ab12").unwrap_err().0, 403);
+        assert!(term_request(&upgrade("http://h"), "o%2Fr~ab12", "h", true).is_ok());
         let plain = "GET /t/api/term/o%2Fr~ab12 HTTP/1.1\r\nHost: h\r\nOrigin: chrome-extension://abc\r\n\r\n";
         assert_eq!(
             term_request(plain, "o%2Fr~ab12", "h", true).unwrap_err().0,

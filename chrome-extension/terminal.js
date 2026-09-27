@@ -1,6 +1,6 @@
-// The terminal page: a live terminal (term-xterm.js): a scratch session's
-// (#491, tmux) or an item session's (#563, herdr, shared by everyone watching
-// it).
+// The terminal page: a session's live terminal (term-xterm.js) on its herdr
+// pane, an item's (#563) or a scratch session's (#565), shared by everyone
+// watching it.
 //
 // This page is the extension's own, framed over the GitHub page by Open
 // (pane-overlay.js, #477), and it talks to no factory itself: a frame under
@@ -13,7 +13,6 @@ import { factoryUrl } from "./factory-url.js";
 const params = new URLSearchParams(location.search);
 const url = factoryUrl(params.get("factory"));
 const session = String(params.get("session") ?? "");
-const takesInput = params.get("input") === "1";
 const stateLine = document.getElementById("state");
 document.getElementById("session").textContent = session;
 // Framed in a floating window, whose title bar already names the session.
@@ -33,28 +32,18 @@ async function startTerm() {
     say("this terminal names no configured factory or no session", true);
     return;
   }
-  const { run, runItem } = await import("./term-xterm.js");
-  if (!session.includes("~")) {
-    runItem({
-      url,
-      session,
-      name: String(params.get("viewer") ?? "extension"),
-      say,
-      box: document.getElementById("xterm"),
-      notice: document.getElementById("notice"),
-      viewers: document.getElementById("viewers"),
-      reconnect: document.getElementById("reconnect"),
-      take: document.getElementById("take"),
-    });
-    return;
-  }
-  run({
+  const { runItem } = await import("./term-xterm.js");
+  runItem({
     url,
     session,
-    takesInput,
+    name: String(params.get("viewer") ?? "extension"),
     say,
     box: document.getElementById("xterm"),
+    notice: document.getElementById("notice"),
+    viewers: document.getElementById("viewers"),
     reconnect: document.getElementById("reconnect"),
-    resume: document.getElementById("resume"),
+    take: document.getElementById("take"),
+    // A scratch session that ended can be started again from here.
+    resume: session.includes("~") ? document.getElementById("resume") : null,
   });
 }

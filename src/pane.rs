@@ -1,7 +1,7 @@
-//! A session's agent pane, for the web endpoint's live terminals:
-//! `ssf __pane attach` (a scratch session's tmux session, #491), `ssf __pane
-//! control` (an item session's herdr pane, #563) and `ssf __pane
-//! input-check` (whether a pane takes typing, `item_pane_input`).
+//! A session's agent pane, for the web endpoint's live terminals: `ssf
+//! __pane control` (a session's herdr pane: an item's, #563, or a scratch
+//! session's, #565) and `ssf __pane input-check` (whether a pane takes
+//! typing, `item_pane_input`).
 //!
 //! These run where the sessions run, as every factory command does: the web
 //! endpoint starts them through the same client transport as its status
@@ -16,16 +16,8 @@ use crate::driver::Driver;
 use crate::origin::{Origin, Scratch};
 use crate::state::State;
 
-/// Where a session's agent runs: a driver's terminal (an item's session,
-/// or a scratch session still in a herdr pane from before #491), or a
-/// scratch session's tmux session.
-pub(crate) enum Target {
-    Driver(Driver, String),
-    Tmux(crate::tmux::Tmux, String),
-}
-
 /// Where a session's agent is.
-pub(crate) async fn locate(cfg: &Config, state: &State, session: &str) -> Result<Target> {
+pub(crate) async fn locate(cfg: &Config, state: &State, session: &str) -> Result<(Driver, String)> {
     let (repo_name, worktree, handle) = if let Some(s) = Scratch::parse(session) {
         let repo = cfg
             .repos
@@ -37,26 +29,22 @@ pub(crate) async fn locate(cfg: &Config, state: &State, session: &str) -> Result
             .get(&repo.name)
             .and_then(|rs| rs.scratch.get(&s.id))
             .with_context(|| format!("{session} is not a session ssf knows"))?;
-        // A scratch session runs in tmux (#491) unless it is still in the
-        // herdr pane it was started in before that.
-        let in_herdr = st
+        // One started in tmux while scratch sessions ran there (#491) is
+        // left there until it stops (#565), with no pane to control.
+        if st
             .terminal_handle
             .as_deref()
-            .is_some_and(|h| crate::tmux::name_of(h).is_none())
+            .and_then(crate::tmux::name_of)
+            .is_some()
             && st
                 .worktree_id
                 .as_deref()
-                .is_some_and(|w| !crate::driver::is_local_worktree(w));
-        if !in_herdr {
-            let tmux = crate::tmux::Tmux::new();
-            let name = crate::tmux::session_name(&repo.name, &s.id);
-            if st.worktree_id.is_none() {
-                bail!("{session} has no workspace");
-            }
-            if !tmux.has_session(&name).await? {
-                bail!("no agent is running in {session}'s workspace");
-            }
-            return Ok(Target::Tmux(tmux, name));
+                .is_some_and(crate::driver::is_local_worktree)
+        {
+            bail!(
+                "{session} still runs in tmux, from before scratch sessions moved to herdr; \
+                 its terminal opens here once it has been started again"
+            );
         }
         (
             repo.name.clone(),
@@ -99,7 +87,7 @@ pub(crate) async fn locate(cfg: &Config, state: &State, session: &str) -> Result
         .live_handle(&worktree, handle.as_deref())
         .await?
         .with_context(|| format!("no agent is running in {session}'s workspace"))?;
-    Ok(Target::Driver(driver, pane))
+    Ok((driver, pane))
 }
 
 /// Exit status of `ssf __pane control` and `input-check` for a pane the factory does not let a
@@ -124,25 +112,7 @@ pub(crate) fn input_refusal(cfg: &Config, session: &str) -> Option<String> {
     })
 }
 
-/// `ssf __pane attach`: attach this terminal to a scratch session's tmux
-/// session (#491), for the web dashboard's `api/term`, which runs this in a
-/// PTY. Only a scratch session in tmux can be attached to; an item's
-/// session is herdr's, controlled by `ssf __pane control` instead.
-pub(crate) async fn attach(session: &str) -> Result<()> {
-    if Scratch::parse(session).is_none() {
-        bail!("{session}: only a scratch session (owner/repo~id) has a terminal to attach to");
-    }
-    let cfg = Config::load()?;
-    let state = State::load()?;
-    let Target::Tmux(tmux, name) = locate(&cfg, &state, session).await? else {
-        bail!("{session} still runs in a herdr pane; it moves to tmux when it is next started");
-    };
-    use std::os::unix::process::CommandExt;
-    let error = tmux.attach_command(&name).exec();
-    Err(anyhow::Error::new(error).context("running tmux attach"))
-}
-
-/// `ssf __pane control` (#563): control an item session's herdr pane as
+/// `ssf __pane control` (#563, #565): control a session's herdr pane as
 /// `herdr terminal session control` NDJSON over stdin and stdout (pipes,
 /// never a PTY): typing, and the pane takes this stream's size. The web
 /// endpoint holds one per pane and shares it among every viewer.
@@ -152,16 +122,18 @@ pub(crate) async fn attach(session: &str) -> Result<()> {
 /// Control is never `--takeover`: a pane someone else controls refuses this
 /// one, and one taken over ends it, with herdr's own words.
 pub(crate) async fn control(session: &str, size: Option<(u16, u16)>) -> Result<Option<String>> {
-    if Origin::parse(session).is_none() {
-        bail!("{session}: only an item session (owner/repo#N) has a live terminal");
+    if Origin::parse(session).is_none() && Scratch::parse(session).is_none() {
+        bail!("{session}: expected owner/repo#N or owner/repo~id");
     }
     let cfg = Config::load()?;
     if let Some(why) = input_refusal(&cfg, session) {
         return Ok(Some(why));
     }
     let state = State::load()?;
-    let Target::Driver(Driver::Herdr(herdr), pane) = locate(&cfg, &state, session).await? else {
-        bail!("{session} has no herdr pane");
+    let (herdr, pane) = match locate(&cfg, &state, session).await? {
+        (Driver::Herdr(herdr), pane) => (herdr, pane),
+        #[cfg(test)]
+        _ => bail!("{session} has no herdr pane"),
     };
     let mut command =
         tokio::process::Command::new(crate::config::herdr_command_path(herdr.command()));
@@ -221,8 +193,10 @@ mod tests {
         .unwrap();
         let why = control("o/r#7", None).await.unwrap().unwrap();
         assert!(why.contains("view-only"), "{why}");
-        // A scratch session has no live terminal of this kind.
+        // A scratch session always takes typing; one ssf does not know has
+        // no pane.
         assert!(control("o/r~ab12", None).await.is_err());
+        assert!(control("nonsense", None).await.is_err());
     }
 
     #[tokio::test]

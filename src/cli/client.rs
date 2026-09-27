@@ -821,7 +821,6 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             std::process::exit(i32::from(!answer.ok));
         }
         Command::Pane { command } => match command {
-            PaneCommand::Attach { session } => crate::pane::attach(&session).await,
             PaneCommand::Control {
                 session,
                 cols,
