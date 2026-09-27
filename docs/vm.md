@@ -387,7 +387,9 @@ caches), bind-mounted from there.
 
 `ssf vm stop` shuts the guest down cleanly; on the next start the guest
 daemon's `resume_on_start` brings the sessions back in herdr, as after a reboot
-on bare metal. Factory edits go straight to the guest and are picked up on its
+on bare metal. The guest sets herdr's `[session] resume_agents_on_restore = false`, so the
+sessions come back through `ssf launch` with their environment and inbox
+channel rather than as bare harness restarts. Factory edits go straight to the guest and are picked up on its
 next poll. `ssf vm restart` supplies explicit `vm.files` (and a new binary to
 a guest without the ssf package) and preserves guest configuration and
 credentials; `ssf vm upgrade` changes the guest's ssf. `ssf vm reset` (after
