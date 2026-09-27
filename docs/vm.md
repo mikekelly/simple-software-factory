@@ -220,8 +220,20 @@ herdr, and herdr's agent integrations for the agents present. The list lives in
 edit the copy and run `SSF_VM_DIR=<copy> ssf vm build --force`; a file edited
 under the installed directory is overwritten by the next package upgrade.
 
-The `ssf` binary is not in the image: every start takes the host's, so the
-guest always runs the installed version. herdr is installed when the guest is
+The guest runs `ssf` from its own `ssf` package (the release `.deb`), so
+upgrading the host does not change the guest's version. The first start of a
+Firecracker root without the package (a new image, or one from 0.18 or
+earlier) installs this client's release package in it once, over SSH, keeping
+everything else on the root; after that `ssf vm upgrade [VERSION]` (default:
+the client's version), or `ssf vm upgrade --deb PATH` for a local package,
+installs it in the running guest and restarts only the guest daemon, not the
+VM (a guest still without the package adopts it the same way); `apt` in the
+guest works too. The package also carries the guest's boot
+scripts, so they follow it. A guest without the package (lima and incus
+guests, and Firecracker guests other than x86_64, which have no release
+package) still runs the host's binary, copied in at every start, and so does
+any guest while `[vm] guest_binary` is set. `ssf vm upgrade` is Firecracker
+only for now. herdr is installed when the guest is
 provisioned, so a newer host herdr reaches an existing guest through
 `ssf vm reset`, not through a restart. On a Mac the host's binaries cannot run
 in the Linux guest: the guest's `ssf` is `[vm] guest_binary` when set (its
@@ -233,7 +245,8 @@ latest Linux release while it provisions itself.
 
 ## What gets in, and what does not
 
-At every start the host supplies the `ssf` binary, the SSH public key used to
+At every start the host supplies the `ssf` binary (used only by a guest
+without the ssf package), the SSH public key used to
 administer the guest, and explicitly selected `vm.files` (a seed disk under
 Firecracker, the read-only `seed/` share under lima). Routine starts do not
 copy factory configuration, bot credentials or signing keys. No other host home
@@ -370,9 +383,12 @@ caches), bind-mounted from there.
 `ssf vm stop` shuts the guest down cleanly; on the next start the guest
 daemon's `resume_on_start` brings the sessions back in herdr, as after a reboot
 on bare metal. Factory edits go straight to the guest and are picked up on its
-next poll. `ssf vm restart` supplies a new binary or explicit `vm.files` and
-preserves guest configuration and credentials. `ssf vm reset` gives the guest a
-fresh root and keeps the data disk, so sessions survive it (the guest home is
+next poll. `ssf vm restart` supplies explicit `vm.files` (and a new binary to
+a guest without the ssf package) and preserves guest configuration and
+credentials; `ssf vm upgrade` changes the guest's ssf. `ssf vm reset` (after
+`ssf vm build --force`, too) gives the guest a fresh root, discarding anything
+installed on it (packages, `/etc` changes, Tailscale enrolment), and keeps the
+data disk, so sessions survive it (the guest home is
 copied from the image only when the data disk is new, so a rebuilt image's
 hooks reach an existing VM only through `ssf vm destroy`, or by hand).
 `ssf vm destroy --yes` removes the VM and all its disks.

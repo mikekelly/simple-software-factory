@@ -19,8 +19,9 @@ wait_for() {
 }
 
 # seed_from <seed-dir>: with the data disk on /var/lib/ssf, keep the guest
-# user's home there, and put the host's ssf binaries, config, token, ssh key
-# and listed files where the guest expects them. The root disk then holds
+# user's home there, and put the host's ssf binaries (unless the guest has
+# its own ssf package), config, token, ssh key and listed files where the
+# guest expects them. The root disk then holds
 # nothing but packages, so `ssf vm reset` loses no state.
 seed_from() {
     local seed=$1 n dest
@@ -40,12 +41,20 @@ seed_from() {
     findmnt -n /home/ssf >/dev/null || mount --bind /var/lib/ssf/home /home/ssf
     install -d -o ssf -g ssf /var/lib/ssf/state /var/lib/ssf/projects /home/ssf/.config /home/ssf/.ssh
     chmod 700 /home/ssf/.ssh
-    install -m755 "$seed/ssf" /usr/local/bin/ssf
-    install -m755 "$seed/ssf-server" /usr/local/bin/ssf-server
-    install -Dm644 "$seed/ssf-delivery.ts" /usr/local/share/ssf/harness/ssf-delivery.ts
-    install -Dm755 "$seed/ssf-pi-launch" /usr/local/share/ssf/harness/ssf-pi-launch
-    install -Dm644 "$seed/ssf-opencode.ts" /usr/local/share/ssf/harness/ssf-opencode.ts
-    install -Dm644 "$seed/ssf-grok.mjs" /usr/local/share/ssf/harness/ssf-grok.mjs
+    if [ ! -e "$seed/guest-binary" ] && dpkg-query -W -f='${Status}' ssf 2>/dev/null | grep -q ' installed$'; then
+        # The guest's own ssf package (`ssf vm upgrade`) decides its version;
+        # the host's binaries on the seed are left alone unless the host set
+        # `[vm] guest_binary` (the seed's guest-binary marker).
+        ln -sfn /usr/bin/ssf /usr/local/bin/ssf
+        ln -sfn /usr/bin/ssf-server /usr/local/bin/ssf-server
+    else
+        install -m755 "$seed/ssf" /usr/local/bin/ssf
+        install -m755 "$seed/ssf-server" /usr/local/bin/ssf-server
+        install -Dm644 "$seed/ssf-delivery.ts" /usr/local/share/ssf/harness/ssf-delivery.ts
+        install -Dm755 "$seed/ssf-pi-launch" /usr/local/share/ssf/harness/ssf-pi-launch
+        install -Dm644 "$seed/ssf-opencode.ts" /usr/local/share/ssf/harness/ssf-opencode.ts
+        install -Dm644 "$seed/ssf-grok.mjs" /usr/local/share/ssf/harness/ssf-grok.mjs
+    fi
     install -d -m700 -o ssf -g ssf /home/ssf/.config/ssf
     # Keep SSH usable for recovery when migration finds a conflict. The daemon
     # may only start after guest ownership was successfully established.

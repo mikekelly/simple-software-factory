@@ -682,6 +682,12 @@ impl Vm {
         if let Err(e) = self.wait_for_ssh(Duration::from_secs(90)).await {
             bail!("{e:#}; the console is in {}", self.console_log().display());
         }
+        // Never fails the start: the guest runs the copied-in binary meanwhile.
+        if let Err(e) = self.adopt_guest_package() {
+            warn!(
+                "could not install the ssf package in the guest ({e:#}); `ssf vm upgrade` retries"
+            );
+        }
         let daemon = self.wait_for_daemon(Duration::from_secs(60)).await;
         self.report_up(daemon.as_deref());
         Ok(())

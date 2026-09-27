@@ -124,7 +124,7 @@ fn established_vm_seed_never_resolves_or_copies_bot_credentials() {
 }
 
 #[test]
-fn stopped_root_requires_matching_script_after_filesystem_recovery() {
+fn stopped_root_requires_ownership_guarded_script_after_filesystem_recovery() {
     if which("mkfs.ext4").is_none() || which("debugfs").is_none() {
         return;
     }
@@ -185,6 +185,27 @@ fn stopped_root_requires_matching_script_after_filesystem_recovery() {
     )
     .unwrap();
     vm.require_compatible_root().unwrap();
+    vm.require_compatible_root().unwrap();
+    // An older release's script (0.16 lacked the skill copy) boots as it is;
+    // the guest package replaces it after boot.
+    std::fs::write(
+        sandbox
+            .root()
+            .join("root-tree/usr/local/lib/ssf/seed-common.sh"),
+        format!(
+            "{}\n# an older release\n",
+            include_str!("../../../vm/guest/seed-common.sh")
+        ),
+    )
+    .unwrap();
+    run_ok(
+        Command::new("mkfs.ext4")
+            .args(["-F", "-q", "-d"])
+            .arg(sandbox.root().join("root-tree"))
+            .arg(vm.root_disk()),
+        "older scratch root",
+    )
+    .unwrap();
     vm.require_compatible_root().unwrap();
     std::fs::write(vm.root_disk(), "not an ext4 root").unwrap();
     assert!(
