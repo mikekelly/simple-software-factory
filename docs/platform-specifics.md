@@ -398,11 +398,17 @@ with `ssf vm restart`; an interrupted host acknowledgement is finished with
 configuration and credentials on every later boot, and ordinary edits need
 no sync.
 
+**An older Firecracker root boots as it is.** A root built by an older ssf
+(0.18 or earlier) is started unchanged, and the first start installs the
+client's ssf package in the guest once, over SSH; its installed packages,
+`/etc` changes and Tailscale enrolment are kept. From then on upgrading the
+host leaves the guest alone, and `ssf vm upgrade` upgrades it.
+
 **An incompatible guest root is refused before boot** rather than patched
-in place, because an old root's seed script could overwrite the guest's
-configuration. Under Firecracker, install the matching ssf package with its
-guest scripts, then `ssf vm build --force`, `ssf vm reset`, `ssf vm start`;
-a reset alone would reuse the old image. Under lima, `ssf vm reset` then
+in place: a root that is not Ubuntu 24.04, or whose seed script predates
+guest ownership of the configuration (it could overwrite it). Under
+Firecracker, `ssf vm build --force`, `ssf vm reset`, `ssf vm start`; a
+reset alone would reuse the old image. Under lima, `ssf vm reset` then
 `ssf vm start`. Both replace only the disposable root: the data disk with
 the factory's configuration, credentials, repositories and worktrees is
 kept. If `vm.rootfs` points at a custom image, replace it with one built

@@ -97,8 +97,9 @@ Prefer the validating commands to hand-editing files: `ssf repo set` and
 accepts. Every key is in `ssf skill config` (docs/configuration.md).
 
 Repository and daemon settings are picked up on the daemon's next poll; no
-restart is needed. Service settings, VM settings and a new `ssf` binary
-need a restart (`ssf ui service ...`, or `ssf vm restart` for a VM).
+restart is needed. Service settings, VM settings and a new `ssf` binary need a restart
+(`ssf ui service ...`, or `ssf vm restart` for a VM's settings); a VM's own
+`ssf` changes only through `ssf vm upgrade`.
 
 ## Everyday commands
 
@@ -222,7 +223,8 @@ and state overrides alone do not isolate credentials, drivers or workspaces.
 The client and the server it talks to should be the same release.
 `ssf doctor` prints both and judges them: identical passes; a difference in
 the patch component alone is a warning; a different major or minor version
-fails, because the command surface may have changed between them.
+fails, because the command surface may have changed between them. Other
+commands only warn, on stderr, about a major or minor difference.
 
 Upgrade both sides to the same release:
 
@@ -231,9 +233,12 @@ Upgrade both sides to the same release:
    standalone binaries). Ask before running `sudo`. Package upgrades
    restart active target services.
 2. For an SSH target, upgrade the remote machine the same way.
-3. For a VM target, `ssf --server NAME vm restart` picks up the new `ssf`
-   binary in the guest. `ssf skill vm` (docs/vm.md) covers the rare cases
-   that need a rebuilt guest root.
+3. For a VM target, upgrading the host leaves the guest's version alone:
+   `ssf --server NAME vm upgrade` installs the client's release in the
+   guest and restarts its daemon, keeping everything else there. Avoid
+   `ssf vm build --force` and `ssf vm reset` for upgrading: a new root
+   loses whatever was installed in the guest. `ssf skill vm` (docs/vm.md)
+   has the detail.
 4. Run `ssf --server NAME doctor` again; it should look as it did before.
 
 Configuration, state, keys and the VM's disks survive an upgrade. If the

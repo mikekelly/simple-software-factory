@@ -1136,12 +1136,31 @@ pub(super) fn report_versions(
             record(
                 Level::Fail,
                 format!(
-                    "client version {client}; {server} {server_version}; update the client or server to the same release and restart the server (or run `ssf vm restart` for a VM)"
+                    "client version {client}; {server} {server_version}; update the client or server to the same release and restart the server (for a VM, `ssf vm upgrade`)"
                 ),
             );
             true
         }
     }
+}
+
+/// The one-line warning other commands print when the server is on another
+/// major or minor release; None when it is compatible or unknown.
+pub(super) fn version_skew_warning(client: &str, server: &str, vm: bool) -> Option<String> {
+    if !matches!(
+        version_compatibility(client, server),
+        VersionCompatibility::Incompatible
+    ) {
+        return None;
+    }
+    Some(format!(
+        "warning: this client is ssf {client} but the server is ssf {server}; {}",
+        if vm {
+            "`ssf vm upgrade` installs this client's version in the VM"
+        } else {
+            "update one of them to the same release"
+        }
+    ))
 }
 
 /// SSF's client/server command surface may change at a minor release. Builds

@@ -508,8 +508,15 @@ pub(super) enum VmCommand {
     Start,
     /// Shut the VM down cleanly.
     Stop,
-    /// Stop, then start (picks up a new ssf binary and `[vm] files`).
+    /// Stop, then start (picks up `[vm] files`, and a new ssf binary in a
+    /// guest without the ssf package).
     Restart,
+    /// Install a release's ssf package in the running guest and restart its
+    /// daemon. Upgrading the host never changes the guest's version.
+    Upgrade {
+        /// The release, e.g. 0.19.0 (default: this client's version).
+        version: Option<String>,
+    },
     /// Whether the VM runs and its daemon answers, its size, and how full
     /// the data disk is.
     Status {

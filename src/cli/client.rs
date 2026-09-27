@@ -86,6 +86,23 @@ pub async fn client_main() -> Result<()> {
     if doctor {
         return run_doctor_client(route, &catalog, inherited.as_ref(), &args);
     }
+    // A server that may run another release (over ssh, or in a VM): warn on a
+    // major or minor difference, never refuse. `ssf vm` manages the VM itself.
+    if (route.destination.is_some() || route.vm_context.is_some())
+        && !matches!(cli.command, Command::Vm { .. })
+    {
+        let identity = route_identity(route, &catalog, inherited.as_ref());
+        let identity = identity.as_ref().filter(|_| route.destination.is_none());
+        if let Ok(Some(server)) = probe_target_version(route, identity)
+            && let Some(warning) = super::doctor::version_skew_warning(
+                env!("CARGO_PKG_VERSION"),
+                &server,
+                route.vm_context.is_some(),
+            )
+        {
+            eprintln!("{warning}");
+        }
+    }
 
     let err = match &route.destination {
         Some(host) => {
@@ -195,6 +212,7 @@ fn probe_target_version(
 ) -> Result<Option<String>> {
     let output = match &route.destination {
         Some(host) => std::process::Command::new("ssh")
+            .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"])
             .arg("--")
             .arg(host)
             .arg(remote_version_command(identity, true))
@@ -220,6 +238,7 @@ fn probe_target_version(
 
     let fallback = match &route.destination {
         Some(host) => std::process::Command::new("ssh")
+            .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"])
             .arg("--")
             .arg(host)
             .arg(remote_version_command(None, false))
