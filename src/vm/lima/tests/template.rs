@@ -125,16 +125,13 @@ fn the_floor_is_the_oldest_lima_that_resolves_the_templates_base() {
     assert!(LimaVersion(2, 0, 0) < MIN_LIMA);
     assert!(LimaVersion(2, 0, 1) >= MIN_LIMA);
     assert!(LimaVersion(2, 2, 0) >= MIN_LIMA);
-    // Both bases are named in the opaque form the floor is chosen
-    // for -- `template://...`, which every 1.x takes, would mean a
-    // different floor.
-    for arch in ["x86_64", "aarch64"] {
-        let base = base_template(arch);
-        assert!(
-            base.starts_with("template:_images/"),
-            "{base}: the base locator moved; MIN_LIMA is chosen for it"
-        );
-    }
+    // The base is named in the opaque form the floor is chosen for --
+    // `template://...`, which every 1.x takes, would mean a different
+    // floor.
+    assert!(
+        BASE_TEMPLATE.starts_with("template:_images/"),
+        "{BASE_TEMPLATE}: the base locator moved; MIN_LIMA is chosen for it"
+    );
 }
 
 #[test]
@@ -153,7 +150,10 @@ fn template_has_the_base_per_arch_the_sizes_the_mount_and_the_disk() {
     };
     let y = render_template(&t);
     assert!(y.starts_with("# written by ssf;"), "{y}");
-    assert!(y.contains("base:\n  - template:_images/archlinux\n"), "{y}");
+    assert!(
+        y.contains("base:\n  - template:_images/ubuntu-lts\n"),
+        "{y}"
+    );
     assert!(!y.contains("images:"), "{y}");
     assert!(!y.contains("vmType"), "{y}");
     // No `mountType` field: the type is lima's to pick (see
@@ -185,7 +185,7 @@ fn template_has_the_base_per_arch_the_sizes_the_mount_and_the_disk() {
     );
     assert!(y.contains("  - mode: system\n"), "{y}");
     assert!(y.contains("      exec bash \"$boot\"\n"), "{y}");
-    // aarch64 boots Ubuntu; a set image replaces the base; vmType
+    // Both architectures boot Ubuntu; a set image replaces the base; vmType
     // and a larger root pass through.
     let y = render_template(&Template {
         arch: "aarch64",

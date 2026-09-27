@@ -1,9 +1,9 @@
 # Release packages: on a vX.Y.Z tag, build the .deb, .rpm and bare x86_64
 # binary (packaging/linux), the Arch .pkg.tar.zst (packaging/release) and,
-# best effort, a bare aarch64 binary, and attach them to a draft GitHub release
-# of that tag, creating the draft if it does not exist yet. Existing assets are
-# preserved so a package tested on the release target cannot be overwritten by
-# a rebuild. Publishing is a separate, deliberate step after validation. On
+# best effort, the aarch64 .deb, .rpm and bare binary, and attach them to a
+# draft GitHub release of that tag, creating the draft if it does not exist
+# yet. Existing assets are preserved so a package tested on the release
+# target cannot be overwritten by a rebuild. Publishing is a separate, deliberate step after validation. On
 # a manual run
 # (workflow_dispatch) everything is built the same way and uploaded as
 # workflow artifacts only, with the version from Cargo.toml; no release.
@@ -66,9 +66,9 @@ jobs:
           path: packaging/linux/dist/*
           if-no-files-found: error
 
-  # Bare static aarch64 client/server binaries, built natively on GitHub's
-  # ARM runner; no aarch64 packages. Best effort: a failure here never blocks
-  # the release.
+  # The same for aarch64 (arm64 .deb and aarch64 .rpm, which arm64 VM guests
+  # install, and the bare static client/server binaries), built natively on
+  # GitHub's ARM runner. Best effort: a failure here never blocks the release.
   linux-aarch64-binary:
     runs-on: ubuntu-24.04-arm
     continue-on-error: true
@@ -80,26 +80,28 @@ jobs:
         run: |
           rustup target add aarch64-unknown-linux-musl
           sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Build
+          curl -sSfL -o /tmp/nfpm.deb \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_arm64.deb"
+          sudo dpkg -i /tmp/nfpm.deb
+      - name: Version
+        run: |
+          if [ -n "$TAG" ]; then echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"; fi
+      - name: Build packages
         env:
           # This runner is natively aarch64, so Ubuntu's musl-gcc compiles
           # bundled SQLite and links Rust for the same libc and architecture.
           CC_aarch64_unknown_linux_musl: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          CARGO_PROFILE_RELEASE_STRIP: "true"
         run: |
-          if [ -n "$TAG" ]; then VERSION="${TAG#v}"; else
-            VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1); fi
-          cargo build --locked --release --target aarch64-unknown-linux-musl
-          mkdir -p dist && install -m755 target/aarch64-unknown-linux-musl/release/ssf "dist/ssf-$VERSION-linux-aarch64"
-          install -m755 target/aarch64-unknown-linux-musl/release/ssf-server "dist/ssf-server-$VERSION-linux-aarch64"
-          file dist/* | tee /tmp/aarch64-file-output
+          packaging/linux/build.sh
+          file packaging/linux/dist/ssf-[0-9]*-linux-aarch64 packaging/linux/dist/ssf-server-*-linux-aarch64 | tee /tmp/aarch64-file-output
           test "$(grep -Fc 'ARM aarch64' /tmp/aarch64-file-output)" -eq 2
           test "$(grep -Fc 'statically linked' /tmp/aarch64-file-output)" -eq 2
+          ls packaging/linux/dist/ssf_*_arm64.deb
       - uses: actions/upload-artifact@v4
         with:
           name: linux-aarch64-binary
-          path: dist/*
+          path: packaging/linux/dist/*
           if-no-files-found: error
 
   # Arch package from packaging/release/PKGBUILD in an Arch container.
@@ -158,7 +160,7 @@ jobs:
   # It never publishes the draft or changes a published release, and never
   # replaces an existing asset. The condition spells
   # that out: always() so a failed aarch64 job does not skip this one, then
-  # the two package jobs must have succeeded (the aarch64 binary is uploaded
+  # the two package jobs must have succeeded (the aarch64 files are uploaded
   # when its job succeeded, skipped otherwise). Tag pushes and calls from
   # cut-release.yml only: a manual run on a tag ref builds and uploads
   # artifacts but stages nothing.

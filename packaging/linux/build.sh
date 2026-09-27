@@ -4,12 +4,14 @@
 #   packaging/linux/build.sh [VERSION]
 #
 # From the repository root (any working directory works): builds the static
-# x86_64 musl binary (`rustup target add x86_64-unknown-linux-musl` if it is
-# missing; when there is no musl-gcc the C parts, ring's, are compiled with
-# plain gcc), then runs nfpm on packaging/linux/nfpm.yaml for both formats.
-# Output, in packaging/linux/dist/: ssf_VERSION-1_amd64.deb,
-# ssf-VERSION-1.x86_64.rpm and the bare static client/server binaries
-# (release assets too: the macOS lima guest downloads them).
+# musl binary for this machine, x86_64 or aarch64 (`rustup target add
+# <arch>-unknown-linux-musl` if it is missing; when there is no musl-gcc the
+# C parts, ring's, are compiled with plain gcc), then runs nfpm on
+# packaging/linux/nfpm.yaml for both formats.
+# Output, in packaging/linux/dist/: ssf_VERSION-1_amd64.deb (arm64 on
+# aarch64), ssf-VERSION-1.x86_64.rpm (aarch64) and the bare static
+# client/server binaries (release assets too: the macOS lima guest downloads
+# them, and a VM guest installs the .deb of its architecture).
 #
 # VERSION is the argument, else $VERSION, else the version in Cargo.toml.
 # nfpm is $NFPM, else `nfpm` on PATH (https://nfpm.goreleaser.com, 2.47.0 is
@@ -26,7 +28,15 @@ fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
-target=x86_64-unknown-linux-musl
+machine="$(uname -m)"
+case "$machine" in
+  x86_64) ARCH=amd64 ;;
+  aarch64|arm64) machine=aarch64 ARCH=arm64 ;;
+  *) echo "build.sh: no package for $machine (x86_64 or aarch64)" >&2; exit 1 ;;
+esac
+TARGET="$machine-unknown-linux-musl"
+target=$TARGET
+export ARCH TARGET
 nfpm="${NFPM:-nfpm}"
 command -v "$nfpm" >/dev/null || { echo "build.sh: nfpm not found (set NFPM or put nfpm on PATH)" >&2; exit 1; }
 
@@ -43,8 +53,8 @@ if ! rustup target list --installed | grep -qx "$target"; then
   rustup target add "$target"
 fi
 if ! command -v musl-gcc >/dev/null; then
-  echo "==> no musl-gcc: compiling the C parts for $target with gcc (CC_x86_64_unknown_linux_musl=gcc)"
-  export CC_x86_64_unknown_linux_musl=gcc
+  echo "==> no musl-gcc: compiling the C parts for $target with gcc (CC_${target//-/_}=gcc)"
+  export "CC_${target//-/_}=gcc"
 fi
 
 echo "==> cargo build --release --target $target (version $VERSION)"
@@ -64,9 +74,9 @@ for fmt in deb rpm; do
   [[ -n "$pkg" ]] || { echo "build.sh: nfpm did not report a created package for $fmt" >&2; exit 1; }
   built+=("$pkg")
 done
-install -m755 "target/$target/release/ssf" "$outdir/ssf-$VERSION-linux-x86_64"
-built+=("$outdir/ssf-$VERSION-linux-x86_64")
-install -m755 "target/$target/release/ssf-server" "$outdir/ssf-server-$VERSION-linux-x86_64"
-built+=("$outdir/ssf-server-$VERSION-linux-x86_64")
+install -m755 "target/$target/release/ssf" "$outdir/ssf-$VERSION-linux-$machine"
+built+=("$outdir/ssf-$VERSION-linux-$machine")
+install -m755 "target/$target/release/ssf-server" "$outdir/ssf-server-$VERSION-linux-$machine"
+built+=("$outdir/ssf-server-$VERSION-linux-$machine")
 echo "==> packages in $outdir:"
 ls -1 "${built[@]}"

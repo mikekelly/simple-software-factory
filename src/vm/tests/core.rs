@@ -896,3 +896,11 @@ fn login_states_parse_the_script_output() {
     assert!(s[1].installed && !s[1].logged_in);
     assert!(!s[2].installed && !s[2].logged_in);
 }
+
+#[test]
+fn guest_package_is_only_fetched_for_architectures_with_a_release_deb() {
+    let err = vm().guest_deb("0.18.0", "riscv64").unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("riscv64"), "{msg}");
+    assert!(msg.contains("--deb"), "{msg}");
+}

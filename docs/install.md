@@ -121,7 +121,7 @@ Download the matching asset from [GitHub Releases](https://github.com/mikekelly/
 | Family | Command |
 |---|---|
 | Arch | `sudo pacman -U ssf-*.pkg.tar.zst` |
-| Debian / Ubuntu | `sudo apt install ./ssf_*_amd64.deb` |
+| Debian / Ubuntu | `sudo apt install ./ssf_*_$(dpkg --print-architecture).deb` |
 | Fedora / RHEL | `sudo dnf install ./ssf-*.x86_64.rpm` |
 
 One package holds both the `ssf` client and the `ssf-server` daemon. Packages are x86_64.
