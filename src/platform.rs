@@ -75,18 +75,6 @@ impl Platform {
         }
     }
 
-    /// What installs tmux here, which scratch sessions run in (#491).
-    pub fn tmux_install_hint(&self) -> String {
-        match self.os {
-            Os::MacOs => "brew install tmux",
-            _ if self.is_arch_like() => "sudo pacman -S tmux",
-            _ if self.is_debian_like() => "sudo apt install tmux",
-            _ if self.is_fedora_like() => "sudo dnf install tmux",
-            _ => "install tmux with your package manager",
-        }
-        .to_string()
-    }
-
     /// What removes the ssf package here: `sudo pacman -R ssf` on Arch
     /// (Omarchy included), apt on Debian and Ubuntu, dnf on Fedora, RHEL
     /// and CentOS, brew on macOS. Printed, never run: nothing in ssf runs
@@ -168,10 +156,6 @@ pub fn is_omarchy() -> bool {
 
 pub fn herdr_install_hint() -> String {
     detect().herdr_install_hint()
-}
-
-pub fn tmux_install_hint() -> String {
-    detect().tmux_install_hint()
 }
 
 pub fn package_removal_command() -> String {

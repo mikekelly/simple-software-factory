@@ -658,11 +658,12 @@ pub fn sessions_with(
             out.push(row);
         }
         for st in rs.scratch.values() {
-            // A scratch session in tmux (#491) does not wait on the driver.
+            // A scratch session left in tmux (#491, until it next starts:
+            // #565) does not wait on the driver.
             let tmux = in_tmux(st);
             let list = if tmux { Some(list) } else { workspaces };
-            // A tmux session's own row wins over a herdr row a legacy
-            // session's workspace still has under the same id.
+            // A tmux session's own row wins over a herdr row under the
+            // same id.
             let name = crate::tmux::session_name(&repo.name, &st.id);
             let ws = list.and_then(|list| {
                 let id = st.worktree_id.as_deref()?;
@@ -679,8 +680,8 @@ pub fn sessions_with(
     out
 }
 
-/// Whether a scratch session runs in tmux (#491) rather than in the herdr
-/// pane one started before that is left in.
+/// Whether a scratch session was last started in tmux (#491), where it is
+/// left until it next starts, in a herdr pane (#565).
 fn in_tmux(st: &ScratchState) -> bool {
     st.terminal_handle
         .as_deref()
@@ -692,7 +693,7 @@ fn in_tmux(st: &ScratchState) -> bool {
             .is_some_and(crate::driver::is_local_worktree)
 }
 
-/// The workspace rows of scratch sessions in tmux (#491): tmux says only
+/// The workspace rows of scratch sessions left in tmux (#491): tmux says only
 /// whether the session is there, so a live one's agent state is `running`,
 /// and its last activity is read from the harness's transcript.
 async fn tmux_workspaces(cfg: &Config, state: &State) -> Vec<WorkspaceInfo> {

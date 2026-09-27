@@ -1,10 +1,7 @@
-// A scratch session's live terminal (#491), and an item session's (runItem,
-// #563, below): xterm.js (vendored, see the README) attached to the factory's `api/term/<session>` WebSocket through
-// the service worker, on a port (`ssf-term`). What the terminal prints comes
-// as bytes, what is typed goes as bytes, and the terminal is sized to its
-// window: every change of size (debounced) is fitted and sent as a resize,
-// which the tmux session follows. A view-only terminal neither types nor
-// resizes the session.
+// A session's live terminal (#563, and a scratch session's since #565):
+// xterm.js (vendored, see the README) attached to the factory's
+// `api/term/<session>` WebSocket through the service worker, on a port
+// (`ssf-term`).
 import { Terminal } from "./vendor/xterm/xterm.mjs";
 import { FitAddon } from "./vendor/xterm/addon-fit.mjs";
 import { factoryUrl } from "./factory-url.js";
@@ -17,125 +14,6 @@ const PING_MS = 20000;
 
 const encoder = new TextEncoder();
 
-export function run({ url, session, takesInput, say, box, reconnect, resume }) {
-  box.hidden = false;
-  const term = new Terminal({
-    cursorBlink: true,
-    disableStdin: !takesInput,
-    fontFamily:
-      '"JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-    fontSize: 13,
-    scrollback: 5000,
-    theme: { background: "#0d1117", foreground: "#e6edf3" },
-  });
-  const fit = new FitAddon();
-  term.loadAddon(fit);
-  term.open(box);
-
-  let port = null;
-  let connected = false;
-  const post = (message) => {
-    try {
-      port?.postMessage(message);
-    } catch {
-      // The port is gone; its disconnect is heard below.
-    }
-  };
-  const sendSize = () => {
-    const text = resizeMessage(term.cols, term.rows);
-    if (connected && takesInput && text) post({ type: "resize", data: text });
-  };
-
-  /// The socket closed: the session ended (its harness exited, or it was
-  /// killed) or the factory went away. Reconnect attaches again to a session
-  /// that is still there; Resume (where this factory takes writes) starts
-  /// one that ended again on its workspace (`api/scratch/resume`).
-  function closed(text) {
-    connected = false;
-    const held = port;
-    port = null;
-    held?.disconnect();
-    say(`${text} · the session may have ended`, true);
-    reconnect.hidden = false;
-    resume.hidden = !takesInput;
-    term.write(`\r\n\x1b[2m[${text}]\x1b[0m\r\n`);
-  }
-
-  async function restart() {
-    resume.disabled = true;
-    say("resuming…");
-    let reply;
-    try {
-      reply = await chrome.runtime.sendMessage({ type: "ssf:scratch-resume", url, session });
-    } catch (error) {
-      reply = { ok: false, error: String(error) };
-    }
-    resume.disabled = false;
-    if (reply?.ok) connect();
-    else say(`not resumed (${reply?.error ?? "the factory did not answer"})`, true);
-  }
-
-  function connect() {
-    port?.disconnect();
-    reconnect.hidden = true;
-    resume.hidden = true;
-    connected = false;
-    say("connecting…");
-    const opened = chrome.runtime.connect({ name: "ssf-term" });
-    port = opened;
-    opened.onMessage.addListener((message) => {
-      if (port !== opened) return;
-      if (message?.type === "open") {
-        connected = true;
-        term.reset();
-        say(takesInput ? "live" : "live · view only");
-        sendSize();
-        term.focus();
-      } else if (message?.type === "data") {
-        term.write(fromBase64(message.data));
-      } else if (message?.type === "closed") {
-        const why = message.error ?? (message.reason || null);
-        closed(why ? `the terminal closed (${why})` : "the terminal closed");
-      }
-    });
-    opened.onDisconnect.addListener(() => {
-      if (port === opened) closed("the terminal closed: the extension's service worker stopped");
-    });
-    opened.postMessage({ type: "open", url, session });
-  }
-
-  if (takesInput) {
-    term.onData((text) => connected && post({ type: "input", data: toBase64(encoder.encode(text)) }));
-    // Mouse reports and the like, one byte per character.
-    term.onBinary((text) => {
-      if (!connected) return;
-      const bytes = Uint8Array.from(text, (c) => c.charCodeAt(0) & 0xff);
-      post({ type: "input", data: toBase64(bytes) });
-    });
-  }
-  term.onResize(sendSize);
-  let timer = null;
-  new ResizeObserver(() => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      try {
-        fit.fit();
-      } catch {
-        // A box with no size (hidden) has nothing to fit.
-      }
-    }, FIT_MS);
-  }).observe(box);
-  try {
-    fit.fit();
-  } catch {
-    // As above.
-  }
-  setInterval(() => post({ type: "ping" }), PING_MS);
-  reconnect.addEventListener("click", connect);
-  resume.addEventListener("click", restart);
-  connect();
-}
-
 /// Pixels of a smooth (trackpad) scroll that count as one wheel notch.
 const NOTCH_PX = 50;
 /// How long the terminal stays connected with nothing typed: collie's idle
@@ -146,8 +24,8 @@ const IDLE_MS = 30 * 60 * 1000;
 const FONT_PX = 13;
 const MIN_FONT_PX = 4;
 
-/// An item session's live terminal (#563): the same `api/term/<session>`
-/// socket, which for an item is one viewer of the pane's control stream that
+/// A session's live terminal (#563): the `api/term/<session>` socket, which
+/// is one viewer of the herdr pane's control stream that
 /// the factory shares among everyone watching, like a shared tmux session:
 /// one viewer at a time holds control, and only its typing, paste and
 /// wheel reach the pane, which takes its size; everyone else sees it at
@@ -157,7 +35,9 @@ const MIN_FONT_PX = 4;
 /// factory's Writes switch is on; Writes going off closes it, as does half
 /// an hour with nothing typed. herdr keeps the scrollback, so xterm keeps
 /// none, each wheel notch is one scroll, and a paste is always bracketed.
-export function runItem({ url, session, name, say, box, notice: noticeNode, viewers, reconnect, take }) {
+/// `resume`, for a scratch session, is offered once the socket closes: it
+/// starts a session that ended again on its workspace (`api/scratch/resume`).
+export function runItem({ url, session, name, say, box, notice: noticeNode, viewers, reconnect, take, resume }) {
   box.hidden = false;
   const term = new Terminal({
     cursorBlink: true,
@@ -260,7 +140,22 @@ export function runItem({ url, session, name, say, box, notice: noticeNode, view
     take.hidden = true;
     say(text, true);
     reconnect.hidden = false;
+    if (resume) resume.hidden = !writes;
     term.write(`\r\n\x1b[2m[${text}]\x1b[0m\r\n`);
+  }
+
+  async function restart() {
+    resume.disabled = true;
+    say("resuming…");
+    let reply;
+    try {
+      reply = await chrome.runtime.sendMessage({ type: "ssf:scratch-resume", url, session });
+    } catch (error) {
+      reply = { ok: false, error: String(error) };
+    }
+    resume.disabled = false;
+    if (reply?.ok) connect();
+    else say(`not resumed (${reply?.error ?? "the factory did not answer"})`, true);
   }
 
   function heard(message) {
@@ -308,6 +203,7 @@ export function runItem({ url, session, name, say, box, notice: noticeNode, view
   function connect() {
     port?.disconnect();
     reconnect.hidden = true;
+    if (resume) resume.hidden = true;
     connected = false;
     notice("");
     if (!writes) {
@@ -379,6 +275,7 @@ export function runItem({ url, session, name, say, box, notice: noticeNode, view
   }).observe(box);
 
   reconnect.addEventListener("click", connect);
+  resume?.addEventListener("click", restart);
   take.addEventListener("click", () => {
     lastActivity = Date.now();
     ask({ type: "take" });

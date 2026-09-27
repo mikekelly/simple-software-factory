@@ -328,16 +328,16 @@ async function scratchResume(message) {
   return writeTo(message, "scratch/resume", { session: message.session });
 }
 
-/// A scratch session's terminal, `api/term/<session>` (a WebSocket), opened
-/// here for the page on its port (`ssf-term`, #491): the page is framed under
+/// A session's terminal, `api/term/<session>` (a WebSocket), opened
+/// here for the page on its port (`ssf-term`, #491, #563, #565): the page is framed under
 /// github.com, where Chrome's local-network rules can hold a request of its
 /// own to a factory on a private or tailnet address (#477). The socket
 /// carries the extension's origin, which the factory requires.
 ///
-/// The page sends `open` to connect, `input` (base64 bytes) and `resize`
-/// (the factory's own JSON text), and for an item's pane (#563) `ask` (JSON
-/// text: hello, scroll, take), all dropped while the factory's Writes switch is
-/// off; an item's terminal takes typing, so it is not opened at all then.
+/// The page sends `open` to connect, `input` (base64 bytes), `resize` (the
+/// factory's own JSON text) and `ask` (JSON text: hello, scroll, take), all
+/// dropped while the factory's Writes switch is off; a terminal takes
+/// typing, so it is not opened at all then.
 /// This worker sends `open` once connected,
 /// `data` (base64 bytes), `text` (the factory's JSON text frames) and, once,
 /// `closed` with why. Closing the port closes
@@ -366,7 +366,7 @@ function termStream(port) {
         return;
       }
       const session = String(message.session ?? "");
-      if (!session.includes("~") && factories.get(url)?.writes !== true) {
+      if (factories.get(url)?.writes !== true) {
         tell({ type: "closed", error: "writes are turned off for this factory on the options page" });
         return;
       }

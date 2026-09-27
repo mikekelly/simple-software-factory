@@ -549,27 +549,31 @@ impl Driver {
         }
     }
 
-    /// A plain git worktree for a scratch session (#491), with no driver
-    /// workspace around it: its terminal is a tmux session, not the
-    /// driver's. Its id is [`LOCAL_WORKTREE`] and the path.
-    pub async fn create_local_worktree(
+    /// A driver workspace on a scratch session's plain git worktree (an id
+    /// of [`LOCAL_WORKTREE`] and the path), made while scratch sessions ran
+    /// in tmux (#491): the checkout is kept as it is, and its session runs
+    /// in the workspace's pane from now on (#565). Returns the new id.
+    pub async fn open_local_worktree(
         &self,
         repo_id: &str,
+        repo: &str,
         name: &str,
-        base_branch: Option<&str>,
-    ) -> Result<Worktree> {
+        worktree_id: &str,
+    ) -> Result<String> {
+        let path = worktree_id
+            .strip_prefix(LOCAL_WORKTREE)
+            .with_context(|| format!("{worktree_id} is not a plain worktree"))?;
         match self {
-            Driver::Herdr(_) => {
-                let (path, branch) =
-                    add_local_worktree(repo_root(repo_id), name, base_branch).await?;
-                Ok(Worktree {
-                    id: format!("{LOCAL_WORKTREE}{path}"),
+            Driver::Herdr(d) => {
+                d.open_worktree(
+                    repo_root(repo_id),
+                    &crate::herdr::scratch_label(repo, name),
                     path,
-                    branch: Some(branch),
-                })
+                )
+                .await
             }
             #[cfg(test)]
-            Driver::Stub(d) => d.create_local_worktree(name),
+            Driver::Stub(d) => Ok(d.open_local_worktree(worktree_id, path)),
         }
     }
 
@@ -728,6 +732,17 @@ impl Driver {
                 d.stop_agent(worktree_id, handle);
                 Ok(())
             }
+        }
+    }
+
+    /// Start the harness again in a workspace whose agent is gone, typing
+    /// nothing: resumed when it can be, fresh otherwise. A live agent is
+    /// left as it is.
+    pub async fn restart(&self, worktree_id: &str, relaunch: Relaunch<'_>) -> Result<Delivery> {
+        match self {
+            Driver::Herdr(d) => d.restart(worktree_id, &relaunch).await,
+            #[cfg(test)]
+            Driver::Stub(d) => d.restart(worktree_id, &relaunch),
         }
     }
 
@@ -961,15 +976,66 @@ impl StubDriver {
         })
     }
 
-    fn create_local_worktree(&self, name: &str) -> Result<Worktree> {
-        let mut wt = self.create_worktree(name)?;
-        let id = format!("{LOCAL_WORKTREE}{}", wt.path);
+    /// A workspace on a plain worktree: the stub's own id for the path,
+    /// and the plain one no longer.
+    fn open_local_worktree(&self, worktree_id: &str, path: &str) -> String {
+        let id = format!("stub::{path}");
         self.with(|s| {
-            s.worktrees.remove(&wt.id);
+            s.worktrees.remove(worktree_id);
             s.worktrees.insert(id.clone());
+            s.log.push(format!("open:{path}"));
         });
-        wt.id = id;
-        Ok(wt)
+        id
+    }
+
+    /// The relaunch half of `deliver`, with nothing typed.
+    fn restart(&self, worktree_id: &str, relaunch: &Relaunch<'_>) -> Result<Delivery> {
+        self.with(|s| {
+            if !s.worktrees.contains(worktree_id) {
+                bail!("{worktree_id}: no such workspace");
+            }
+            if let Some(h) = s.live.get(worktree_id).cloned() {
+                return Ok(Delivery {
+                    handle: h,
+                    relaunched: false,
+                    resumed: false,
+                });
+            }
+            let resumed = Self::relaunch(s, worktree_id, relaunch);
+            let h = Self::new_handle(s, worktree_id);
+            s.log.push(format!("relaunch:{worktree_id}:{resumed}"));
+            Ok(Delivery {
+                handle: h,
+                relaunched: true,
+                resumed,
+            })
+        })
+    }
+
+    /// Resume, or start fresh after a resume that did not stay up; whether
+    /// it resumed.
+    fn relaunch(s: &mut StubState, worktree_id: &str, relaunch: &Relaunch<'_>) -> bool {
+        let mut resumed = false;
+        if let Some(cmd) = relaunch.resume_command {
+            s.launches.push(format!("{}:{cmd}", relaunch.harness));
+            match s.resume {
+                StubResume::Settles => resumed = true,
+                StubResume::Exits => s.log.push(format!("resume-exited:{worktree_id}")),
+                StubResume::Unsettled => {
+                    s.log.push(format!("resume-unsettled:{worktree_id}"));
+                    resumed = true;
+                }
+            }
+        }
+        if !resumed {
+            s.launches
+                .push(format!("{}:{}", relaunch.harness, relaunch.command));
+        }
+        // A fresh harness in the pane is the harness the pane runs; a
+        // resumed one is the same harness as before.
+        s.harnesses
+            .insert(worktree_id.into(), relaunch.harness.into());
+        resumed
     }
 
     fn new_handle(s: &mut StubState, worktree_id: &str) -> String {
@@ -1114,26 +1180,7 @@ impl StubDriver {
                     resumed: false,
                 });
             }
-            let mut resumed = false;
-            if let Some(cmd) = relaunch.resume_command {
-                s.launches.push(format!("{}:{cmd}", relaunch.harness));
-                match s.resume {
-                    StubResume::Settles => resumed = true,
-                    StubResume::Exits => s.log.push(format!("resume-exited:{worktree_id}")),
-                    StubResume::Unsettled => {
-                        s.log.push(format!("resume-unsettled:{worktree_id}"));
-                        resumed = true;
-                    }
-                }
-            }
-            if !resumed {
-                s.launches
-                    .push(format!("{}:{}", relaunch.harness, relaunch.command));
-            }
-            // A fresh harness in the pane is the harness the pane runs; a
-            // resumed one is the same harness as before.
-            s.harnesses
-                .insert(worktree_id.into(), relaunch.harness.into());
+            let resumed = Self::relaunch(s, worktree_id, relaunch);
             let h = Self::new_handle(s, worktree_id);
             s.log.push(format!("relaunch:{worktree_id}:{resumed}"));
             let body = match relaunch.text {

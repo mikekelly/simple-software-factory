@@ -139,7 +139,8 @@ pub struct Engine {
     cfg: Config,
     gh: GitHub,
     drivers: Drivers,
-    /// Where scratch sessions' terminals are (#491).
+    /// Where scratch sessions started before #565 may still run (#491):
+    /// told and ended there until they next start, in herdr.
     tmux: crate::tmux::Tmux,
     /// Drivers that did not answer at the start of this pass; their
     /// repositories are skipped until they do.

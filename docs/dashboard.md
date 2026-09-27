@@ -224,8 +224,10 @@ controls it, the page says so and tries again.
 
 When the pane goes away (the harness exited, or it was relaunched in a new pane),
 or someone else holds it, the terminal tries it again for about a minute and
-carries on. Scratch sessions are unchanged: they run in tmux, and only the extension
-opens a terminal on them.
+carries on. A scratch session's pane is the same kind of terminal (#565),
+opened by the extension; it always takes typing, whatever `item_pane_input`
+says. One still running in tmux from before scratch sessions moved to herdr
+has no terminal until it is next started.
 
 The startup log line carries the whole URL on every start, so
 `journalctl --user -u ssf.service | grep 'Server web dashboard'` finds it (the
@@ -275,7 +277,7 @@ server's own browser page and its CSS and JavaScript.
 | `GET /<capability>/api/agents` | what `ssf agents --json` prints |
 | `GET /<capability>/api/models/<harness>` | what `ssf models <harness> --json` prints |
 | `GET /<capability>/api/usage` | what `ssf usage --json` prints: each harness's remaining provider allowance |
-| `GET /<capability>/api/term/<session>` | a WebSocket terminal: a scratch session's tmux session, or an item session's herdr pane ([Terminal](#terminal)) |
+| `GET /<capability>/api/term/<session>` | a WebSocket terminal on a session's herdr pane, an item's or a scratch session's ([Terminal](#terminal)) |
 | `GET /<capability>/chrome-extension.zip` | this build's [Chrome extension](#chrome-extension) as a zip download (`ssf-chrome-extension.zip`), which the browser page links to |
 
 `api/events` sends the current snapshot immediately as an `event: status` frame
@@ -319,41 +321,23 @@ directory; see [Provider usage](harnesses.md#provider-usage).
 ### Terminal
 
 `GET /<capability>/api/term/<session>` is a WebSocket (version 13) upgrade
-that attaches a live terminal to a scratch session's tmux session: the server
-runs `ssf __pane attach <session>` (`tmux attach-session`) in a PTY, through
-the same client transport as the status stream, so a factory in a VM is attached
-to in the guest. For an item's session (`owner%2Fname%2342`) it streams the
-herdr pane instead (below). Anything that is not a session is `400`, as is a
-request that is not a WebSocket upgrade. Since a scratch terminal types at an
-agent, it is held to a write's origin rule on top of the capability: the
-`Origin` must be a `chrome-extension://...` origin, or it is `403`. At most 16
-terminals are open at once; a seventeenth is `503`.
+onto a session's herdr pane, an item's (`owner%2Fname%2342`) or a scratch
+session's (`owner%2Fname~id`). Anything that is not a session is `400`, as is
+a request that is not a WebSocket upgrade. At most 16 terminals are open at
+once; a seventeenth is `503`.
 
-The protocol:
-
-- **binary frames**, both ways, are terminal bytes: what the terminal printed,
-  and what the person typed (as a terminal sends it: `\r` for Enter, escape
-  sequences for the arrows).
-- **text frames** from the client are JSON control messages. There is one:
-  `{"type": "resize", "cols": 120, "rows": 40}` resizes the PTY (1 to 1000
-  each); since the tmux session has `window-size latest`, the agent's window
-  follows the last client to attach or resize. Anything else is ignored.
-- The socket closes when the attach ends -- the tmux session ended, or could
-  not be attached to, in which case what tmux or ssf said is the last output --
-  or when the client closes it.
-
-The terminal shows no redaction: it is the session's own
-terminal, as `tmux attach` in a shell on the factory shows it. The Chrome
-extension's floating terminal window uses it for scratch sessions and, as below, item sessions.
-
-An item session's terminal is one viewer of the pane's shared stream: `ssf
-__pane control <session>` run over pipes, which runs `herdr terminal session
-control` on the pane (never `--takeover`). The server starts it for the pane's
-first viewer and stops it, releasing the pane, when the last one goes. It is
-opened only for a request whose `Origin` is a `chrome-extension://...` origin,
-or the page's own origin when `dashboard.terminal_input` is on (`403`
-otherwise), and only where `item_pane_input` is on for the repository (the
-socket closes with the reason otherwise). The protocol:
+A terminal is one viewer of the pane's shared stream: `ssf __pane control
+<session>` run over pipes, through the same client transport as the status
+stream (so a factory in a VM is reached in the guest), which runs `herdr
+terminal session control` on the pane (never `--takeover`). The server starts
+it for the pane's first viewer and stops it, releasing the pane, when the last
+one goes. Since it types at an agent, it is opened only for a request whose
+`Origin` is a `chrome-extension://...` origin, or the page's own origin when
+`dashboard.terminal_input` is on (`403` otherwise), and, for an item, only
+where `item_pane_input` is on for the repository (the socket closes with the
+reason otherwise); a scratch session's pane always takes typing. A scratch
+session still running in tmux from before #565 has no pane: the socket closes
+saying so. The protocol:
 
 - **binary frames** from the server are what herdr drew. From the client they
   are typed bytes.
@@ -441,8 +425,8 @@ released ones included until the factory drops them
 offer to resume them: each has `id`
 (`owner/name~id`), `repo`, `owner_login` (`null` for a shared session),
 `active`, `agent_live`, `state`, `released_at`, `harness`, `model`,
-`effort`, `branch` and `pane_input`. `state` is `live` (its tmux session
-runs), `off` (its workspace is there and its tmux session is not: the harness
+`effort`, `branch` and `pane_input`. `state` is `live` (its harness runs),
+`off` (its workspace is there and its harness is not: the harness
 exited or the factory restarted), `releasing` (killed; the workspace goes on
 the daemon's next pass) or `released` (no workspace); `ssf status --json`
 carries it as `scratch_state`.

@@ -601,17 +601,11 @@ pub(super) enum AuthCommand {
 
 #[derive(Subcommand)]
 pub(super) enum PaneCommand {
-    /// Attach this terminal to a scratch session's tmux session (the web
-    /// endpoint's `api/term` runs this in a PTY).
-    Attach {
-        /// The scratch session, as owner/repo~id.
-        session: String,
-    },
-    /// Stream an item session's herdr pane as `herdr terminal session`
-    /// control NDJSON over stdin/stdout (pipes, not a PTY). A pane the
-    /// factory keeps view-only (item_pane_input) exits 2.
+    /// Stream a session's herdr pane as `herdr terminal session` control
+    /// NDJSON over stdin/stdout (pipes, not a PTY). A pane the factory
+    /// keeps view-only (item_pane_input) exits 2.
     Control {
-        /// The item session, as owner/repo#N.
+        /// The session, as owner/repo#N or owner/repo~id.
         session: String,
         /// The size control starts at.
         #[arg(long, requires = "rows")]

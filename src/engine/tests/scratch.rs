@@ -25,6 +25,19 @@ fn seed_scratch(e: &mut Engine, r: &RepoConfig, path: &str) {
         );
 }
 
+/// `k3f9` on Claude, which resumes a conversation.
+fn on_claude(e: &mut Engine, r: &RepoConfig) {
+    e.state
+        .repos
+        .get_mut(&r.name)
+        .unwrap()
+        .scratch
+        .get_mut("k3f9")
+        .unwrap()
+        .stack
+        .harness = "claude".into();
+}
+
 fn scratch_state(e: &Engine, r: &RepoConfig) -> ScratchState {
     e.state.repos[&r.name].scratch["k3f9"].clone()
 }
@@ -209,19 +222,99 @@ async fn a_new_scratch_session_is_sent_no_first_prompt() {
         .unwrap()
         .clone();
     assert_eq!(st.prompts_sent, 0);
-    // It runs in a tmux session of its own (#491), in a plain worktree:
-    // nothing is started through the driver, and nothing is pasted.
-    let name = crate::tmux::session_name(&r.name, &st.id);
-    assert_eq!(t.log(), vec![format!("new:{name}")]);
-    assert!(d.prompts().is_empty());
+    // It runs in a herdr pane (#565), as an item's session does, started
+    // with an empty composer; tmux is not touched.
+    let wid = st.worktree_id.clone().unwrap();
+    assert!(!crate::driver::is_local_worktree(&wid));
+    assert_eq!(d.log(), vec![format!("start:{wid}:")]);
+    assert_eq!(d.prompts(), vec![String::new()]);
+    assert!(d.launches()[0].contains("--session"));
+    assert_eq!(st.terminal_handle.as_deref(), Some("t1"));
+    assert!(t.log().is_empty());
+}
+
+#[tokio::test]
+async fn a_scratch_session_is_told_in_its_pane_and_started_again_when_gone() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let mut e = engine();
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    seed_scratch(&mut e, &r, "/nonexistent/scratch");
+    on_claude(&mut e, &r);
+    d.seed("w9", "t9", READY_SCREEN);
+
+    // Live: delivered to its pane, nothing started.
+    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
+    assert!(!got.relaunched);
+    assert_eq!(d.log(), vec!["deliver:w9:hello"]);
+
+    // Gone: the conversation is resumed, and only the delivery itself is
+    // sent -- no word of the restart.
+    d.with(|s| s.live.clear());
+    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
+    assert!(got.relaunched && got.resumed);
+    assert_eq!(d.log(), vec!["relaunch:w9:true", "deliver:w9:hello"]);
+    assert!(d.launches().last().unwrap().contains("conv-1"));
+
+    // A resume that exits: a fresh harness, which again gets only the
+    // delivery.
+    d.with(|s| {
+        s.live.clear();
+        s.resume = crate::driver::StubResume::Exits;
+    });
+    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
+    assert!(got.relaunched && !got.resumed);
     assert_eq!(
-        st.terminal_handle.as_deref(),
-        Some(crate::tmux::handle(&name).as_str())
+        d.log(),
+        vec!["resume-exited:w9", "relaunch:w9:false", "deliver:w9:hello"]
     );
-    assert!(crate::driver::is_local_worktree(
-        st.worktree_id.as_deref().unwrap()
-    ));
-    assert!(t.with(|s| s.launches[0].contains("--session")));
+    assert_eq!(d.prompts(), vec!["hello", "hello", "hello"]);
+    assert!(scratch_state(&e, &r).agent_session_id.is_none());
+}
+
+/// A scratch session that is off (its harness exited: Ctrl+C) starts again
+/// as a new one does: the harness, resuming its conversation, and nothing
+/// typed -- by `ssf scratch resume` and by the daemon's startup pass alike.
+#[tokio::test]
+async fn a_scratch_session_started_again_is_told_nothing() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let mut e = engine();
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    seed_scratch(&mut e, &r, "/nonexistent/scratch");
+    on_claude(&mut e, &r);
+    d.with(|s| s.worktrees.insert("w9".into()));
+    let sent = scratch_state(&e, &r).prompts_sent;
+
+    let got = e.resume_scratch("o/r~k3f9").await.unwrap();
+    assert_eq!(got["resumed"], true);
+    assert_eq!(got["recreated"], false);
+    assert_eq!(d.log(), vec!["relaunch:w9:true"]);
+    assert!(d.launches().last().unwrap().contains("conv-1"));
+
+    // Running: nothing to resume.
+    assert!(e.resume_scratch("o/r~k3f9").await.is_err());
+    e.resume_scratch_sessions(&r).await;
+    assert!(d.log().is_empty());
+
+    // Off again; the startup pass starts it the same way.
+    d.with(|s| s.live.clear());
+    e.resume_scratch_sessions(&r).await;
+    assert_eq!(d.log(), vec!["relaunch:w9:true"]);
+
+    // A resume that exits falls back to a fresh start, also silent.
+    d.with(|s| {
+        s.live.clear();
+        s.resume = crate::driver::StubResume::Exits;
+    });
+    e.resume_scratch("o/r~k3f9").await.unwrap();
+    assert_eq!(d.log(), vec!["resume-exited:w9", "relaunch:w9:false"]);
+    assert_eq!(scratch_state(&e, &r).prompts_sent, sent, "nothing was sent");
+    assert!(d.prompts().is_empty());
 }
 
 /// A scratch session in tmux (#491): `k3f9` with a plain worktree.
@@ -241,6 +334,7 @@ fn seed_tmux_scratch(e: &mut Engine, r: &RepoConfig, d: &crate::driver::StubDriv
         .get_mut("k3f9")
         .unwrap();
     st.worktree_id = Some(wid.clone());
+    st.repo_id = Some("stub".into());
     st.terminal_handle = Some(crate::tmux::handle(&name));
     st.stack.harness = "claude".into();
     d.with(|s| {
@@ -249,63 +343,11 @@ fn seed_tmux_scratch(e: &mut Engine, r: &RepoConfig, d: &crate::driver::StubDriv
     name
 }
 
+/// One started in tmux before #565 is left there, and told there, while it
+/// runs; once it has stopped it starts in a herdr workspace opened on its
+/// checkout (#565).
 #[tokio::test]
-async fn a_scratch_session_in_tmux_is_pasted_to_and_started_again_when_gone() {
-    let mut e = engine();
-    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
-    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
-    let t = crate::tmux::StubTmux::default();
-    e.tmux = crate::tmux::Tmux::stub(t.clone());
-    let r = repo();
-    e.cfg.repos = vec![r.clone()];
-    let name = seed_tmux_scratch(&mut e, &r, &d);
-
-    // Live: the text is pasted, nothing is started.
-    t.with(|s| s.live.insert(name.clone()));
-    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
-    assert!(!got.relaunched);
-    assert_eq!(t.log(), vec![format!("paste:{name}:hello")]);
-
-    // Gone: the conversation is resumed in a new session, and only the
-    // delivery itself is pasted -- no word of the restart.
-    t.with(|s| s.live.clear());
-    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
-    assert!(got.relaunched && got.resumed);
-    assert_eq!(
-        t.log(),
-        vec![format!("new:{name}"), format!("paste:{name}:hello")]
-    );
-    assert!(t.with(|s| s.launches.last().unwrap().contains("conv-1")));
-
-    // A resume that exits: a fresh harness, which again gets only the
-    // delivery, with no preamble.
-    t.with(|s| {
-        s.live.clear();
-        s.resume_exits = true;
-    });
-    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
-    assert!(got.relaunched && !got.resumed);
-    assert_eq!(
-        t.log(),
-        vec![
-            format!("new:{name}"),
-            format!("kill:{name}"),
-            format!("new:{name}"),
-            format!("paste:{name}:hello"),
-        ]
-    );
-    assert!(
-        d.log().is_empty(),
-        "the driver is not asked to start anything"
-    );
-    assert!(scratch_state(&e, &r).agent_session_id.is_none());
-}
-
-/// A scratch session that is off (its harness exited: Ctrl+C) starts again
-/// as a new one does: the harness, resuming its conversation, and nothing
-/// pasted -- by `ssf scratch resume` and by the daemon's startup pass alike.
-#[tokio::test]
-async fn a_scratch_session_started_again_is_told_nothing() {
+async fn a_scratch_session_still_in_tmux_is_left_there_until_it_stops() {
     let _sandbox = crate::config::test_support::sandbox();
     let mut e = engine();
     let d = crate::driver::StubDriver::new(DriverKind::Herdr);
@@ -315,35 +357,41 @@ async fn a_scratch_session_started_again_is_told_nothing() {
     let r = repo();
     e.cfg.repos = vec![r.clone()];
     let name = seed_tmux_scratch(&mut e, &r, &d);
-    let sent = scratch_state(&e, &r).prompts_sent;
+    t.with(|s| s.live.insert(name.clone()));
 
-    let got = e.resume_scratch("o/r~k3f9").await.unwrap();
-    assert_eq!(got["resumed"], true);
-    assert_eq!(got["recreated"], false);
-    assert_eq!(t.log(), vec![format!("new:{name}")]);
-    assert!(t.with(|s| s.launches.last().unwrap().contains("conv-1")));
+    // The startup pass leaves it running, and a resume says it is running.
+    e.resume_scratch_sessions(&r).await;
+    assert!(e.resume_scratch("o/r~k3f9").await.is_err());
+    // Live: the text is pasted into its tmux session.
+    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
+    assert!(!got.relaunched);
+    assert_eq!(t.log(), vec![format!("paste:{name}:hello")]);
+    assert!(d.log().is_empty(), "nothing is started in herdr");
 
-    // Off again; the startup pass starts it the same way.
+    // Stopped: the startup pass starts it in herdr, on the same checkout.
     t.with(|s| s.live.clear());
     e.resume_scratch_sessions(&r).await;
-    assert_eq!(t.log(), vec![format!("new:{name}")]);
-
-    // A resume that exits falls back to a fresh start, also silent.
-    t.with(|s| {
-        s.live.clear();
-        s.resume_exits = true;
-    });
-    e.resume_scratch("o/r~k3f9").await.unwrap();
+    let herdr = "stub::/stub.worktrees/scratch-k3f9";
     assert_eq!(
-        t.log(),
+        d.log(),
         vec![
-            format!("new:{name}"),
-            format!("kill:{name}"),
-            format!("new:{name}"),
+            "open:/stub.worktrees/scratch-k3f9".to_string(),
+            format!("relaunch:{herdr}:true"),
         ]
     );
-    assert_eq!(scratch_state(&e, &r).prompts_sent, sent, "nothing was sent");
-    assert!(d.prompts().is_empty());
+    assert!(t.log().is_empty(), "nothing is started in tmux");
+    let st = scratch_state(&e, &r);
+    assert_eq!(st.worktree_id.as_deref(), Some(herdr));
+    assert_eq!(
+        st.worktree_path.as_deref(),
+        Some("/stub.worktrees/scratch-k3f9")
+    );
+    assert_eq!(st.terminal_handle.as_deref(), Some("t1"));
+    // And is told there from now on.
+    let got = e.deliver_scratch(&r, "k3f9", Some("again")).await.unwrap();
+    assert!(!got.relaunched);
+    assert_eq!(d.log(), vec![format!("deliver:{herdr}:again")]);
+    assert!(t.log().is_empty());
 }
 
 #[tokio::test]
@@ -396,37 +444,6 @@ async fn a_scratch_session_in_tmux_is_killed_before_its_workspace_goes() {
         )]
     );
     assert!(scratch_state(&e, &r).worktree_id.is_none());
-}
-
-/// One started in a herdr pane before #491 is told there while it runs.
-#[tokio::test]
-async fn a_legacy_scratch_session_live_in_herdr_is_left_there() {
-    let mut e = engine();
-    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
-    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
-    let t = crate::tmux::StubTmux::default();
-    e.tmux = crate::tmux::Tmux::stub(t.clone());
-    let r = repo();
-    e.cfg.repos = vec![r.clone()];
-    seed_scratch(&mut e, &r, "/nonexistent/scratch");
-    d.seed("w9", "t9", READY_SCREEN);
-    let got = e.deliver_scratch(&r, "k3f9", Some("hello")).await.unwrap();
-    assert!(!got.relaunched);
-    assert_eq!(d.log(), vec!["deliver:w9:hello"]);
-    assert!(t.log().is_empty());
-
-    // Once its agent has stopped, it starts in tmux.
-    d.with(|s| {
-        s.live.clear();
-    });
-    let got = e.deliver_scratch(&r, "k3f9", Some("again")).await.unwrap();
-    assert!(got.relaunched);
-    let name = crate::tmux::session_name(&r.name, "k3f9");
-    assert_eq!(t.log()[0], format!("new:{name}"));
-    assert_eq!(
-        scratch_state(&e, &r).terminal_handle,
-        Some(crate::tmux::handle(&name))
-    );
 }
 
 /// A released scratch session is kept for the configured grace -- a kill
