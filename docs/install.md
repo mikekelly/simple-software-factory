@@ -514,6 +514,8 @@ systemctl --user restart ssf.service   # ssf@NAME.service for a named target
 journalctl --user -u ssf.service | grep 'Server web dashboard'
 ```
 
+On macOS, restart with `launchctl kickstart -k gui/$(id -u)/dev.ssf.server.NAME` and find the URL with `grep 'Server web dashboard' ~/Library/Logs/ssf/NAME.log` ([operate.md](operate.md) names the agent and log).
+
 Hand the capability URL it logs (`http://ADDRESS:8787/<secret>/`) to the person, as a secret: it grants access to the factory. Then, in Chrome on their machine:
 
 1. Open the URL and use its **Download Chrome extension** link. Chrome warns about an insecure download because it is plain HTTP; choose **Keep**. (`ssf chrome-extension` writes the same zip on the command line.)
