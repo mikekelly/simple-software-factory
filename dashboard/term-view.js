@@ -1,10 +1,12 @@
 // An item session's live terminal (#563), mountable anywhere (#574): xterm.js on the server's
 // `api/term/<session>` WebSocket. The server holds one `herdr terminal session
 // control` stream per pane and shares it among every viewer, like a shared
-// tmux session: everyone sees the pane, and what anyone types, pastes or
-// scrolls reaches it. The pane takes the size of whoever last typed or
-// resized; everyone else sees it at that size, the font shrunk to fit. The
-// title bar lists who is watching. The page is offered only where this server
+// tmux session: everyone sees the pane. One viewer at a time holds control:
+// only its typing, paste and wheel reach the pane (the server drops the
+// others'), and the pane takes its size; everyone else sees it at that size,
+// the font shrunk to fit, and has **Take control** in the title bar. The
+// first to open a pane no one controls holds control; when its holder leaves
+// no one does until someone takes it. The title bar lists who is watching. The page is offered only where this server
 // and the factory take typing from it (`dashboard.terminal_input`,
 // `item_pane_input`), and the server refuses it otherwise. Half an hour with
 // nothing typed here closes this page's connection (Reconnect opens it again).
@@ -26,6 +28,7 @@ const BAR = `<div class="term-bar">
   <h1 class="term-title"></h1>
   <span class="status" aria-live="polite">connecting…</span>
   <span class="viewers" title="Watching this pane" aria-live="polite"></span>
+  <button class="take" type="button" hidden>Take control</button>
   <button class="reconnect" type="button" hidden>Reconnect</button>
 </div>
 <p class="term-notice" role="status" hidden></p>
@@ -41,6 +44,7 @@ export function mountTerminal(host, session) {
   const viewersNode = host.querySelector(".viewers");
   const noticeNode = host.querySelector(".term-notice");
   const reconnectButton = host.querySelector(".reconnect");
+  const takeButton = host.querySelector(".take");
   host.querySelector(".term-title").textContent = session;
 
   const term = new Terminal({
@@ -50,7 +54,7 @@ export function mountTerminal(host, session) {
     fontSize: FONT_PX,
     macOptionIsMeta: true,
     scrollback: 0,
-    theme: { background: "#0d1117", foreground: "#e6edf3" },
+    theme: { background: "#0a1112", foreground: "#e6edf3" },
   });
   term.open(box);
 
@@ -61,6 +65,8 @@ export function mountTerminal(host, session) {
   let lastActivity = Date.now();
   let wheel = 0;
   let noticeTimer = null;
+  /// Whether this page holds control of the pane, as the server last said.
+  let control = false;
 
   function notice(text, sticky = false) {
     clearTimeout(noticeTimer);
@@ -105,7 +111,8 @@ export function mountTerminal(host, session) {
     if (term.options.fontSize !== font) term.options.fontSize = font;
   }
 
-  /// Give the pane this page's size: it is the latest to type or resize.
+  /// Tell the server this page's size: the pane takes it while this page
+  /// holds control, and the server keeps it for when it takes control.
   function claimSize() {
     const size = mySize();
     if (size && (size.cols !== pane?.cols || size.rows !== pane?.rows)) {
@@ -115,6 +122,10 @@ export function mountTerminal(host, session) {
 
   function type(bytes) {
     if (ws?.readyState !== WebSocket.OPEN) return;
+    if (!control) {
+      notice("View only: Take control to type here.");
+      return;
+    }
     lastActivity = Date.now();
     claimSize();
     send(bytes);
@@ -131,7 +142,7 @@ export function mountTerminal(host, session) {
     lastActivity = Date.now();
     socket.onopen = () => {
       term.reset();
-      statusNode.textContent = "live";
+      statusNode.textContent = "joining…";
       // The name is for the viewer list only; the size is the pane's only if
       // no one else is watching it yet.
       send(JSON.stringify({ type: "hello", name: "dashboard", ...(mySize() ?? {}) }));
@@ -151,8 +162,22 @@ export function mountTerminal(host, session) {
       if (message.type === "size") {
         pane = { cols: message.cols, rows: message.rows };
         fitPane();
+        // The controller's window is the pane's size.
+        if (control) claimSize();
       } else if (message.type === "viewers") {
-        viewersNode.textContent = (message.names ?? []).join(", ");
+        const had = control;
+        control = message.control === true;
+        const holder = typeof message.controller === "string" ? message.controller : null;
+        viewersNode.textContent = (message.names ?? []).map(String).join(", ");
+        statusNode.textContent = control ? "live · in control" : `view only · ${holder ?? "no one"} in control`;
+        host.classList.toggle("term-view-only", !control);
+        takeButton.hidden = control;
+        if (control && !had) {
+          notice("");
+          claimSize();
+        } else if (had && !control) {
+          notice(`${holder ?? "Someone"} took control: this terminal is view only.`);
+        }
       } else if (message.type === "notice") {
         notice(message.text);
       }
@@ -161,6 +186,9 @@ export function mountTerminal(host, session) {
       if (ws !== socket) return;
       ws = null;
       viewersNode.textContent = "";
+      control = false;
+      takeButton.hidden = true;
+      host.classList.remove("term-view-only");
       statusNode.textContent = "disconnected";
       reconnectButton.hidden = false;
       term.write("\r\n\x1b[2m[the terminal closed]\x1b[0m\r\n");
@@ -197,6 +225,7 @@ export function mountTerminal(host, session) {
     const notches =
       event.deltaMode === 0 ? Math.trunc((wheel += event.deltaY) / NOTCH_PX) : Math.sign(event.deltaY);
     if (event.deltaMode === 0) wheel -= notches * NOTCH_PX;
+    if (!control) return false;
     for (let i = 0; i < Math.abs(notches); i += 1) {
       send(JSON.stringify({ type: "scroll", direction: notches < 0 ? "up" : "down" }));
     }
@@ -222,6 +251,11 @@ export function mountTerminal(host, session) {
   observer.observe(box);
 
   reconnectButton.addEventListener("click", connect);
+  takeButton.addEventListener("click", () => {
+    lastActivity = Date.now();
+    send(JSON.stringify({ type: "take" }));
+    term.focus();
+  });
   const idleTimer = setInterval(() => {
     if (ws && Date.now() - lastActivity >= IDLE_MS) {
       notice("Disconnected: nothing was typed for a while.", true);

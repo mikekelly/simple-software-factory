@@ -1,4 +1,4 @@
-body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+body:has(#host) { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 #host { flex: 1; min-height: 0; }
 .term-host { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .term-bar { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; padding: .8rem 1rem; border-bottom: 1px solid var(--line); font-size: .85rem; }
@@ -6,4 +6,11 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .term-bar .status { color: var(--muted); }
 .term-bar .viewers { color: var(--muted); margin-left: auto; overflow-wrap: anywhere; }
 .term-notice { margin: 0; padding: .5rem 1rem; background: rgba(255, 202, 110, .12); color: var(--amber); font-size: .85rem; }
-.term-box { flex: 1; min-height: 0; padding: .5rem; background: #0d1117; overflow: hidden; }
+.term-box { flex: 1; min-height: 0; padding: .4rem .5rem; background: var(--term-bg, #0a1112); overflow: hidden; }
+.term-bar .status { font-variant-numeric: tabular-nums; }
+.term-bar .take { padding: .3rem .8rem; border-color: rgba(94, 227, 162, .45); color: var(--green); font-size: .8rem; font-weight: 600; }
+.term-bar .take:hover { background: rgba(94, 227, 162, .12); }
+.term-bar .take[hidden], .term-bar .reconnect[hidden] { display: none; }
+.term-bar .reconnect { padding: .3rem .8rem; font-size: .8rem; }
+.term-view-only .term-box { cursor: default; }
+.term-view-only .term-bar .status { color: var(--amber); }

@@ -40,12 +40,14 @@ test("typing and resizing reach the socket only while Writes is on", () => {
   assert.equal(termSend({ type: "ping" }, true), null);
 });
 
-test("an item terminal's asks are hello and scroll, and need Writes", () => {
+test("an item terminal's asks are hello, scroll and take, and need Writes", () => {
   const ask = (type) => ({ type: "ask", data: JSON.stringify({ type }) });
   assert.equal(termSend(ask("hello"), true), '{"type":"hello"}');
   assert.equal(termSend(ask("scroll"), true), '{"type":"scroll"}');
   assert.equal(termSend(ask("hello"), false), null);
   assert.equal(termSend(ask("scroll"), false), null);
+  assert.equal(termSend(ask("take"), true), '{"type":"take"}');
+  assert.equal(termSend(ask("take"), false), null);
   assert.equal(termSend(ask("control"), true), null);
   assert.equal(termSend(ask("release"), true), null);
   assert.equal(termSend(ask("takeover"), true), null);

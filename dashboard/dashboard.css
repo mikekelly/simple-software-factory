@@ -132,10 +132,73 @@ dd { margin: 0; }
   @keyframes enter { from { opacity: 0; transform: translateY(5px); } }
 }
 
-/* The dockview layout (#574): the masthead above, the panels filling the rest. */
+/* The dockview layout (#574): the masthead above, the panels filling the rest,
+   themed from this page's own tokens (`.dockview-theme-ssf`). */
+:root { --term-bg: #0a1112; --tab-h: 34px; --dock-panel: #111b1a; --dock-bar: #0c1415; }
 body:has(#dock) { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-body:has(#dock) .masthead { padding: 1rem 0; }
-body:has(#dock) .masthead h1 { font-size: 1.6rem; }
-.dock { flex: 1; min-height: 0; }
+body:has(#dock) .masthead { width: auto; margin: 0; padding: .7rem 1rem; align-items: center; border-bottom: 0; }
+body:has(#dock) .masthead h1 { font-size: 1.35rem; letter-spacing: -.03em; }
+body:has(#dock) .eyebrow { margin-bottom: .2rem; font-size: .64rem; }
+body:has(#dock) .refresh-block button { padding: .35rem .8rem; }
+.dock { flex: 1; min-height: 0; margin: 0 .5rem .5rem; }
 .dock-panel { height: 100%; overflow: auto; }
 .dock-panel > main { width: auto; padding: 1rem; }
+.dock-panel:has(> .term-host) { overflow: hidden; }
+
+.dockview-theme-ssf {
+  --dv-tabs-and-actions-container-font-size: .8rem;
+  --dv-tabs-and-actions-container-height: var(--tab-h);
+  --dv-tab-font-size: .8rem;
+  --dv-tab-margin: 0;
+  --dv-border-radius: .75rem;
+  --dv-overlay-z-index: 999;
+  --dv-floating-box-shadow: 0 18px 50px rgba(0, 0, 0, .35);
+  --dv-group-view-background-color: var(--dock-panel);
+  --dv-tabs-and-actions-container-background-color: var(--dock-bar);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--dock-panel);
+  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--dock-panel);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-activegroup-visiblepanel-tab-color: #eef4f1;
+  --dv-activegroup-hiddenpanel-tab-color: var(--muted);
+  --dv-inactivegroup-visiblepanel-tab-color: #c9d6d1;
+  --dv-inactivegroup-hiddenpanel-tab-color: rgba(155, 171, 165, .7);
+  --dv-tab-divider-color: transparent;
+  --dv-separator-border: transparent;
+  --dv-paneview-header-border-color: var(--line);
+  --dv-paneview-active-outline-color: var(--green);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: rgba(94, 227, 162, .45);
+  --dv-active-sash-transition-duration: .1s;
+  --dv-active-sash-transition-delay: .3s;
+  --dv-drag-over-background-color: rgba(94, 227, 162, .14);
+  --dv-drag-over-border-color: rgba(94, 227, 162, .6);
+  --dv-drag-over-border: 1.5px dashed var(--dv-drag-over-border-color);
+  --dv-tabs-container-scrollbar-color: rgba(222, 238, 231, .25);
+  --dv-icon-hover-background-color: rgba(255, 255, 255, .1);
+  --dv-scrollbar-background-color: rgba(222, 238, 231, .25);
+}
+/* Each group is a card, as the agents' cards are, with a gutter between. */
+.dockview-theme-ssf .dv-resize-container:has(> .dv-groupview),
+.dockview-theme-ssf .dv-groupview { border-radius: var(--dv-border-radius); }
+.dockview-theme-ssf .dv-split-view-container > .dv-view-container > .dv-view { padding: 4px; }
+.dockview-theme-ssf .dv-groupview { border: 1px solid var(--line); overflow: hidden; box-shadow: 0 18px 50px rgba(0, 0, 0, .18); }
+.dockview-theme-ssf .dv-groupview.dv-active-group { border-color: rgba(94, 227, 162, .28); }
+.dockview-theme-ssf .dv-tabs-and-actions-container { border-bottom: 1px solid var(--line); padding: 0 .25rem; }
+.dockview-theme-ssf .dv-tab {
+  display: flex; align-items: center; gap: .35rem;
+  margin: 5px 2px 0; padding: 0 .55rem 0 .75rem; border-radius: .5rem .5rem 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0;
+}
+.dockview-theme-ssf .dv-tab.dv-active-tab { box-shadow: inset 0 2px 0 var(--green); }
+.dockview-theme-ssf .dv-groupview:not(.dv-active-group) .dv-tab.dv-active-tab { box-shadow: inset 0 2px 0 rgba(155, 171, 165, .5); }
+.dockview-theme-ssf .dv-tab:hover { color: #eef4f1; }
+.dockview-theme-ssf .dv-tab .dv-default-tab-action { border-radius: .3rem; opacity: .6; }
+.dockview-theme-ssf .dv-tab:hover .dv-default-tab-action, .dockview-theme-ssf .dv-active-tab .dv-default-tab-action { opacity: 1; }
+.dockview-theme-ssf .dv-sash { border-radius: 4px; }
+.dockview-theme-ssf .dv-drop-target-anchor, .dockview-theme-ssf .dv-drop-target-dropzone .dv-drop-target-selection { border-radius: .6rem; }
+
+/* A terminal fills its panel: the bar, then the terminal, with no gaps. */
+.dock-panel .term-host { background: var(--term-bg); }
+.dock-panel .term-bar { padding: .4rem .8rem; background: var(--dock-panel); }
+.dock-panel .term-bar h1 { display: none; }
