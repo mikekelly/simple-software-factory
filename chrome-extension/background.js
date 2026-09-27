@@ -453,7 +453,11 @@ async function configure() {
   broadcast();
 }
 
-chrome.runtime.onInstalled.addListener(configure);
+chrome.runtime.onInstalled.addListener(({ reason }) => {
+  configure();
+  // A fresh install has no factory yet: adding one is the next step.
+  if (reason === "install") chrome.runtime.openOptionsPage();
+});
 chrome.runtime.onStartup.addListener(configure);
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.factories) configure();
