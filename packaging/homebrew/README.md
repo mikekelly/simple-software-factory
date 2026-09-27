@@ -73,7 +73,7 @@ equivalent.) The formula's caveats say what comes next: setup document,
 ## The tap, once
 
 The maintainer creates the tap repository and gives this repository's
-workflow a token that can push to it:
+workflow a deploy key that can push to it:
 
 1. Use the public `mikekelly/homebrew-tap` repository, then commit
    `Formula/ssf.rb` to it, for
@@ -86,10 +86,19 @@ workflow a token that can push to it:
    packaging/homebrew/render.sh "$v" "$(sha256sum ssf.tar.gz | cut -d' ' -f1)" > <tap>/Formula/ssf.rb
    ```
 
-2. Make a fine-grained personal access token on GitHub with *Contents:
-   read and write* on `mikekelly/homebrew-tap` only, and save it as the
-   `HOMEBREW_TAP_TOKEN` Actions secret of this repository
-   (`gh secret set HOMEBREW_TAP_TOKEN`). Without the secret the workflow
+2. Make an SSH key pair for the workflow, add the public half to the tap
+   as a deploy key with write access, and save the private half as the
+   `HOMEBREW_TAP_DEPLOY_KEY` Actions secret of this repository. A deploy
+   key is scoped to the tap and does not expire:
+
+   ```sh
+   ssh-keygen -t ed25519 -N '' -C ssf-homebrew -f tap_key
+   gh repo deploy-key add tap_key.pub -R mikekelly/homebrew-tap --allow-write -t ssf-release
+   gh secret set HOMEBREW_TAP_DEPLOY_KEY -R mikekelly/simple-software-factory < tap_key
+   rm tap_key tap_key.pub
+   ```
+
+   Without the secret the workflow
    uploads the rendered formula as an artifact and then fails, so a release
    cannot look published when the tap was not updated.
 

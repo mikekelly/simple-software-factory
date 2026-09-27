@@ -347,7 +347,7 @@ Cutting a release:
    `url` and `sha256` of the tag tarball go in, see
    `packaging/homebrew/render.sh`) and pushes it to the tap
    `mikekelly/homebrew-tap` as `Formula/ssf.rb` when the
-   `HOMEBREW_TAP_TOKEN` secret is set. Without it, the workflow uploads the
+   `HOMEBREW_TAP_DEPLOY_KEY` secret is set. Without it, the workflow uploads the
    rendered formula as the run's `ssf.rb` artifact and then fails
    (`packaging/homebrew/README.md` has the tap setup and the formula
    test). The lima backend downloads the release's bare binaries,

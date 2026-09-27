@@ -88,14 +88,20 @@ jobs:
       - name: Push the formula to the tap
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           set -euo pipefail
-          if [ -z "$TOKEN" ]; then
-            echo "::error::HOMEBREW_TAP_TOKEN is not set; the formula was rendered but was not published to ${HOMEBREW_TAP}"
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY is not set; the formula was rendered but was not published to ${HOMEBREW_TAP}"
             exit 1
           fi
-          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${HOMEBREW_TAP}.git" tap
+          # A write deploy key on the tap: scoped to that one repository and,
+          # unlike a personal access token, it does not expire.
+          key="$RUNNER_TEMP/tap_key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone --depth 1 "git@github.com:${HOMEBREW_TAP}.git" tap
           cd tap
           # A tap repository that has no commits yet gets its first one here.
           git rev-parse --verify HEAD >/dev/null 2>&1 || git checkout -b main
