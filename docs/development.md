@@ -319,7 +319,18 @@ without waiting for an Omarchy release. Everything Omarchy's builder needs
 is in that directory plus the tag tarball, which it downloads
 unauthenticated: the repository has to be public for the build to work.
 
-Cutting a release:
+Cutting a release: run the `cut-release` workflow with the new version,
+from Actions or with
+
+```sh
+gh workflow run cut-release.yml -f version=X.Y.Z
+```
+
+It does steps 1 and 2 below on `master` (bump, pin
+`packaging/release/PKGBUILD` to the bump commit's archive, tag), builds the
+packages with `release.yml`, publishes the release and pushes the Homebrew
+formula with `homebrew.yml`. Rerunning it with the same version after a
+failure resumes from the build. The manual steps it automates:
 
 1. Bump `version` in `Cargo.toml`, `cargo build` (updates `Cargo.lock`),
    commit, tag `vX.Y.Z` and push the tag. The tag must be plain `vX.Y.Z`

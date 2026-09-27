@@ -9,6 +9,16 @@ name: Homebrew formula
 on:
   release:
     types: [published]
+  # cut-release.yml calls this after publishing: a release published with
+  # the workflow's own token starts no workflow run of its own.
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_DEPLOY_KEY:
+        required: false
   workflow_dispatch:
     inputs:
       tag:

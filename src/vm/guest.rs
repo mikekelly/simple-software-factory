@@ -45,6 +45,10 @@ impl Vm {
         std::fs::copy(&server, tree.join("ssf-server"))
             .with_context(|| format!("copying {}", server.display()))?;
         make_executable(&tree.join("ssf-server"))?;
+        // `[vm] guest_binary` wins over the guest's own package (seed_from).
+        if self.cfg.guest_binary.is_some() {
+            std::fs::write(tree.join("guest-binary"), "")?;
+        }
         let delivery_bridge = crate::delivery_channel::bridge();
         std::fs::copy(&delivery_bridge, tree.join("ssf-delivery.ts"))
             .with_context(|| format!("copying {}", delivery_bridge.display()))?;
@@ -147,10 +151,11 @@ impl Vm {
         Ok(())
     }
 
-    /// Replay the stopped root's journal before inspecting its boot script
-    /// and OS identity. Never patch with debugfs: journal replay at boot can
-    /// undo such writes. Legacy and Arch roots must be rebuilt/reset before
-    /// they can see the data disk.
+    /// Replay the stopped root's journal before inspecting its OS identity.
+    /// Never patch with debugfs: journal replay at boot can undo such
+    /// writes. A root with an older seed script boots as it is (the seed
+    /// disk's layout is unchanged since 0.16); legacy and non-Ubuntu roots must be
+    /// rebuilt/reset before they can see the data disk.
     pub(in crate::vm) fn require_compatible_root(&self) -> Result<()> {
         let disk = self.root_disk();
         let checked = Command::new("e2fsck")
@@ -169,16 +174,20 @@ impl Vm {
                 String::from_utf8_lossy(&checked.stderr)
             );
         }
+        // Any seed script that holds the daemon until guest ownership is
+        // established keeps the guest's factory state; one older than that
+        // (before 0.3) could overwrite it.
         let output = Command::new("debugfs")
             .args(["-R", "cat /usr/local/lib/ssf/seed-common.sh"])
             .arg(&disk)
             .output()
             .context("reading the stopped root seed script (is e2fsprogs installed?)")?;
         if !output.status.success()
-            || output.stdout != include_bytes!("../../vm/guest/seed-common.sh")
+            || !String::from_utf8_lossy(&output.stdout)
+                .contains("ConditionPathExists=/home/ssf/.config/ssf/guest-owned")
         {
             bail!(
-                "the Firecracker root {} has a legacy or incompatible seed script; refusing to boot it with the persistent data disk. Install matching ssf guest scripts, run `ssf vm build --force`, then `ssf vm reset` and `ssf vm start`. Reset alone copies the existing root image and is not sufficient; if vm.rootfs is custom, replace that image with a matching build. The data disk is untouched",
+                "the Firecracker root {} has a legacy seed script; refusing to boot it with the persistent data disk. Run `ssf vm build --force`, then `ssf vm reset` and `ssf vm start`. The data disk is untouched",
                 disk.display()
             );
         }
@@ -301,6 +310,163 @@ impl Vm {
             "no guest server binary at {}; build ssf and ssf-server together (or place the matching release asset beside [vm] guest_binary)",
             server.display()
         )
+    }
+
+    // ---- the guest's ssf package ----
+
+    /// The release `.deb` of `version` (amd64): the host's apt cache when it
+    /// holds it, else the release asset, downloaded once with `gh`.
+    pub(in crate::vm) fn guest_deb(&self, version: &str) -> Result<PathBuf> {
+        let asset = format!("ssf_{version}-1_amd64.deb");
+        let cached = Path::new("/var/cache/apt/archives").join(&asset);
+        if cached.is_file() {
+            return Ok(cached);
+        }
+        let dir = self.dir.join("guest-bin");
+        let path = dir.join(&asset);
+        if path.is_file() {
+            return Ok(path);
+        }
+        std::fs::create_dir_all(&dir)?;
+        info!(asset, "downloading the guest ssf package with gh");
+        let out = Command::new("gh")
+            .args(["release", "download", &format!("v{version}")])
+            .args(["-R", RELEASE_REPO, "--pattern", &asset, "-D"])
+            .arg(&dir)
+            .stdin(Stdio::null())
+            .output()
+            .context("running gh (is the GitHub CLI installed?)")?;
+        if !out.status.success() || !path.is_file() {
+            bail!(
+                "no guest package: `gh release download v{version} -R {RELEASE_REPO} --pattern {asset}` failed ({})",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(path)
+    }
+
+    /// The version of the guest's installed ssf package; None when the guest
+    /// has none (it runs the binary the host copies in at each boot).
+    pub(in crate::vm) fn guest_package_version(&self) -> Result<Option<String>> {
+        let out = self.ssh_output(&[
+            "sh",
+            "-c",
+            "dpkg-query -W -f='${Status} ${Version}' ssf 2>/dev/null || true",
+        ])?;
+        Ok(out
+            .strip_prefix("install ok installed ")
+            .map(|v| v.split('-').next().unwrap_or(v).to_string()))
+    }
+
+    /// Install `deb` in the guest with apt (its postinst points the guest's
+    /// boot script and `/usr/local/bin` at the package), then restart the
+    /// guest daemon. Nothing else on the root changes.
+    pub(in crate::vm) fn install_guest_deb(&self, deb: &Path) -> Result<()> {
+        let remote = "/tmp/ssf-guest.deb";
+        let file =
+            std::fs::File::open(deb).with_context(|| format!("opening {}", deb.display()))?;
+        let st = self
+            .ssh(
+                &["sh".into(), "-c".into(), format!("cat > {remote}")],
+                false,
+            )
+            .stdin(file)
+            .status()
+            .context("running ssh")?;
+        if !st.success() {
+            bail!("copying {} into the guest failed ({st})", deb.display());
+        }
+        self.ssh_output(&[
+            "sudo",
+            "env",
+            "DEBIAN_FRONTEND=noninteractive",
+            "apt-get",
+            "install",
+            "-y",
+            "--no-install-recommends",
+            "--allow-downgrades",
+            remote,
+        ])?;
+        let _ = self.ssh_output(&["rm", "-f", remote]);
+        self.ssh_output(&["sudo", "systemctl", "restart", "ssf"])?;
+        Ok(())
+    }
+
+    /// First start of a root from before the guest package (0.18 and
+    /// earlier): install this client's release package in the guest once,
+    /// so from then on the guest keeps its own version. Skipped with
+    /// `[vm] guest_binary` (a development build is copied in instead).
+    pub(in crate::vm) fn adopt_guest_package(&self) -> Result<()> {
+        if self.cfg.guest_binary.is_some() || self.guest_package_version()?.is_some() {
+            return Ok(());
+        }
+        let arch = self.guest_deb_arch()?;
+        if arch != "amd64" {
+            tracing::debug!(
+                arch,
+                "no release ssf package for this guest; it keeps the copied-in binary"
+            );
+            return Ok(());
+        }
+        // The first boot's seed unit installs the copied-in binary; let it
+        // finish before dpkg replaces it.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while self
+            .ssh_output(&["systemctl", "is-active", "--quiet", "ssf-seed"])
+            .is_err()
+        {
+            if Instant::now() >= deadline {
+                bail!("ssf-seed.service did not finish in the guest");
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        let deb = self.guest_deb(env!("CARGO_PKG_VERSION"))?;
+        println!(
+            "installing the ssf {} package in the guest",
+            env!("CARGO_PKG_VERSION")
+        );
+        self.install_guest_deb(&deb)
+    }
+
+    /// The guest's Debian architecture (`dpkg --print-architecture`).
+    fn guest_deb_arch(&self) -> Result<String> {
+        self.ssh_output(&["dpkg", "--print-architecture"])
+            .map(|a| a.trim().to_string())
+    }
+
+    /// `ssf vm upgrade [VERSION]`: install that release's package in the
+    /// running guest (or `deb`, a local package) and restart its daemon,
+    /// not the VM. A guest without the package adopts it this way too.
+    pub fn upgrade(&self, version: Option<&str>, deb: Option<&Path>) -> Result<()> {
+        if self.backend() != BackendKind::Firecracker {
+            bail!(
+                "`ssf vm upgrade` supports Firecracker guests only for now; a {} guest runs the ssf the host copies in at each start (`ssf vm restart`)",
+                self.backend()
+            );
+        }
+        if !self.ssh_ok() {
+            bail!("the VM is not reachable; `ssf vm start` first");
+        }
+        let arch = self.guest_deb_arch()?;
+        if arch != "amd64" {
+            bail!(
+                "no release ssf package for {arch}; the guest runs the ssf binary the host copies in at each start"
+            );
+        }
+        let deb = match deb {
+            Some(deb) => deb.to_path_buf(),
+            None => {
+                let version = version.unwrap_or(env!("CARGO_PKG_VERSION"));
+                self.guest_deb(version.strip_prefix('v').unwrap_or(version))?
+            }
+        };
+        self.install_guest_deb(&deb)?;
+        println!(
+            "the guest runs ssf {}",
+            self.guest_package_version()?
+                .unwrap_or_else(|| "unknown".into())
+        );
+        Ok(())
     }
 
     // ---- ssh ----

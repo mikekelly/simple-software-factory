@@ -15,12 +15,23 @@ on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
   workflow_dispatch:
+  # cut-release.yml calls this after pushing the tag: a tag pushed with the
+  # workflow's own token starts no workflow run of its own.
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build and stage, vX.Y.Z"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 env:
   NFPM_VERSION: 2.47.0
+  # The release tag: the caller's input, else the pushed (or dispatched) tag,
+  # else empty for a manual run on a branch.
+  TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name || '') }}
 
 jobs:
   # .deb, .rpm and bare ssf/ssf-server x86_64 binaries from a static musl
@@ -29,6 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG || github.sha }}
       - name: Toolchain
         run: |
           rustup target add x86_64-unknown-linux-musl
@@ -39,7 +52,7 @@ jobs:
       - name: Version
         # The tag without its v on a tag push; Cargo.toml's version on dispatch.
         run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; fi
+          if [ -n "$TAG" ]; then echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"; fi
       - name: Build packages
         run: packaging/linux/build.sh
       - name: Test
@@ -61,6 +74,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG || github.sha }}
       - name: Toolchain
         run: |
           rustup target add aarch64-unknown-linux-musl
@@ -73,7 +88,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_PROFILE_RELEASE_STRIP: "true"
         run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else
+          if [ -n "$TAG" ]; then VERSION="${TAG#v}"; else
             VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1); fi
           cargo build --locked --release --target aarch64-unknown-linux-musl
           mkdir -p dist && install -m755 target/aarch64-unknown-linux-musl/release/ssf "dist/ssf-$VERSION-linux-aarch64"
@@ -103,6 +118,7 @@ jobs:
           useradd -m builder
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.TAG || github.sha }}
           # The development PKGBUILD's pkgver counts the commits on HEAD.
           fetch-depth: 0
       - name: makepkg
@@ -116,8 +132,8 @@ jobs:
         run: |
           chown -R builder: .
           git config --global --add safe.directory "$PWD"
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
+          if [ -n "$TAG" ]; then
+            VERSION="${TAG#v}"
             mkdir -p /tmp/arch && cp -L packaging/release/PKGBUILD packaging/release/ssf.install /tmp/arch/
             PKGVER=$(sed -n 's/^pkgver=//p' /tmp/arch/PKGBUILD)
             if [ "$PKGVER" != "$VERSION" ]; then
@@ -143,14 +159,17 @@ jobs:
   # replaces an existing asset. The condition spells
   # that out: always() so a failed aarch64 job does not skip this one, then
   # the two package jobs must have succeeded (the aarch64 binary is uploaded
-  # when its job succeeded, skipped otherwise). Tag pushes only: a manual
-  # run on a tag ref builds and uploads artifacts but publishes nothing.
+  # when its job succeeded, skipped otherwise). Tag pushes and calls from
+  # cut-release.yml only: a manual run on a tag ref builds and uploads
+  # artifacts but stages nothing.
   release:
-    if: always() && github.event_name == 'push' && github.ref_type == 'tag' && needs.linux-packages.result == 'success' && needs.arch-package.result == 'success'
+    if: always() && ((github.event_name == 'push' && github.ref_type == 'tag') || inputs.tag != '') && needs.linux-packages.result == 'success' && needs.arch-package.result == 'success'
     needs: [linux-packages, arch-package, linux-aarch64-binary]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG || github.sha }}
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -159,21 +178,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --draft --generate-notes --verify-tag
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --draft --generate-notes --verify-tag
 
-          is_draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')
+          is_draft=$(gh release view "$TAG" --json isDraft --jq '.isDraft')
           if [ "$is_draft" != true ]; then
             echo "Release is already published; leaving it unchanged"
             exit 0
           fi
 
-          existing=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')
+          existing=$(gh release view "$TAG" --json assets --jq '.assets[].name')
           for asset in dist/*; do
             name=${asset##*/}
             if grep -Fqx -- "$name" <<<"$existing"; then
               echo "Preserving existing release asset: $name"
             else
-              gh release upload "$GITHUB_REF_NAME" "$asset"
+              gh release upload "$TAG" "$asset"
             fi
           done
