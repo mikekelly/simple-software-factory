@@ -430,13 +430,16 @@ fn wrapped(tag: &str, events: &[Rendered]) -> String {
 /// sessions', and -- when the item was reopened or handed over -- that
 /// work may already exist. `events` is the whole timeline, not only the
 /// part shown.
-fn history_lead(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
+fn history_lead(issue: &Issue, events: &[Rendered], ctx: &PromptContext, any: bool) -> String {
     let bot = ctx.bot_login;
-    let mut s = format!(
-        "Everything below happened before this session was spawned. Posts by @{bot} here were \
-made by earlier sessions, not by you: their plans and promises are context, not your \
+    let mut s = String::new();
+    if any {
+        s.push_str(&format!(
+            "Everything below happened before this session was spawned. Posts by @{bot} here \
+were made by earlier sessions, not by you: their plans and promises are context, not your \
 commitments. Act on the latest request.\n"
-    );
+        ));
+    }
     let n = issue.number;
     if let Some(from) = ctx.handed_over_from {
         s.push_str(&format!(
@@ -444,12 +447,14 @@ commitments. Act on the latest request.\n"
 branch, pull request and last comments before starting over.\n"
         ));
     }
+    // The rendered event gives the time; the item's own state_reason
+    // still tells of a reopen when `reopened` is in `ignored_events`.
     let reopened = events.iter().rev().find(|e| e.key.starts_with("reopened:"));
-    if let Some(e) = reopened {
-        let at =
-            e.at.as_deref()
-                .map(|a| format!(" (last reopened {a})"))
-                .unwrap_or_default();
+    if reopened.is_some() || issue.state_reason.as_deref() == Some("reopened") {
+        let at = reopened
+            .and_then(|e| e.at.as_deref())
+            .map(|a| format!(" (last reopened {a})"))
+            .unwrap_or_default();
         s.push_str(&format!(
             "#{n} was closed and reopened{at}: a previous session may have worked on it -- check \
 for its branch and pull request before starting over.\n"
@@ -501,11 +506,17 @@ pub fn initial_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
     });
     s.push_str("\n\n## History (before this session started)\n\n");
     let (shown, omitted) = first_prompt_events(events, ctx);
+    // The handover and reopen callouts hold even with no events shown.
+    let lead = history_lead(issue, events, ctx, !shown.is_empty());
     if shown.is_empty() {
+        if !lead.is_empty() {
+            s.push_str(&lead);
+            s.push('\n');
+        }
         s.push_str("(no activity yet)\n");
         return s;
     }
-    s.push_str(&history_lead(issue, events, ctx));
+    s.push_str(&lead);
     if let Some(note) = omitted_notice(issue, ctx, shown.len(), omitted) {
         s.push_str(&note);
         s.push('\n');

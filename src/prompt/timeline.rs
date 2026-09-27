@@ -179,6 +179,13 @@ fn post_origin(body: &str, author: &str, bot: &str) -> Option<String> {
     origin::session(body)
 }
 
+/// Author text placed unquoted on an event line (titles, names, commit
+/// messages): `<` becomes `‹` so it can never close a `<github-event>` or
+/// `<history>` tag.
+fn inline(v: &str) -> String {
+    v.replace('<', "‹")
+}
+
 /// Render one timeline event, or `None` if it is not worth showing. `bot` is
 /// the bot login, whose posts carry origin tags.
 pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> Option<Rendered> {
@@ -222,12 +229,16 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
             } else {
                 "removed label"
             };
-            head(&format!("{verb} \"{label}\""))
+            head(&format!("{verb} \"{}\"", inline(label)))
         }
         "renamed" => {
             let from = value_str(ev, &["rename", "from"]).unwrap_or("?");
             let to = value_str(ev, &["rename", "to"]).unwrap_or("?");
-            head(&format!("renamed the issue from \"{from}\" to \"{to}\""))
+            head(&format!(
+                "renamed the issue from \"{}\" to \"{}\"",
+                inline(from),
+                inline(to)
+            ))
         }
         "closed" => {
             let reason = value_str(ev, &["state_reason"]).unwrap_or("");
@@ -245,14 +256,17 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
             } else {
                 "removed from milestone"
             };
-            head(&format!("{verb} \"{m}\""))
+            head(&format!("{verb} \"{}\"", inline(m)))
         }
         "cross-referenced" => {
             let title = value_str(ev, &["source", "issue", "title"]).unwrap_or("");
             let url = value_str(ev, &["source", "issue", "html_url"]).unwrap_or("");
             let is_pr = ev.pointer("/source/issue/pull_request").is_some();
             let what = if is_pr { "pull request" } else { "issue" };
-            head(&format!("referenced this from {what} \"{title}\" ({url})"))
+            head(&format!(
+                "referenced this from {what} \"{}\" ({url})",
+                inline(title)
+            ))
         }
         "referenced" => {
             let sha = value_str(ev, &["commit_id"]).unwrap_or("");
@@ -265,7 +279,7 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
                 .lines()
                 .next()
                 .unwrap_or("");
-            format!("- {at} commit {} by {actor}: {msg}", short(sha))
+            format!("- {at} commit {} by {actor}: {}", short(sha), inline(msg))
         }
         "review_requested" => {
             let who = value_str(ev, &["requested_reviewer", "login"]).unwrap_or("someone");

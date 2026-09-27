@@ -23,7 +23,47 @@ fn ssf_texts_never_look_like_a_login_prompt() {
             first_message_owed: false,
         };
         let o = Origin::new("o/r", 5).unwrap();
+        // A first prompt with the #588 history lead, both callouts and a
+        // tagged event.
+        let item: Issue = serde_json::from_value(serde_json::json!({
+            "number": 5, "title": "Fix it", "body": "b", "html_url": "https://gh/5",
+            "state": "open", "state_reason": "reopened", "user": {"login": "alice"},
+            "created_at": "t", "updated_at": "t"
+        }))
+        .unwrap();
+        let repo_cfg = crate::config::RepoConfig {
+            name: "o/r".into(),
+            harness: h.into(),
+            ..Default::default()
+        };
+        let daemon_cfg = crate::config::DaemonConfig::default();
+        let reopen = serde_json::json!({"event":"reopened","id":3,"actor":{"login":"alice"},
+            "created_at":"2026-09-03T10:00:00Z"});
+        let history = [prompt::render_event(&reopen, false, &daemon_cfg, "bot").unwrap()];
+        let first = prompt::initial_prompt(
+            &item,
+            &history,
+            &prompt::PromptContext {
+                repo: &repo_cfg,
+                daemon: &daemon_cfg,
+                bot_login: "bot",
+                driver: crate::config::DriverKind::Herdr,
+                pr: None,
+                triggers: &[],
+                owner: None,
+                delegated_by: None,
+                handed_over_from: Some(&name),
+                projects: &[],
+                global_prompt: None,
+                global_harness_prompt: None,
+                project_prompt: None,
+                harness_prompt: None,
+                vm_guest: false,
+                pushes_as: None,
+            },
+        );
         let texts = [
+            first,
             prompt::login_back_prompt(&prompt::LoginBack {
                 harness: &name,
                 since: &b.since,
