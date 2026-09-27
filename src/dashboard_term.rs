@@ -17,9 +17,12 @@
 //! __pane control <session>` over pipes: `herdr terminal session control`
 //! NDJSON both ways. herdr lets one client control a pane, so this server
 //! holds one control stream per pane and shares it among every viewer, like
-//! a shared tmux session: each sees the output, and each one's typing,
-//! paste and wheel reaches the pane, which takes the size of whoever last
-//! typed or resized. Only a request allowed to type opens one at all
+//! a shared tmux session: each sees the output. One viewer at a time holds
+//! control (#574): only its typing, paste and wheel reach the pane, and the
+//! pane takes its size; the others' are dropped here, and they see the pane
+//! at its size. The first viewer to join a pane no one controls takes
+//! control, any viewer can take it (`take`), and when the controller goes no
+//! one holds it until a viewer takes it or joins. Only a request allowed to type opens one at all
 //! (decided from the request by the caller, and by `item_pane_input` where
 //! the config is). See [`bridge_item`] for the messages.
 
@@ -323,16 +326,18 @@ pub(crate) enum Ask {
     /// A line for `herdr terminal session control`'s stdin: typed bytes or
     /// a scroll.
     Herdr(String),
-    /// The viewer's size, which the pane takes: the latest to ask wins.
+    /// The viewer's size, which the pane takes while it holds control.
     Size(u16, u16),
+    /// Control of the pane, for this viewer.
+    Take,
     /// Who the viewer is (display only, see [`viewer_name`]), and its size.
     Hello(String, Option<(u16, u16)>),
     Nothing,
 }
 
 /// What a client's WebSocket message asks: binary frames are typed bytes;
-/// text frames are JSON, `hello` (`name`, and `cols`/`rows`), `resize` or
-/// `scroll` (one wheel notch, `up` or `down`).
+/// text frames are JSON, `hello` (`name`, and `cols`/`rows`), `resize`,
+/// `take` (control) or `scroll` (one wheel notch, `up` or `down`).
 pub(crate) fn ask_of(message: &Message) -> Ask {
     use base64::Engine;
     let line = |command: serde_json::Value| Ask::Herdr(format!("{command}\n"));
@@ -361,6 +366,7 @@ pub(crate) fn ask_of(message: &Message) -> Ask {
             );
             Ask::Hello(viewer_name(name), size)
         }
+        Some("take") => Ask::Take,
         Some("scroll") => match value.get("direction").and_then(|d| d.as_str()) {
             Some(direction @ ("up" | "down")) => line(serde_json::json!({
                 "type": "terminal.scroll",
@@ -442,8 +448,11 @@ pub(crate) fn herdr_line(line: &str) -> HerdrLine {
 pub(crate) enum Out {
     /// Terminal bytes.
     Bytes(Vec<u8>),
-    /// A JSON message: `size`, `viewers` or `notice`.
+    /// A JSON message: `size` or `notice`.
     Text(String),
+    /// Who is watching, in the order they joined, and which of them (by
+    /// id) holds control: each viewer is told whether it is that one.
+    Viewers(Vec<(u64, String)>, Option<u64>),
     /// The stream is over, and why.
     End(String),
 }
@@ -509,23 +518,40 @@ pub(crate) struct Stream {
     output: tokio::sync::broadcast::Sender<Out>,
     /// Each viewer: its id, name, and the size it last asked for.
     viewers: std::sync::Mutex<Vec<ViewerEntry>>,
-    /// The viewer whose size the pane has.
-    sizer: std::sync::Mutex<Option<u64>>,
+    /// The viewer holding control: its input reaches the pane, and the
+    /// pane takes its size. Locked after `viewers` where both are.
+    controller: std::sync::Mutex<Option<u64>>,
 }
 
 impl Stream {
     fn tell_viewers(&self) {
-        let names: Vec<String> = self
+        let viewers: Vec<(u64, String)> = self
             .viewers
             .lock()
             .unwrap()
             .iter()
-            .map(|(_, n, _)| n.clone())
+            .map(|(id, n, _)| (*id, n.clone()))
             .collect();
-        let _ = self.output.send(Out::Text(
-            serde_json::json!({"type": "viewers", "names": names}).to_string(),
-        ));
+        let controller = *self.controller.lock().unwrap();
+        let _ = self.output.send(Out::Viewers(viewers, controller));
     }
+}
+
+/// The `viewers` message for viewer `me`: the names, the controller's name
+/// (or null), and whether `me` holds control.
+fn viewers_message(viewers: &[(u64, String)], controller: Option<u64>, me: u64) -> String {
+    let names: Vec<&str> = viewers.iter().map(|(_, n)| n.as_str()).collect();
+    let holder = viewers
+        .iter()
+        .find(|(id, _)| Some(*id) == controller)
+        .map(|(_, n)| n.as_str());
+    serde_json::json!({
+        "type": "viewers",
+        "names": names,
+        "controller": holder,
+        "control": controller == Some(me),
+    })
+    .to_string()
 }
 
 type Streams = std::collections::HashMap<String, std::sync::Weak<Stream>>;
@@ -544,15 +570,52 @@ impl Viewer {
         let _ = self.stream.input.send(ask);
     }
 
-    /// The pane takes this viewer's size: it is the latest to ask.
+    fn controls(&self) -> bool {
+        *self.stream.controller.lock().unwrap() == Some(self.id)
+    }
+
+    /// Typing, paste or a scroll: it reaches the pane only from the
+    /// controller, and is dropped from anyone else.
+    fn input(&self, line: String) {
+        if self.controls() {
+            self.ask(In::Line(line));
+        }
+    }
+
+    /// This viewer's size, kept for when it takes control; the pane takes
+    /// it now only if it holds control.
     fn resize(&self, cols: u16, rows: u16) {
         for viewer in self.stream.viewers.lock().unwrap().iter_mut() {
             if viewer.0 == self.id {
                 viewer.2 = Some((cols, rows));
             }
         }
-        *self.stream.sizer.lock().unwrap() = Some(self.id);
-        self.ask(In::Size(cols, rows));
+        if self.controls() {
+            self.ask(In::Size(cols, rows));
+        }
+    }
+
+    /// Take control from whoever holds it: the pane takes this viewer's
+    /// size, and every viewer hears who holds it now.
+    fn take(&self) {
+        {
+            let viewers = self.stream.viewers.lock().unwrap();
+            let mut controller = self.stream.controller.lock().unwrap();
+            if *controller == Some(self.id) {
+                return;
+            }
+            *controller = Some(self.id);
+            // Sized under the lock, so two takes at once leave the pane at
+            // the size of whichever holds control last.
+            let size = viewers
+                .iter()
+                .find(|(id, _, _)| *id == self.id)
+                .and_then(|(_, _, size)| *size);
+            if let Some((cols, rows)) = size {
+                self.ask(In::Size(cols, rows));
+            }
+        }
+        self.stream.tell_viewers();
     }
 }
 
@@ -560,19 +623,13 @@ impl Drop for Viewer {
     fn drop(&mut self) {
         let mut viewers = self.stream.viewers.lock().unwrap();
         viewers.retain(|(id, _, _)| *id != self.id);
-        // The pane stops following a viewer that went: it takes the size of
-        // the latest one left to have said its own.
-        let mut sizer = self.stream.sizer.lock().unwrap();
-        if *sizer == Some(self.id) {
-            *sizer = None;
-            if let Some(&(id, _, Some((cols, rows)))) =
-                viewers.iter().rev().find(|(_, _, size)| size.is_some())
-            {
-                *sizer = Some(id);
-                let _ = self.stream.input.send(In::Size(cols, rows));
-            }
+        // Control does not pass on by itself: no one holds it until a
+        // viewer takes it, or joins, and the pane keeps its size meanwhile.
+        let mut controller = self.stream.controller.lock().unwrap();
+        if *controller == Some(self.id) {
+            *controller = None;
         }
-        drop((viewers, sizer));
+        drop((viewers, controller));
         self.stream.tell_viewers();
     }
 }
@@ -588,16 +645,18 @@ pub(crate) fn join(
     check: Check,
 ) -> (Viewer, tokio::sync::broadcast::Receiver<Out>) {
     let mut streams = STREAMS.lock().unwrap();
+    let mut fresh = false;
     let stream = match streams.get(session).and_then(std::sync::Weak::upgrade) {
         Some(stream) => stream,
         None => {
+            fresh = true;
             let (input, asks) = tokio::sync::mpsc::unbounded_channel();
             let (output, _) = tokio::sync::broadcast::channel(256);
             let stream = std::sync::Arc::new(Stream {
                 input,
                 output: output.clone(),
                 viewers: Default::default(),
-                sizer: Default::default(),
+                controller: Default::default(),
             });
             let weak = std::sync::Arc::downgrade(&stream);
             streams.insert(session.to_string(), weak.clone());
@@ -616,6 +675,18 @@ pub(crate) fn join(
     let receiver = stream.output.subscribe();
     let id = VIEWER_IDS.fetch_add(1, Ordering::SeqCst);
     stream.viewers.lock().unwrap().push((id, name, size));
+    // The first to join a pane no one controls takes control, and the pane
+    // its size (a new stream starts at it already).
+    let took = {
+        let mut controller = stream.controller.lock().unwrap();
+        controller
+            .is_none()
+            .then(|| *controller = Some(id))
+            .is_some()
+    };
+    if let (true, false, Some((cols, rows))) = (took, fresh, size) {
+        let _ = stream.input.send(In::Size(cols, rows));
+    }
     drop(streams);
     stream.tell_viewers();
     let _ = stream.input.send(In::Redraw);
@@ -798,7 +869,10 @@ async fn run_pump(
 ///
 /// - `{"type":"size","cols":N,"rows":N}` when the pane's size changes (and
 ///   once on joining);
-/// - `{"type":"viewers","names":[…]}` whenever a viewer joins or goes;
+/// - `{"type":"viewers","names":[…],"controller":name|null,"control":bool}`
+///   whenever a viewer joins or goes, or control moves: `control` says
+///   whether this viewer holds it. Only the controller's typing, `scroll`
+///   and `resize` reach the pane; `{"type":"take"}` takes control;
 /// - `{"type":"notice","text":"…"}` for anything else worth saying.
 async fn bridge_item(
     ws: &mut WebSocketStream<TcpStream>,
@@ -862,8 +936,9 @@ async fn bridge_item(
     });
     let (viewer, mut heard) = join(session, name, size, spawn, check);
     let apply = |message: &Message| match ask_of(message) {
-        Ask::Herdr(line) => viewer.ask(In::Line(line)),
+        Ask::Herdr(line) => viewer.input(line),
         Ask::Size(cols, rows) => viewer.resize(cols, rows),
+        Ask::Take => viewer.take(),
         Ask::Hello(..) | Ask::Nothing => {}
     };
     if let Some(message) = first {
@@ -886,6 +961,12 @@ async fn bridge_item(
             out = heard.recv() => match out {
                 Ok(Out::Bytes(bytes)) => {
                     if ws.send(Message::binary(bytes)).await.is_err() {
+                        return Ok(());
+                    }
+                }
+                Ok(Out::Viewers(viewers, controller)) => {
+                    let text = viewers_message(&viewers, controller, viewer.id);
+                    if ws.send(Message::text(text)).await.is_err() {
                         return Ok(());
                     }
                 }
@@ -972,6 +1053,7 @@ mod tests {
             ask_of(&Message::text(r#"{"type":"hello"}"#)),
             Ask::Hello("viewer".into(), None)
         );
+        assert_eq!(ask_of(&Message::text(r#"{"type":"take"}"#)), Ask::Take);
         // Nothing a client says becomes a takeover or a raw herdr command.
         assert_eq!(
             ask_of(&Message::text(r#"{"type":"control"}"#)),
@@ -1043,26 +1125,55 @@ echo released > '{}'"#,
         }
     }
 
-    /// The next list of viewers a viewer is sent.
-    async fn next_viewers(heard: &mut tokio::sync::broadcast::Receiver<Out>) -> Vec<String> {
+    /// The next list of viewers a viewer is sent, and who holds control.
+    async fn next_list(
+        heard: &mut tokio::sync::broadcast::Receiver<Out>,
+    ) -> (Vec<String>, Option<String>) {
         loop {
             let out = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
                 .await
                 .expect("a message in time")
                 .expect("the stream is open");
-            if let Out::Text(text) = out {
-                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-                if value["type"] == "viewers" {
-                    return serde_json::from_value(value["names"].clone()).unwrap();
-                }
+            if let Out::Viewers(viewers, controller) = out {
+                let value: serde_json::Value =
+                    serde_json::from_str(&viewers_message(&viewers, controller, u64::MAX)).unwrap();
+                return (
+                    serde_json::from_value(value["names"].clone()).unwrap(),
+                    value["controller"].as_str().map(str::to_string),
+                );
             }
         }
     }
 
-    /// Two viewers share one stream: both see its output, what either types
-    /// reaches the pane (and both see what it draws), a late joiner has the
-    /// screen drawn again, everyone hears who is watching, and the pane is
-    /// released only when the last one goes.
+    async fn next_viewers(heard: &mut tokio::sync::broadcast::Receiver<Out>) -> Vec<String> {
+        next_list(heard).await.0
+    }
+
+    async fn next_control(heard: &mut tokio::sync::broadcast::Receiver<Out>) -> Option<String> {
+        next_list(heard).await.1
+    }
+
+    /// Each viewer is told the controller's name, and whether it is it.
+    #[test]
+    fn the_viewers_message_says_who_controls() {
+        let viewers = [(1, "@a".to_string()), (2, "dashboard".to_string())];
+        let of = |controller, me| -> serde_json::Value {
+            serde_json::from_str(&viewers_message(&viewers, controller, me)).unwrap()
+        };
+        assert_eq!(
+            of(Some(2), 2),
+            serde_json::json!({"type": "viewers", "names": ["@a", "dashboard"], "controller": "dashboard", "control": true})
+        );
+        assert_eq!(of(Some(2), 1)["control"], false);
+        assert_eq!(of(None, 1)["controller"], serde_json::Value::Null);
+        assert_eq!(of(None, 1)["control"], false);
+    }
+
+    /// Viewers share one stream: all see its output, only the controller's
+    /// typing and size reach the pane, control moves when taken and goes
+    /// with its holder, a late joiner has the screen drawn again, everyone
+    /// hears who is watching and who controls, and the pane is released
+    /// only when the last one goes.
     #[tokio::test]
     async fn viewers_share_one_stream_until_the_last_goes() {
         let gone = std::env::temp_dir().join(format!("ssf-shared-{}", std::process::id()));
@@ -1094,21 +1205,56 @@ echo released > '{}'"#,
             "{redraw}"
         );
         assert_eq!(next_bytes(&mut heard_a).await, redraw);
-        for (viewer, text) in [(&a, "from a"), (&b, "from b")] {
-            viewer.ask(In::Line(format!("{text}\n")));
+        // The first to join holds control: only its typing reaches the
+        // pane, and only its size; the other's are dropped.
+        a.input("from a\n".into());
+        b.input("from b\n".into());
+        a.input("again a\n".into());
+        for text in ["from a", "again a"] {
             assert_eq!(next_bytes(&mut heard_a).await, text);
             assert_eq!(next_bytes(&mut heard_b).await, text);
         }
-        // The latest resize is the pane's; once its viewer goes, the pane
-        // takes the size of the latest one left that said its own.
         b.resize(120, 40);
-        assert!(next_bytes(&mut heard_a).await.contains("\"cols\":120"));
-        assert!(next_bytes(&mut heard_b).await.contains("\"cols\":120"));
         a.resize(90, 20);
+        assert!(next_bytes(&mut heard_a).await.contains("\"cols\":90"));
         assert!(next_bytes(&mut heard_b).await.contains("\"cols\":90"));
-        drop(a);
-        assert_eq!(next_viewers(&mut heard_b).await, ["dashboard"]);
-        assert!(next_bytes(&mut heard_b).await.contains("\"cols\":120"));
+        // Taking control moves it, with the taker's size, and everyone
+        // hears who holds it.
+        b.take();
+        assert_eq!(next_control(&mut heard_a).await, Some("dashboard".into()));
+        assert!(next_bytes(&mut heard_a).await.contains("\"cols\":120"));
+        a.input("dropped\n".into());
+        b.input("from b\n".into());
+        assert_eq!(next_bytes(&mut heard_a).await, "from b");
+        // When the controller goes no one holds control, and what is
+        // typed is dropped, until a viewer takes it or joins.
+        drop(b);
+        assert_eq!(next_viewers(&mut heard_a).await, ["@alice"]);
+        a.input("dropped\n".into());
+        let (d, mut heard_d) = join(
+            session,
+            "extension".into(),
+            Some((70, 15)),
+            fake_pane(&gone),
+            allowed(),
+        );
+        assert_eq!(next_control(&mut heard_a).await, Some("extension".into()));
+        assert!(next_bytes(&mut heard_a).await.contains("\"cols\":70"));
+        assert_eq!(next_control(&mut heard_d).await, Some("extension".into()));
+        a.take();
+        assert_eq!(next_control(&mut heard_d).await, Some("@alice".into()));
+        assert_eq!(next_control(&mut heard_a).await, Some("@alice".into()));
+        a.input("mine again\n".into());
+        loop {
+            let bytes = next_bytes(&mut heard_d).await;
+            assert!(!bytes.contains("dropped"), "{bytes}");
+            if bytes == "mine again" {
+                break;
+            }
+        }
+        drop(d);
+        assert_eq!(next_viewers(&mut heard_a).await, ["@alice"]);
+        let b = a;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(!gone.exists(), "released while a viewer remained");
         drop(b);

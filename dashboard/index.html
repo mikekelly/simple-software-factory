@@ -5,21 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SSF agents</title>
   <link rel="stylesheet" href="dashboard.css">
+  <link rel="stylesheet" href="vendor/dockview/dockview.css">
+  <link rel="stylesheet" href="xterm.css">
+  <link rel="stylesheet" href="terminal.css">
 </head>
 <body>
   <header class="masthead">
     <div>
-      <p class="eyebrow">Simple Software Factory</p>
       <h1>Active agents</h1>
+      <p class="eyebrow">Simple Software Factory</p>
     </div>
-    <div class="refresh-block" aria-live="polite">
-      <span id="refresh-status">Loading sessions…</span>
+    <div class="refresh-block">
+      <span id="refresh-status" aria-live="polite">Loading sessions…</span>
       <span id="build" class="build"></span>
+      <a class="download" href="chrome-extension.zip" download>Chrome extension</a>
       <button id="refresh" type="button">Refresh</button>
-      <a class="download" href="chrome-extension.zip" download>Download Chrome extension</a>
+      <div class="theme-switch" role="group" aria-label="Appearance">
+        <button type="button" value="system" aria-pressed="true">System</button>
+        <button type="button" value="light" aria-pressed="false">Light</button>
+        <button type="button" value="dark" aria-pressed="false">Dark</button>
+      </div>
     </div>
   </header>
-  <main>
+  <div id="dock" class="dock"></div>
+  <main id="agents">
     <div id="notice" class="notice" role="status" hidden></div>
     <section id="cards" class="cards" aria-label="Active SSF agents" aria-busy="true"></section>
     <section id="monitored" class="monitored" hidden>
@@ -51,6 +60,7 @@
       </div>
     </article>
   </template>
-  <script src="dashboard.js" defer></script>
+  <script src="vendor/dockview/dockview-core.min.js"></script>
+  <script type="module" src="dashboard.js"></script>
 </body>
 </html>

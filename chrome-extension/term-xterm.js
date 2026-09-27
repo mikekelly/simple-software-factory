@@ -149,15 +149,15 @@ const MIN_FONT_PX = 4;
 /// An item session's live terminal (#563): the same `api/term/<session>`
 /// socket, which for an item is one viewer of the pane's control stream that
 /// the factory shares among everyone watching, like a shared tmux session:
-/// what anyone types, pastes or scrolls reaches the pane, which takes the
-/// size of whoever last typed or resized; everyone else sees it at that
-/// size, the font shrunk to fit. `name` (`@login`, or `extension`) is how
+/// one viewer at a time holds control, and only its typing, paste and
+/// wheel reach the pane, which takes its size; everyone else sees it at
+/// that size, the font shrunk to fit, and has `take` (Take control). `name` (`@login`, or `extension`) is how
 /// this viewer is listed in `viewers`, the list of who is watching. It is
 /// opened only where the factory takes typing into the pane and this
 /// factory's Writes switch is on; Writes going off closes it, as does half
 /// an hour with nothing typed. herdr keeps the scrollback, so xterm keeps
 /// none, each wheel notch is one scroll, and a paste is always bracketed.
-export function runItem({ url, session, name, say, box, notice: noticeNode, viewers, reconnect }) {
+export function runItem({ url, session, name, say, box, notice: noticeNode, viewers, reconnect, take }) {
   box.hidden = false;
   const term = new Terminal({
     cursorBlink: true,
@@ -178,6 +178,8 @@ export function runItem({ url, session, name, say, box, notice: noticeNode, view
   let lastActivity = Date.now();
   let wheel = 0;
   let noticeTimer = null;
+  /// Whether this window holds control of the pane, as the factory said.
+  let control = false;
 
   const post = (message) => {
     try {
@@ -227,7 +229,8 @@ export function runItem({ url, session, name, say, box, notice: noticeNode, view
     if (term.options.fontSize !== font) term.options.fontSize = font;
   }
 
-  /// Give the pane this window's size: it is the latest to type or resize.
+  /// Tell the factory this window's size: the pane takes it while this
+  /// window holds control, and it is kept for when it takes control.
   function claimSize() {
     const size = mySize();
     const text = size && resizeMessage(size.cols, size.rows);
@@ -238,6 +241,10 @@ export function runItem({ url, session, name, say, box, notice: noticeNode, view
 
   function type(bytes) {
     if (!connected) return;
+    if (!control) {
+      notice("View only: Take control to type here.");
+      return;
+    }
     lastActivity = Date.now();
     claimSize();
     post({ type: "input", data: toBase64(bytes) });
@@ -249,6 +256,8 @@ export function runItem({ url, session, name, say, box, notice: noticeNode, view
     connected = false;
     held?.disconnect();
     viewers.textContent = "";
+    control = false;
+    take.hidden = true;
     say(text, true);
     reconnect.hidden = false;
     term.write(`\r\n\x1b[2m[${text}]\x1b[0m\r\n`);
@@ -276,8 +285,17 @@ export function runItem({ url, session, name, say, box, notice: noticeNode, view
       if (said.type === "size") {
         pane = { cols: said.cols, rows: said.rows };
         fitPane();
+        // The controller's window is the pane's size.
+        if (control) claimSize();
       } else if (said.type === "viewers") {
         viewers.textContent = (Array.isArray(said.names) ? said.names : []).map(String).join(", ");
+        const had = control;
+        control = said.control === true;
+        const holder = typeof said.controller === "string" ? said.controller : "no one";
+        say(control ? "live · in control" : `view only · ${holder} in control`);
+        take.hidden = control;
+        if (control && !had) claimSize();
+        else if (had && !control) notice(`${holder} took control: this terminal is view only.`);
       } else if (said.type === "notice") {
         notice(String(said.text ?? ""));
       }
@@ -336,6 +354,7 @@ export function runItem({ url, session, name, say, box, notice: noticeNode, view
     const notches =
       event.deltaMode === 0 ? Math.trunc((wheel += event.deltaY) / NOTCH_PX) : Math.sign(event.deltaY);
     if (event.deltaMode === 0) wheel -= notches * NOTCH_PX;
+    if (!control) return false;
     for (let i = 0; i < Math.abs(notches); i += 1) {
       ask({ type: "scroll", direction: notches < 0 ? "up" : "down" });
     }
@@ -360,6 +379,11 @@ export function runItem({ url, session, name, say, box, notice: noticeNode, view
   }).observe(box);
 
   reconnect.addEventListener("click", connect);
+  take.addEventListener("click", () => {
+    lastActivity = Date.now();
+    ask({ type: "take" });
+    term.focus();
+  });
   setInterval(() => {
     if (port && Date.now() - lastActivity >= IDLE_MS) {
       closed("disconnected: nothing was typed for a while");

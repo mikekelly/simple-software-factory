@@ -29,7 +29,7 @@ export function resizeMessage(cols, rows) {
 
 /// The requests an item's live terminal (#563) sends as JSON text, besides
 /// `resize`: who is watching (`hello`) and a wheel notch (`scroll`).
-const ASKS = new Set(["hello", "scroll"]);
+const ASKS = new Set(["hello", "scroll", "take"]);
 
 /// What a page's message to the terminal sends down the socket: the typed
 /// bytes of `input`, the JSON text of `resize` or of an item terminal's `ask`

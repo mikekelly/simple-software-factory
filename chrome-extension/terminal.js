@@ -44,6 +44,7 @@ async function startTerm() {
       notice: document.getElementById("notice"),
       viewers: document.getElementById("viewers"),
       reconnect: document.getElementById("reconnect"),
+      take: document.getElementById("take"),
     });
     return;
   }

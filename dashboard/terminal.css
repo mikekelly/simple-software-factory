@@ -1,7 +1,23 @@
-body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-.term-bar { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; padding: .8rem 1rem; border-bottom: 1px solid var(--line); font-size: .85rem; }
-.term-bar h1 { font-size: 1rem; letter-spacing: 0; margin: 0; }
-.term-bar .status { color: var(--muted); }
-.term-bar .viewers { color: var(--muted); margin-left: auto; overflow-wrap: anywhere; }
-.term-notice { margin: 0; padding: .5rem 1rem; background: rgba(255, 202, 110, .12); color: var(--amber); font-size: .85rem; }
-#box { flex: 1; min-height: 0; padding: .5rem; background: #0d1117; overflow: hidden; }
+body:has(#host) { display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: var(--term-bg); }
+#host { flex: 1; min-height: 0; }
+.term-host { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--term-bg); }
+.term-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  min-height: 36px; padding: 5px 12px;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  color: var(--text-2); font-size: 12px;
+}
+.term-bar h1 { margin: 0; color: var(--text); font: 600 12px/1 var(--mono); letter-spacing: 0; }
+.term-bar .status { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.term-bar .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
+.term-live .term-bar .status::before { background: var(--green); }
+.term-live.term-view-only .term-bar .status::before { background: var(--orange); }
+.term-bar .viewers { margin-left: auto; color: var(--text-3); overflow-wrap: anywhere; }
+.term-bar .take { height: 22px; padding: 0 9px; border-color: transparent; background: var(--fill); color: var(--text-2); font-size: 11.5px; font-weight: 500; }
+.term-bar .take:hover { background: var(--accent-soft); color: var(--accent); }
+.term-bar .reconnect { height: 24px; }
+.term-bar .take[hidden], .term-bar .reconnect[hidden] { display: none; }
+.term-notice { margin: 0; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); color: var(--text-2); font-size: 12px; }
+.term-notice::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--orange); vertical-align: 1px; }
+.term-box { flex: 1; min-height: 0; padding: 6px 8px; background: var(--term-bg); overflow: hidden; }
+.term-view-only .term-box { cursor: default; }

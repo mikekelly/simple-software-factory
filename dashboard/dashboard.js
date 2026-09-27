@@ -1,3 +1,19 @@
+import { mountTerminal, setThemePreference, themePreference } from "./term-view.js";
+
+// The masthead's System / Light / Dark switch.
+const themeButtons = document.querySelectorAll(".theme-switch button");
+function showTheme(pref) {
+  for (const button of themeButtons) button.setAttribute("aria-pressed", String(button.value === pref));
+}
+for (const button of themeButtons) {
+  button.addEventListener("click", () => {
+    setThemePreference(button.value);
+    showTheme(button.value);
+  });
+}
+showTheme(themePreference());
+addEventListener("storage", () => showTheme(themePreference()));
+
 const cardsNode = document.querySelector("#cards");
 const emptyNode = document.querySelector("#empty");
 const noticeNode = document.querySelector("#notice");
@@ -206,6 +222,7 @@ async function refresh() {
     fill(noticeNode, body.warning ? `Status may be incomplete: ${body.warning}` : "");
     show(noticeNode, Boolean(body.warning));
     fill(statusNode, `Updated ${new Date(body.refreshed_at * 1000).toLocaleTimeString()}`);
+    return true;
   } catch (error) {
     show(emptyNode, false);
     fill(noticeNode, `Could not refresh: ${error.message}`);
@@ -219,5 +236,111 @@ async function refresh() {
 }
 
 refreshButton.addEventListener("click", refresh);
-refresh();
-setInterval(refresh, 5000);
+
+// The page is a dockview layout (#574): the cards are the "Agents" panel, and
+// each session's terminal opened from a card is a panel beside it that can be
+// tabbed, split and dragged. The layout is this browser's, kept in
+// localStorage; a terminal whose session has gone is dropped on restore.
+const LAYOUT_KEY = "ssf.dashboard.layout";
+const agentsNode = document.querySelector("#agents");
+const { createDockview } = window["dockview-core"];
+const dock = createDockview(document.querySelector("#dock"), {
+  theme: { name: "ssf", className: "dockview-theme-ssf" },
+  createComponent({ name }) {
+    const element = document.createElement("div");
+    element.className = "dock-panel";
+    if (name === "agents") {
+      element.append(agentsNode);
+      return { element, init() {} };
+    }
+    let view = null;
+    return {
+      element,
+      init({ params }) {
+        view = mountTerminal(element, params.session);
+      },
+      focus: () => view?.focus(),
+      dispose() {
+        view?.dispose();
+        view = null;
+      },
+    };
+  },
+});
+
+const AGENTS = { id: "agents", component: "agents", title: "Agents" };
+
+function defaultLayout() {
+  dock.clear();
+  dock.addPanel(AGENTS);
+}
+
+function saveLayout() {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(dock.toJSON()));
+  } catch {}
+}
+
+/// Open `session`'s terminal, or focus it where it is already open.
+function openTerminal(session) {
+  const id = `term:${session}`;
+  const open = dock.getPanel(id);
+  if (open) {
+    open.api.setActive();
+    return;
+  }
+  const other = dock.panels.findLast((panel) => panel.id.startsWith("term:"));
+  dock.addPanel({
+    id,
+    component: "terminal",
+    title: session,
+    params: { session },
+    // Beside the cards the first time, then as a tab with the other terminals:
+    // a split per terminal would give each too little room.
+    position: other
+      ? { direction: "within", referencePanel: other.id }
+      : { direction: "right", referencePanel: "agents" },
+  });
+}
+
+cardsNode.addEventListener("click", (event) => {
+  const link = event.target.closest(".terminal-link");
+  if (!link || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  event.preventDefault();
+  openTerminal(new URL(link.href).searchParams.get("session") ?? "");
+});
+
+/// Restore the saved layout, less the terminals of sessions `live` no longer
+/// has (all kept when `live` is null: status is unknown); anything unexpected
+/// falls back to the default.
+function restoreLayout(live) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "null");
+    if (!saved?.panels?.agents) throw new Error("no saved layout");
+    dock.fromJSON(saved);
+    for (const panel of [...dock.panels]) {
+      const session = panel.params?.session;
+      if (panel.id !== "agents" && live && !live.has(session)) dock.removePanel(panel);
+    }
+    if (!dock.getPanel("agents")) throw new Error("no agents panel");
+  } catch {
+    defaultLayout();
+  }
+}
+
+async function start() {
+  const known = await refresh();
+  const live = known && new Set(
+    [...mountedCards.values()]
+      .filter((card) => !card.querySelector(".terminal-link").hidden)
+      .map((card) => new URL(card.querySelector(".terminal-link").href).searchParams.get("session")),
+  );
+  restoreLayout(live);
+  dock.onDidLayoutChange(saveLayout);
+  // The cards cannot be closed away: closing their panel puts it back.
+  dock.onDidRemovePanel((panel) => {
+    if (panel.id === "agents") setTimeout(() => dock.getPanel("agents") || dock.addPanel(AGENTS));
+  });
+  setInterval(refresh, 5000);
+}
+start();

@@ -201,11 +201,18 @@ on:
 herdr lets one client control a pane, so the server holds **one control
 stream per pane** and shares it among everyone who has the terminal open, from
 this page or the extension, like a shared tmux session. Everyone sees the
-same screen, and what anyone types reaches the pane. The pane takes the size
-of whoever last typed or resized their window; everyone else sees it at that
-size, the font shrunk to fit (13px down to 4px). A viewer who joins late is
-sent the whole screen. The title bar lists who is watching (`@login` for the
-extension, `dashboard` for this page); the names are for display only.
+same screen, but **one viewer at a time holds control**: only its typing,
+paste and wheel reach the pane, and the pane takes its window's size. Everyone
+else is view-only: they see the pane at that size, the font shrunk to fit
+(13px down to 4px), the server drops what they type, and their title bar has
+**Take control**, which makes them the controller (the pane takes their size)
+and turns the previous controller view-only, with the button back. The first
+viewer to open a pane no one controls takes control; when the controller
+leaves, no one holds it until someone presses Take control or opens the
+terminal afresh, and the pane keeps its size meanwhile. A viewer who joins
+late is sent the whole screen. The title bar says who is in control and lists
+who is watching (`@login` for the extension, `dashboard` for this page); the
+names are for display only.
 
 Each wheel notch scrolls the pane's history, or the app in a full-screen TUI
 that uses the mouse. Shift+Enter sends a newline that does not submit, and a
@@ -354,12 +361,20 @@ socket closes with the reason otherwise). The protocol:
   "@login", "cols": N, "rows": N}`, the viewer's display name (`@` and a
   GitHub login, `dashboard` or `extension`; anything else is shown as
   `viewer`) and size, which a stream that is just starting takes;
-  `{"type": "resize", "cols": N, "rows": N}` resizes the pane (the latest
-  resize wins); `{"type": "scroll", "direction": "up"}` (or `"down"`) is one
-  wheel notch. Anything else is ignored.
+  `{"type": "resize", "cols": N, "rows": N}` is the viewer's size;
+  `{"type": "scroll", "direction": "up"}` (or `"down"`) is one wheel notch;
+  `{"type": "take"}` takes control. Anything else is ignored.
+- **Control**: one viewer holds it. Only the controller's typing (binary
+  frames), `scroll` and `resize` reach the pane; everyone else's are dropped,
+  though a view-only viewer's latest `resize` is kept and applied when it
+  takes control. The first viewer to join a pane no one controls takes it
+  (and the pane its size); `take` moves it to the sender; when the
+  controller leaves no one holds it until a viewer takes it or joins.
 - **text frames** from the server are JSON: `{"type": "size", "cols": N,
   "rows": N}` when the pane's size changes (and on joining);
-  `{"type": "viewers", "names": [...]}` whenever a viewer joins or leaves; and
+  `{"type": "viewers", "names": [...], "controller": "dashboard", "control":
+  false}` whenever a viewer joins or leaves or control moves (`controller` is
+  the holder's name or `null`, `control` whether this viewer holds it); and
   `{"type": "notice", "text": "..."}` for anything else, such as a pane being
   tried again.
 - A viewer that joins is sent the whole screen: the server asks herdr to draw
@@ -370,9 +385,7 @@ socket closes with the reason otherwise). The protocol:
   joins and every minute while the stream runs; found off, the stream ends
   for every viewer with the reason.
 - The server pings each viewer every 20 seconds and drops one that has sent
-  nothing, a pong included, for 60 seconds. When the viewer whose size the
-  pane has leaves, the pane takes the size of the latest viewer left that
-  sent one.
+  nothing, a pong included, for 60 seconds, which releases its control.
 
 ### Snapshot fields a client can rely on
 
