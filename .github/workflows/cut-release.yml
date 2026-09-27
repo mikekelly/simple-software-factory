@@ -1,0 +1,111 @@
+# Cut and publish a release in one manual run (Actions > cut-release > Run
+# workflow, or `gh workflow run cut-release.yml -f version=X.Y.Z`):
+#
+# 1. prepare: on master, bump Cargo.toml/Cargo.lock to X.Y.Z and push that
+#    commit, then pin packaging/release/PKGBUILD to its GitHub archive
+#    (pkgver, pkgrel=1, _source_commit, sha256sums), push that commit and tag
+#    it vX.Y.Z.
+# 2. build: release.yml for the tag: packages, tests and a draft release.
+# 3. publish: the draft becomes the latest release.
+# 4. homebrew: homebrew.yml pushes the formula to the tap.
+#
+# Rerunning with a version whose tag already exists skips step 1 and resumes
+# from the build, so a failed build or publish is retried the same way.
+name: cut-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, X.Y.Z (no v)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cut-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: Bump, pin and tag
+        id: tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$VERSION' is not X.Y.Z"
+            exit 1
+          fi
+          tag="v$VERSION"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists; resuming from the build"
+            exit 0
+          fi
+          current=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -1)" != "$VERSION" ] || [ "$current" = "$VERSION" ]; then
+            echo "::error::$VERSION is not newer than Cargo.toml's $current"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          sed -i "0,/^version = \"$current\"/s//version = \"$VERSION\"/" Cargo.toml
+          cargo update --workspace
+          cargo metadata --locked --format-version 1 >/dev/null
+          git add Cargo.toml Cargo.lock
+          git commit -m "Prepare $tag"
+          git push origin HEAD:master
+          source_commit=$(git rev-parse HEAD)
+
+          url="https://github.com/$GITHUB_REPOSITORY/archive/$source_commit.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors -o source.tar.gz "$url"
+          sha=$(sha256sum source.tar.gz | cut -d' ' -f1)
+          rm source.tar.gz
+          pkgbuild=packaging/release/PKGBUILD
+          sed -i -e "s/^pkgver=.*/pkgver=$VERSION/" -e "s/^pkgrel=.*/pkgrel=1/" \
+            -e "s/^_source_commit=.*/_source_commit=$source_commit/" \
+            -e "s/^sha256sums=.*/sha256sums=('$sha')/" "$pkgbuild"
+          git add "$pkgbuild"
+          git commit -m "Pin $tag release package to the bump commit"
+          git tag "$tag"
+          git push origin HEAD:master "refs/tags/$tag"
+
+  build:
+    needs: prepare
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json assets --jq '.assets[].name'
+          gh release edit "$TAG" --draft=false --latest
+
+  homebrew:
+    needs: [prepare, publish]
+    uses: ./.github/workflows/homebrew.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit

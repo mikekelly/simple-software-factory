@@ -16,3 +16,6 @@
   before running scratch instances.
 - Prefer the smallest change that solves the issue. Treat data loss, startup,
   installation and workspace safety as high-risk boundaries during review.
+- Cut a release by running the `cut-release` workflow
+  (`gh workflow run cut-release.yml -f version=X.Y.Z`) from `master` and
+  watching it to completion; see "Releasing" in `docs/development.md`.
