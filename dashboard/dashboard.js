@@ -208,6 +208,7 @@ async function refresh() {
     fill(noticeNode, body.warning ? `Status may be incomplete: ${body.warning}` : "");
     show(noticeNode, Boolean(body.warning));
     fill(statusNode, `Updated ${new Date(body.refreshed_at * 1000).toLocaleTimeString()}`);
+    return true;
   } catch (error) {
     show(emptyNode, false);
     fill(noticeNode, `Could not refresh: ${error.message}`);
@@ -295,7 +296,8 @@ cardsNode.addEventListener("click", (event) => {
 });
 
 /// Restore the saved layout, less the terminals of sessions `live` no longer
-/// has; anything unexpected falls back to the default.
+/// has (all kept when `live` is null: status is unknown); anything unexpected
+/// falls back to the default.
 function restoreLayout(live) {
   try {
     const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "null");
@@ -303,7 +305,7 @@ function restoreLayout(live) {
     dock.fromJSON(saved);
     for (const panel of [...dock.panels]) {
       const session = panel.params?.session;
-      if (panel.id !== "agents" && !live.has(session)) dock.removePanel(panel);
+      if (panel.id !== "agents" && live && !live.has(session)) dock.removePanel(panel);
     }
     if (!dock.getPanel("agents")) throw new Error("no agents panel");
   } catch {
@@ -312,8 +314,8 @@ function restoreLayout(live) {
 }
 
 async function start() {
-  await refresh();
-  const live = new Set(
+  const known = await refresh();
+  const live = known && new Set(
     [...mountedCards.values()]
       .filter((card) => !card.querySelector(".terminal-link").hidden)
       .map((card) => new URL(card.querySelector(".terminal-link").href).searchParams.get("session")),

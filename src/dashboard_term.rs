@@ -598,20 +598,22 @@ impl Viewer {
     /// Take control from whoever holds it: the pane takes this viewer's
     /// size, and every viewer hears who holds it now.
     fn take(&self) {
-        let size = {
+        {
             let viewers = self.stream.viewers.lock().unwrap();
             let mut controller = self.stream.controller.lock().unwrap();
             if *controller == Some(self.id) {
                 return;
             }
             *controller = Some(self.id);
-            viewers
+            // Sized under the lock, so two takes at once leave the pane at
+            // the size of whichever holds control last.
+            let size = viewers
                 .iter()
                 .find(|(id, _, _)| *id == self.id)
-                .and_then(|(_, _, size)| *size)
-        };
-        if let Some((cols, rows)) = size {
-            self.ask(In::Size(cols, rows));
+                .and_then(|(_, _, size)| *size);
+            if let Some((cols, rows)) = size {
+                self.ask(In::Size(cols, rows));
+            }
         }
         self.stream.tell_viewers();
     }
