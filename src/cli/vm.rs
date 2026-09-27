@@ -280,7 +280,7 @@ pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
             print!("{}", vm.ssh_config());
             Ok(())
         }
-        VmCommand::Upgrade { version } => vm.upgrade(version.as_deref()),
+        VmCommand::Upgrade { version, deb } => vm.upgrade(version.as_deref(), deb.as_deref()),
         VmCommand::Reset => vm.reset().await,
         VmCommand::Destroy { yes } => {
             if !yes {

@@ -46,7 +46,7 @@ drive the factory, or passing `--force`. Hand `sudo` commands to the person
 to run; run them yourself only where you already have non-interactive root.
 The bot's credentials are the bot's, never the person's.
 Upgrading ssf on the host does not upgrade a VM's guest: `ssf --server NAME
-vm upgrade` does. `ssf vm build --force` and `ssf vm reset` discard anything
+vm upgrade [VERSION]` (or `--deb PATH`) does, on the running guest. `ssf vm build --force` and `ssf vm reset` discard anything
 installed in the guest root; don't use them to upgrade.
 
 ## Installing this skill

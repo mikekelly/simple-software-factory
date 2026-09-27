@@ -235,7 +235,8 @@ Upgrade both sides to the same release:
 2. For an SSH target, upgrade the remote machine the same way.
 3. For a VM target, upgrading the host leaves the guest's version alone:
    `ssf --server NAME vm upgrade` installs the client's release in the
-   guest and restarts its daemon, keeping everything else there. Avoid
+   running guest and restarts only its daemon, keeping everything else
+   there (`--deb PATH` installs a local package instead). Avoid
    `ssf vm build --force` and `ssf vm reset` for upgrading: a new root
    loses whatever was installed in the guest. `ssf skill vm` (docs/vm.md)
    has the detail.

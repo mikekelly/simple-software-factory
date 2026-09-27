@@ -515,7 +515,11 @@ pub(super) enum VmCommand {
     /// daemon. Upgrading the host never changes the guest's version.
     Upgrade {
         /// The release, e.g. 0.19.0 (default: this client's version).
+        #[arg(conflicts_with = "deb")]
         version: Option<String>,
+        /// Install this local .deb instead of downloading a release.
+        #[arg(long, value_name = "PATH")]
+        deb: Option<PathBuf>,
     },
     /// Whether the VM runs and its daemon answers, its size, and how full
     /// the data disk is.

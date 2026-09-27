@@ -435,8 +435,9 @@ impl Vm {
     }
 
     /// `ssf vm upgrade [VERSION]`: install that release's package in the
-    /// running guest and restart its daemon.
-    pub fn upgrade(&self, version: Option<&str>) -> Result<()> {
+    /// running guest (or `deb`, a local package) and restart its daemon,
+    /// not the VM. A guest without the package adopts it this way too.
+    pub fn upgrade(&self, version: Option<&str>, deb: Option<&Path>) -> Result<()> {
         if self.backend() != BackendKind::Firecracker {
             bail!(
                 "`ssf vm upgrade` supports Firecracker guests only for now; a {} guest runs the ssf the host copies in at each start (`ssf vm restart`)",
@@ -452,11 +453,19 @@ impl Vm {
                 "no release ssf package for {arch}; the guest runs the ssf binary the host copies in at each start"
             );
         }
-        let version = version.unwrap_or(env!("CARGO_PKG_VERSION"));
-        let version = version.strip_prefix('v').unwrap_or(version);
-        let deb = self.guest_deb(version)?;
+        let deb = match deb {
+            Some(deb) => deb.to_path_buf(),
+            None => {
+                let version = version.unwrap_or(env!("CARGO_PKG_VERSION"));
+                self.guest_deb(version.strip_prefix('v').unwrap_or(version))?
+            }
+        };
         self.install_guest_deb(&deb)?;
-        println!("the guest runs ssf {version}");
+        println!(
+            "the guest runs ssf {}",
+            self.guest_package_version()?
+                .unwrap_or_else(|| "unknown".into())
+        );
         Ok(())
     }
 

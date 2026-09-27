@@ -225,8 +225,10 @@ upgrading the host does not change the guest's version. The first start of a
 Firecracker root without the package (a new image, or one from 0.18 or
 earlier) installs this client's release package in it once, over SSH, keeping
 everything else on the root; after that `ssf vm upgrade [VERSION]` (default:
-the client's version) installs a release's package and restarts the guest
-daemon, or `apt` in the guest does. The package also carries the guest's boot
+the client's version), or `ssf vm upgrade --deb PATH` for a local package,
+installs it in the running guest and restarts only the guest daemon, not the
+VM (a guest still without the package adopts it the same way); `apt` in the
+guest works too. The package also carries the guest's boot
 scripts, so they follow it. A guest without the package (lima and incus
 guests, and Firecracker guests other than x86_64, which have no release
 package) still runs the host's binary, copied in at every start, and so does
