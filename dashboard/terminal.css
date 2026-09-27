@@ -13,8 +13,8 @@ body:has(#host) { display: flex; flex-direction: column; height: 100vh; overflow
 .term-live .term-bar .status::before { background: var(--green); }
 .term-live.term-view-only .term-bar .status::before { background: var(--orange); }
 .term-bar .viewers { margin-left: auto; color: var(--text-3); overflow-wrap: anywhere; }
-.term-bar .take { height: 24px; border-color: var(--accent); background: var(--accent); color: #fff; }
-.term-bar .take:hover { background: var(--accent); filter: brightness(1.08); }
+.term-bar .take { height: 22px; padding: 0 9px; border-color: transparent; background: var(--fill); color: var(--text-2); font-size: 11.5px; font-weight: 500; }
+.term-bar .take:hover { background: var(--accent-soft); color: var(--accent); }
 .term-bar .reconnect { height: 24px; }
 .term-bar .take[hidden], .term-bar .reconnect[hidden] { display: none; }
 .term-notice { margin: 0; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); color: var(--text-2); font-size: 12px; }
