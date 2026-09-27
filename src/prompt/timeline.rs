@@ -306,7 +306,7 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
             let mut out = Vec::new();
             for c in &comments {
                 let who = value_str(c, &["user", "login"]).unwrap_or("someone");
-                let path = value_str(c, &["path"]).unwrap_or("?");
+                let path = inline(value_str(c, &["path"]).unwrap_or("?"));
                 let line = c
                     .get("line")
                     .or_else(|| c.get("original_line"))
