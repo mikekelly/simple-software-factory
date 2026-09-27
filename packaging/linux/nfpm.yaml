@@ -1,12 +1,14 @@
 # nfpm configuration for the Debian/Ubuntu (.deb) and Fedora (.rpm) packages.
 # Paths are relative to the repository root: build.sh runs nfpm from there,
 # after building the static musl binary it packages. `VERSION` comes from the
-# environment (build.sh sets it from Cargo.toml, `$1` or `$VERSION`).
+# environment (build.sh sets it from Cargo.toml, `$1` or `$VERSION`), and so
+# do `ARCH` (nfpm's name: amd64 or arm64) and `TARGET` (the Rust target the
+# binaries were built for), which build.sh sets from the machine it runs on.
 # The file list mirrors package() in ../release/PKGBUILD, with the
 # non-Omarchy unit (./ssf.service) in place of ../ssf.service.
 
 name: ssf
-arch: amd64
+arch: ${ARCH}
 platform: linux
 version: ${VERSION}
 release: "1"
@@ -93,12 +95,14 @@ contents:
   - dst: /usr/share/licenses/ssf
     type: dir
     packager: rpm
-  - src: target/x86_64-unknown-linux-musl/release/ssf
+  - src: target/${TARGET}/release/ssf
     dst: /usr/bin/ssf
+    expand: true
     file_info:
       mode: 0755
-  - src: target/x86_64-unknown-linux-musl/release/ssf-server
+  - src: target/${TARGET}/release/ssf-server
     dst: /usr/bin/ssf-server
+    expand: true
     file_info:
       mode: 0755
   - src: bin/ssf-ui

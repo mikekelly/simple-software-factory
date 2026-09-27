@@ -718,6 +718,12 @@ impl Vm {
         if let Err(e) = self.wait_for_ssh(SEED_TIMEOUT).await {
             bail!("{e:#}; `incus console {name} --show-log` has its console");
         }
+        // Never fails the start: the guest runs the copied-in binary meanwhile.
+        if let Err(e) = self.adopt_guest_package() {
+            warn!(
+                "could not install the ssf package in the guest ({e:#}); `ssf vm upgrade` retries"
+            );
+        }
         let daemon = self.wait_for_daemon(Duration::from_secs(60)).await;
         self.report_up(daemon.as_deref());
         Ok(())

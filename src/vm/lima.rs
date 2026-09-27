@@ -124,7 +124,7 @@ const FORMAT_OFF: &str = ".additionalDisks[0].format = false";
 /// The oldest lima ssf drives. Three things in this file are pinned to a
 /// lima version, and this is the highest of them:
 ///
-/// * The template names its base image `template:_images/archlinux`. That
+/// * The template names its base image `template:_images/ubuntu-lts`. That
 ///   opaque form of the locator is lima 2.0's ("Template locator
 ///   `template://...` should be written `template:...` since Lima v2.0",
 ///   lima says on the older spelling); a 1.x lima parses it as an empty
@@ -132,7 +132,7 @@ const FORMAT_OFF: &str = ".additionalDisks[0].format = false";
 /// * The `_images/` templates themselves arrived in lima 1.1 -- and lima
 ///   2.0.0's release *tarball* ships that directory empty (its Makefile
 ///   left `TEMPLATE_IMAGES` out of the artifact), so
-///   `template:_images/archlinux` is "not found" on the binaries lima
+///   `template:_images/ubuntu-lts` is "not found" on the binaries lima
 ///   published for it, however it is spelled. A 2.0.0 built from source,
 ///   which is what Homebrew does, has the templates and would work; the
 ///   floor excludes it anyway rather than admitting a version whose
@@ -191,16 +191,12 @@ pub fn lima_arch(arch: &str) -> Result<&'static str> {
     }
 }
 
-/// The image lima boots for an architecture when `[vm] image` is unset:
-/// Arch's cloud image for x86_64, Ubuntu LTS for aarch64 (Arch has no
-/// official aarch64 cloud image). Firecracker's fixed Ubuntu guest is
-/// independent of this lima default. lima keeps the URL and digest.
-pub fn base_template(arch: &str) -> &'static str {
-    match arch {
-        "x86_64" => "template:_images/archlinux",
-        _ => "template:_images/ubuntu-lts",
-    }
-}
+/// The image lima boots when `[vm] image` is unset: Ubuntu LTS on every
+/// architecture, like the Firecracker guest, so the guest can run ssf from
+/// its own `.deb`. x86_64 instances built by an older ssf booted Arch's
+/// cloud image and keep it (and the host's copied-in binary) until
+/// `ssf vm build --force`. lima keeps the URL and digest.
+pub const BASE_TEMPLATE: &str = "template:_images/ubuntu-lts";
 
 /// What the template is made of.
 #[derive(Debug, Clone)]
@@ -241,7 +237,7 @@ pub fn render_template(t: &Template) -> String {
             yaml_str(img),
             t.arch
         )),
-        None => y.push_str(&format!("base:\n  - {}\n", base_template(t.arch))),
+        None => y.push_str(&format!("base:\n  - {BASE_TEMPLATE}\n")),
     }
     y.push_str(&format!(
         "arch: {arch}\ncpus: {cpus}\nmemory: \"{mem}MiB\"\ndisk: \"{root}GiB\"\n",

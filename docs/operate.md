@@ -236,10 +236,12 @@ Upgrade both sides to the same release:
 3. For a VM target, upgrading the host leaves the guest's version alone:
    `ssf --server NAME vm upgrade` installs the client's release in the
    running guest and restarts only its daemon, keeping everything else
-   there (`--deb PATH` installs a local package instead). Avoid
-   `ssf vm build --force` and `ssf vm reset` for upgrading: a new root
-   loses whatever was installed in the guest. `ssf skill vm` (docs/vm.md)
-   has the detail.
+   there (`--deb PATH` installs a local package instead). This works under
+   every backend. The exception is an Arch lima guest (x86_64, built by an
+   older ssf), which has no dpkg: `ssf vm restart` gives it the host's
+   binary. Avoid `ssf vm build --force` and `ssf vm reset` for upgrading:
+   a new root loses whatever was installed in the guest. `ssf skill vm`
+   (docs/vm.md) has the detail.
 4. Run `ssf --server NAME doctor` again; it should look as it did before.
 
 Configuration, state, keys and the VM's disks survive an upgrade. If the

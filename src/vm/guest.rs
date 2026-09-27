@@ -314,10 +314,16 @@ impl Vm {
 
     // ---- the guest's ssf package ----
 
-    /// The release `.deb` of `version` (amd64): the host's apt cache when it
-    /// holds it, else the release asset, downloaded once with `gh`.
-    pub(in crate::vm) fn guest_deb(&self, version: &str) -> Result<PathBuf> {
-        let asset = format!("ssf_{version}-1_amd64.deb");
+    /// The release `.deb` of `version` for the guest's Debian architecture
+    /// (`amd64` or `arm64`): the host's apt cache when it holds it, else the
+    /// release asset, downloaded once with `gh`.
+    pub(in crate::vm) fn guest_deb(&self, version: &str, arch: &str) -> Result<PathBuf> {
+        if !matches!(arch, "amd64" | "arm64") {
+            bail!(
+                "no release ssf package for a {arch} guest (only amd64 and arm64); install a .deb built for it with `ssf vm upgrade --deb PATH`"
+            );
+        }
+        let asset = format!("ssf_{version}-1_{arch}.deb");
         let cached = Path::new("/var/cache/apt/archives").join(&asset);
         if cached.is_file() {
             return Ok(cached);
@@ -392,22 +398,20 @@ impl Vm {
         Ok(())
     }
 
-    /// First start of a root from before the guest package (0.18 and
-    /// earlier): install this client's release package in the guest once,
-    /// so from then on the guest keeps its own version. Skipped with
-    /// `[vm] guest_binary` (a development build is copied in instead).
+    /// First start of a root without the guest package (a new one, or one
+    /// from 0.18 and earlier): install this client's release package in the
+    /// guest once, so from then on the guest keeps its own version. Skipped
+    /// with `[vm] guest_binary` (a development build is copied in instead)
+    /// and on a guest without dpkg (an Arch lima guest), which keep the
+    /// copied-in binary.
     pub(in crate::vm) fn adopt_guest_package(&self) -> Result<()> {
         if self.cfg.guest_binary.is_some() || self.guest_package_version()?.is_some() {
             return Ok(());
         }
-        let arch = self.guest_deb_arch()?;
-        if arch != "amd64" {
-            tracing::debug!(
-                arch,
-                "no release ssf package for this guest; it keeps the copied-in binary"
-            );
+        let Some(arch) = self.guest_deb_arch()? else {
+            tracing::debug!("the guest has no dpkg; it keeps the copied-in ssf binary");
             return Ok(());
-        }
+        };
         // The first boot's seed unit installs the copied-in binary; let it
         // finish before dpkg replaces it.
         let deadline = Instant::now() + Duration::from_secs(120);
@@ -420,7 +424,7 @@ impl Vm {
             }
             std::thread::sleep(Duration::from_secs(2));
         }
-        let deb = self.guest_deb(env!("CARGO_PKG_VERSION"))?;
+        let deb = self.guest_deb(env!("CARGO_PKG_VERSION"), &arch)?;
         println!(
             "installing the ssf {} package in the guest",
             env!("CARGO_PKG_VERSION")
@@ -428,36 +432,34 @@ impl Vm {
         self.install_guest_deb(&deb)
     }
 
-    /// The guest's Debian architecture (`dpkg --print-architecture`).
-    fn guest_deb_arch(&self) -> Result<String> {
-        self.ssh_output(&["dpkg", "--print-architecture"])
-            .map(|a| a.trim().to_string())
+    /// The guest's Debian architecture (`dpkg --print-architecture`); None
+    /// on a guest without dpkg (an Arch lima guest).
+    fn guest_deb_arch(&self) -> Result<Option<String>> {
+        let arch = self.ssh_output(&[
+            "sh",
+            "-c",
+            "! command -v dpkg >/dev/null || dpkg --print-architecture",
+        ])?;
+        Ok((!arch.is_empty()).then_some(arch))
     }
 
     /// `ssf vm upgrade [VERSION]`: install that release's package in the
     /// running guest (or `deb`, a local package) and restart its daemon,
     /// not the VM. A guest without the package adopts it this way too.
     pub fn upgrade(&self, version: Option<&str>, deb: Option<&Path>) -> Result<()> {
-        if self.backend() != BackendKind::Firecracker {
-            bail!(
-                "`ssf vm upgrade` supports Firecracker guests only for now; a {} guest runs the ssf the host copies in at each start (`ssf vm restart`)",
-                self.backend()
-            );
-        }
         if !self.ssh_ok() {
             bail!("the VM is not reachable; `ssf vm start` first");
         }
-        let arch = self.guest_deb_arch()?;
-        if arch != "amd64" {
+        let Some(arch) = self.guest_deb_arch()? else {
             bail!(
-                "no release ssf package for {arch}; the guest runs the ssf binary the host copies in at each start"
+                "the guest has no dpkg (an Arch lima guest): it runs the ssf the host copies in at each start (`ssf vm restart`). `ssf vm build --force` and `ssf vm start` move it to Ubuntu, discarding what was installed on its root"
             );
-        }
+        };
         let deb = match deb {
             Some(deb) => deb.to_path_buf(),
             None => {
                 let version = version.unwrap_or(env!("CARGO_PKG_VERSION"));
-                self.guest_deb(version.strip_prefix('v').unwrap_or(version))?
+                self.guest_deb(version.strip_prefix('v').unwrap_or(version), &arch)?
             }
         };
         self.install_guest_deb(&deb)?;

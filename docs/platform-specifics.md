@@ -398,11 +398,16 @@ with `ssf vm restart`; an interrupted host acknowledgement is finished with
 configuration and credentials on every later boot, and ordinary edits need
 no sync.
 
-**An older Firecracker root boots as it is.** A root built by an older ssf
-(0.18 or earlier) is started unchanged, and the first start installs the
-client's ssf package in the guest once, over SSH; its installed packages,
-`/etc` changes and Tailscale enrolment are kept. From then on upgrading the
-host leaves the guest alone, and `ssf vm upgrade` upgrades it.
+**An older guest root boots as it is.** A root built by an older ssf
+(0.18 or earlier), under any backend, is started unchanged, and the first
+start installs the client's ssf package in the guest once, over SSH; its
+installed packages, `/etc` changes and Tailscale enrolment are kept. From
+then on upgrading the host leaves the guest alone, and `ssf vm upgrade`
+upgrades it. The exception is an x86_64 lima guest from an older ssf, which
+runs Arch Linux: it has no dpkg, so it keeps taking the host's binary at
+every start. `ssf vm build --force` then `ssf vm start` moves it to Ubuntu
+LTS; that fresh root loses whatever was installed on the old one, while the
+data disk stays (`ssf vm reset` alone re-creates it as Arch).
 
 **An incompatible guest root is refused before boot** rather than patched
 in place: a root that is not Ubuntu 24.04, or whose seed script predates

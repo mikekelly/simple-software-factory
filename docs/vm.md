@@ -203,11 +203,14 @@ writes `/etc/ssf-image-built` on success. `ssf vm build` waits for that marker
 and prints the end of the log if provisioning fails. The host's own
 distribution never determines the guest's.
 
-Under lima the guest OS follows the architecture: on x86_64 the Arch Linux
-cloud image, on aarch64 Ubuntu LTS, because Arch has no official aarch64 cloud
-image. `[vm] image` names a cloud-init image of your own instead; it has to be
-Arch or Debian/Ubuntu, since the provisioning script installs with `pacman` or
-`apt-get`.
+Under lima the guest is Ubuntu LTS on both x86_64 and aarch64. `[vm] image`
+names a cloud-init image of your own instead; it has to be Debian/Ubuntu (or
+Arch, since the provisioning script installs with `apt-get` or `pacman`, but
+an Arch guest cannot install the ssf package, see below). An x86_64 lima
+instance built by an older ssf runs Arch Linux and keeps it: `ssf vm reset`
+re-creates it from the same template, and only `ssf vm build --force` then
+`ssf vm start` moves it to Ubuntu, with a fresh root that loses whatever was
+installed on the old one (the data disk stays).
 
 Either way the script upgrades the base and installs `openssh`, `sudo`, `git`,
 a current GitHub CLI from its own apt repository (`cli.github.com/packages`;
@@ -220,20 +223,22 @@ herdr, and herdr's agent integrations for the agents present. The list lives in
 edit the copy and run `SSF_VM_DIR=<copy> ssf vm build --force`; a file edited
 under the installed directory is overwritten by the next package upgrade.
 
-The guest runs `ssf` from its own `ssf` package (the release `.deb`), so
-upgrading the host does not change the guest's version. The first start of a
-Firecracker root without the package (a new image, or one from 0.18 or
-earlier) installs this client's release package in it once, over SSH, keeping
-everything else on the root; after that `ssf vm upgrade [VERSION]` (default:
-the client's version), or `ssf vm upgrade --deb PATH` for a local package,
-installs it in the running guest and restarts only the guest daemon, not the
-VM (a guest still without the package adopts it the same way); `apt` in the
-guest works too. The package also carries the guest's boot
-scripts, so they follow it. A guest without the package (lima and incus
-guests, and Firecracker guests other than x86_64, which have no release
-package) still runs the host's binary, copied in at every start, and so does
-any guest while `[vm] guest_binary` is set. `ssf vm upgrade` is Firecracker
-only for now. herdr is installed when the guest is
+The guest runs `ssf` from its own `ssf` package (the release `.deb` for its
+architecture, amd64 or arm64), so upgrading the host does not change the
+guest's version. This holds under every backend. The first start of a root
+without the package (a new root, or one from 0.18 or earlier) installs this
+client's release package in it once, over SSH, keeping everything else on the
+root. If that fails, the start only warns and the guest keeps the copied-in
+binary until `ssf vm upgrade` succeeds. After that `ssf vm upgrade [VERSION]`
+(default: the client's version), or `ssf vm upgrade --deb PATH` for a local
+package, installs it in the running guest and restarts only the guest daemon,
+not the VM (a guest still without the package adopts it the same way); `apt`
+in the guest works too. The package also carries the guest's boot scripts, so
+they follow it. A guest without dpkg (an Arch lima guest) cannot take the
+package: it still runs the host's binary, copied in at every start, and `ssf
+vm upgrade` refuses it. Any guest runs the copied-in binary while `[vm]
+guest_binary` is set.
+herdr is installed when the guest is
 provisioned, so a newer host herdr reaches an existing guest through
 `ssf vm reset`, not through a restart. On a Mac the host's binaries cannot run
 in the Linux guest: the guest's `ssf` is `[vm] guest_binary` when set (its

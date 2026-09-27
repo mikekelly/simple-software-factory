@@ -343,15 +343,18 @@ failure resumes from the build. The manual steps it automates:
    `ssf-X.Y.Z-linux-x86_64` (a musl build via `packaging/linux/build.sh`
    and nfpm), `ssf-X.Y.Z-1-x86_64.pkg.tar.zst` (from
    `packaging/release/PKGBUILD` in an Arch container, the PKGBUILD
-   Omarchy's repository builds) and, best effort, the bare aarch64 client and
-   server binaries. The aarch64 job runs natively on GitHub's ARM runner and
-   uses its musl compiler so bundled C dependencies and Rust use the same libc
-   target and architecture. The packages remain x86_64 only, like the
-   microVM image. A run
+   Omarchy's repository builds) and, best effort, the aarch64 builds:
+   `ssf_X.Y.Z-1_arm64.deb`, `ssf-X.Y.Z-1.aarch64.rpm` and the bare client and
+   server binaries. The aarch64 job runs `packaging/linux/build.sh` natively on
+   GitHub's ARM runner and uses its musl compiler so bundled C dependencies
+   and Rust use the same libc target and architecture. VM guests install the
+   `.deb` of their architecture (`ssf vm upgrade`), so an arm64 guest needs
+   the arm64 one. A run
    started by hand
    (`workflow_dispatch`) builds the same from the working tree and leaves
    workflow artifacts, no release. Locally, `packaging/linux/build.sh`
-   builds the .deb, .rpm and the bare binary into `packaging/linux/dist/`
+   builds the .deb, .rpm and the bare binary for the machine's architecture
+   into `packaging/linux/dist/`
    (it needs `nfpm` and the musl target, and says so).
    The same tag runs `.github/workflows/homebrew.yml`, which renders
    `packaging/homebrew/ssf.rb` (the formula's source of truth; the
@@ -365,8 +368,10 @@ failure resumes from the build. The manual steps it automates:
    `ssf-X.Y.Z-linux-x86_64` and `ssf-X.Y.Z-linux-aarch64`, as the guest
    binary on a Mac, so they must be attached with exactly those names:
    `release.yml` does that, and when its best-effort aarch64 job failed,
-   `gh release upload vX.Y.Z ssf-X.Y.Z-linux-aarch64` adds the missing
-   one by hand.
+   `gh release upload vX.Y.Z ssf-X.Y.Z-linux-aarch64
+   ssf-server-X.Y.Z-linux-aarch64 ssf_X.Y.Z-1_arm64.deb` adds the missing
+   files by hand (`packaging/linux/build.sh` on an aarch64 Linux machine
+   builds them).
 2. In `packaging/release/`: `pkgver=X.Y.Z`, `pkgrel=1`, `updpkgsums`
    (downloads the tag tarball and writes its sha256; it needs the
    repository to be public, or the tarball fetched with a token into

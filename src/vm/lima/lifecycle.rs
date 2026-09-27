@@ -306,7 +306,7 @@ impl Vm {
         // copy overwrites it below when both are unrepaired.
         let mut unrepaired = None;
         if plan.template
-            && let Err(e) = self.write_template(false)
+            && let Err(e) = self.rewrite_template_keeping_base()
         {
             warn!(
                 "could not rewrite {}: {e:#}; that file is what `ssf vm reset` creates the next instance from, so it is not left behind quietly",
@@ -390,6 +390,20 @@ impl Vm {
     pub(in crate::vm) fn write_template(&self, format_disk: bool) -> Result<()> {
         std::fs::write(self.template_path(), self.lima_template(format_disk)?)
             .with_context(|| format!("writing {}", self.template_path().display()))
+    }
+
+    /// The stale-format repair's rewrite: like `write_template(false)`, but
+    /// an Arch base written by an older ssf is kept, so `ssf vm reset`
+    /// re-creates the instance as it was; only `ssf vm build --force`
+    /// moves it to Ubuntu.
+    fn rewrite_template_keeping_base(&self) -> Result<()> {
+        const ARCH_BASE: &str = "template:_images/archlinux";
+        let path = self.template_path();
+        let mut t = self.lima_template(false)?;
+        if std::fs::read_to_string(&path).is_ok_and(|old| old.contains(ARCH_BASE)) {
+            t = t.replace(crate::vm::lima::BASE_TEMPLATE, ARCH_BASE);
+        }
+        std::fs::write(&path, t).with_context(|| format!("writing {}", path.display()))
     }
 
     /// Turn `format` off for the data disk in the instance's own copy of
@@ -573,6 +587,12 @@ impl Vm {
             Why::FoundStale,
         ) {
             warn!("{}", self.stale_format_note(&yaml));
+        }
+        // Never fails the start: the guest runs the copied-in binary meanwhile.
+        if let Err(e) = self.adopt_guest_package() {
+            warn!(
+                "could not install the ssf package in the guest ({e:#}); `ssf vm upgrade` retries"
+            );
         }
         let daemon = self.wait_for_daemon(Duration::from_secs(60)).await;
         self.report_up(daemon.as_deref());
