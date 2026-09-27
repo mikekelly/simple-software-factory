@@ -1,7 +1,7 @@
 use super::prelude::*;
 use super::*;
 
-pub(super) fn ui_cmd(command: UiCommand) -> Result<()> {
+pub(super) async fn ui_cmd(command: UiCommand) -> Result<()> {
     match command {
         UiCommand::Install { quiet } => factory_ui::install_all(quiet),
         UiCommand::Uninstall => factory_ui::uninstall_all(),
@@ -14,13 +14,17 @@ pub(super) fn ui_cmd(command: UiCommand) -> Result<()> {
             ServiceCommand::Disable => {
                 factory_ui::set_service_enabled(false)?;
                 println!("service disabled");
-                Ok(())
+                stop_supervised_vm().await
             }
             ServiceCommand::Toggle => {
                 let next = !factory_ui::service_enabled();
                 factory_ui::set_service_enabled(next)?;
                 println!("service {}", if next { "enabled" } else { "disabled" });
-                Ok(())
+                if next {
+                    Ok(())
+                } else {
+                    stop_supervised_vm().await
+                }
             }
             ServiceCommand::IsEnabled => {
                 if factory_ui::service_enabled() {
@@ -52,6 +56,21 @@ pub(super) fn ui_cmd(command: UiCommand) -> Result<()> {
             }
         },
     }
+}
+
+/// Stopping the service ends only the supervisor: the VM has a lifetime of
+/// its own, so that restarting the service (a package upgrade does) leaves
+/// the guest running. Disabling the service is the explicit "turn the
+/// factory off", so it stops the VM as well.
+async fn stop_supervised_vm() -> Result<()> {
+    if factory_vm::in_guest() {
+        return Ok(());
+    }
+    let cfg = Config::load()?;
+    if !cfg.vm.enabled {
+        return Ok(());
+    }
+    factory_vm::Vm::new(&cfg).stop().await
 }
 
 /// Does this doctor report the VM backend's host tooling?

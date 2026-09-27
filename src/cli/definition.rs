@@ -30,6 +30,10 @@ pub(super) struct ServerCli {
     /// Do a single engine pass and exit.
     #[arg(long)]
     pub(super) once: bool,
+    /// Stop every VM this host's ssf manages, and exit: package removal
+    /// uses it, since stopping a service leaves its VM running.
+    #[arg(long, hide = true)]
+    pub(super) stop_vm: bool,
 }
 
 #[derive(Subcommand)]

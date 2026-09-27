@@ -1355,6 +1355,20 @@ fn presentation(payload: &Value) -> Result<Value> {
     }
     let mut dashboard = dashboard.clone();
     dashboard["build"] = json!(BUILD);
+    // The factory this server shows may run another release: a VM guest
+    // is upgraded on its own, by `ssf vm upgrade`. A factory from before
+    // `version` was published cannot be compared here.
+    let vm = payload["host_vm"].is_object()
+        || crate::server_catalog::selected_vm_context()
+            .ok()
+            .flatten()
+            .is_some();
+    dashboard["version_note"] = json!(
+        payload["version"]
+            .as_str()
+            .filter(|factory| *factory != env!("CARGO_PKG_VERSION"))
+            .map(|factory| crate::cli::version_skew_hint(factory, env!("CARGO_PKG_VERSION"), vm))
+    );
     dashboard["terminal_input"] = json!(TERMINAL_INPUT.load(std::sync::atomic::Ordering::Relaxed));
     Ok(dashboard)
 }
@@ -1742,9 +1756,34 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         let mut served = dashboard.clone();
         served["build"] = json!(BUILD);
         served["terminal_input"] = json!(false);
+        served["version_note"] = Value::Null;
         assert_eq!(
             presentation(&json!({"dashboard":dashboard})).unwrap(),
             served
+        );
+        // The factory on this server's release says nothing; a guest on
+        // another one is named, with the remedy.
+        let same = json!({"dashboard":dashboard,"version":env!("CARGO_PKG_VERSION")});
+        assert!(presentation(&same).unwrap()["version_note"].is_null());
+        let note = presentation(&json!({"dashboard":dashboard,"version":"0.0.1","host_vm":{}}))
+            .unwrap()["version_note"]
+            .clone();
+        assert_eq!(
+            note,
+            format!(
+                "the guest runs ssf 0.0.1 and this host {}: run `ssf vm upgrade`",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        let other = presentation(&json!({"dashboard":dashboard,"version":"0.0.1"})).unwrap()
+            ["version_note"]
+            .clone();
+        assert!(
+            other
+                .as_str()
+                .unwrap()
+                .starts_with("the server runs ssf 0.0.1"),
+            "{other}"
         );
         assert!(BUILD.starts_with(concat!("ssf ", env!("CARGO_PKG_VERSION"), " \u{b7} ")));
         assert!(presentation(&json!({"sessions":[]})).is_err());

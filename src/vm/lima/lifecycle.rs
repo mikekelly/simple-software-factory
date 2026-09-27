@@ -224,8 +224,19 @@ impl Vm {
     /// same work plus a margin (see [`OWN_TIMEOUT_MARGIN`]): lima times
     /// the boot out first and says so; ssf's bound is only for a
     /// `limactl` that never returns at all.
+    ///
+    /// Where there is a systemd user manager, `limactl start` runs in the
+    /// scope `ssf-vm-<name>-lima.scope`, and so does the host agent it
+    /// leaves running (and the VM under it): otherwise they would sit in
+    /// the cgroup of the `ssf@NAME` supervisor that started them, and a
+    /// restart of that service would kill the guest.
     pub(in crate::vm) fn limactl_start(&self, args: &[&str]) -> Result<()> {
-        self.limactl_run_within(args, PROVISION_TIMEOUT + OWN_TIMEOUT_MARGIN)
+        let mut cmd = self.limactl();
+        cmd.args(args);
+        if crate::vm::scopes_available() {
+            cmd = crate::vm::in_own_scope(&cmd, &self.scope_name("lima"));
+        }
+        self.limactl_command_within(cmd, args, PROVISION_TIMEOUT + OWN_TIMEOUT_MARGIN)
     }
 
     /// Put `format: false` back where a build that did not reach the end

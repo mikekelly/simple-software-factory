@@ -347,8 +347,17 @@ the platform's current interface before configuring it; `ssf skill liaison`
 
 ## Upgrading from an older ssf
 
-Applies only on a machine whose ssf predates named servers. A fresh
+Applies only on a machine whose ssf predates named servers, or (the first
+paragraph) whose VM was started by ssf 0.19 or earlier. A fresh
 installation needs none of this.
+
+**A VM started by ssf 0.19 or earlier runs inside its service.** Its
+Firecracker and gvproxy (or lima host agent) are in the `ssf@NAME` service's
+cgroup, so restarting that service reboots the guest. The Arch package's
+upgrade therefore leaves such a service running rather than restarting it,
+and says so. Restart it once when a guest reboot suits (`systemctl --user
+restart ssf@NAME`); from then on the VM runs in scopes of its own and later
+upgrades restart only the supervisor.
 
 **One singleton service became one service per target.** The old
 installation-wide unit is `ssf.service` (or the Homebrew `ssf` service on

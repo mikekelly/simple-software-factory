@@ -523,8 +523,20 @@ impl Catalog {
     /// Compatibility for an installation-wide process with no explicit target.
     /// It may supervise one owned VM, but must never guess between several.
     pub(crate) fn sole_owned_vm_context() -> Result<Option<SelectedVmContext>> {
+        let contexts = Self::owned_vm_contexts()?;
+        match contexts.as_slice() {
+            [] => Ok(None),
+            [context] => Ok(Some(context.clone())),
+            _ => bail!(
+                "multiple managed VM servers are configured; this process needs an explicit server target"
+            ),
+        }
+    }
+
+    /// Every VM target whose settings the catalog owns.
+    pub(crate) fn owned_vm_contexts() -> Result<Vec<SelectedVmContext>> {
         let catalog = Self::load()?;
-        let contexts = catalog
+        Ok(catalog
             .servers
             .iter()
             .filter_map(|(name, target)| match target {
@@ -537,14 +549,7 @@ impl Catalog {
                 }),
                 _ => None,
             })
-            .collect::<Vec<_>>();
-        match contexts.as_slice() {
-            [] => Ok(None),
-            [context] => Ok(Some(context.clone())),
-            _ => bail!(
-                "multiple managed VM servers are configured; this process needs an explicit server target"
-            ),
-        }
+            .collect())
     }
 
     /// Legacy local and VM routes must still describe the factory selected by

@@ -376,7 +376,7 @@ impl Vm {
             .ssh_port
             .checked_add(1)
             .unwrap_or_else(|| self.cfg.ssh_port.saturating_sub(1));
-        let gv = self.spawn_gvproxy(&boot, port)?;
+        let gv = self.spawn_gvproxy(&boot, port, None)?;
         let result = self.provision(&boot, &console).await;
         kill(gv, libc::SIGTERM);
         result?;
@@ -530,7 +530,12 @@ impl Vm {
         })
     }
 
-    pub(in crate::vm) fn spawn_gvproxy(&self, boot: &BootFiles, ssh_port: u16) -> Result<u32> {
+    pub(in crate::vm) fn spawn_gvproxy(
+        &self,
+        boot: &BootFiles,
+        ssh_port: u16,
+        scope: Option<&str>,
+    ) -> Result<u32> {
         let net = format!("unix://{}_{NET_PORT}", boot.vsock.display());
         let api = format!("unix://{}", boot.gv_api.display());
         let mut cmd = Command::new(self.gvproxy());
@@ -538,7 +543,7 @@ impl Vm {
             .args(["-ssh-port", &ssh_port.to_string()])
             .arg("-log-file")
             .arg(&boot.gv_log);
-        let pid = spawn_detached(&mut cmd, None)?;
+        let pid = spawn_detached(&mut cmd, None, scope)?;
         let deadline = Instant::now() + Duration::from_secs(5);
         while !boot
             .vsock
@@ -661,16 +666,31 @@ impl Vm {
                 None,
             ))?,
         )?;
+        // A gvproxy left from a guest that exited with no supervisor
+        // watching holds the ssh port and its scope's name: a new one
+        // could only fail beside it.
+        if let Some(gv) = self.gvproxy_pid() {
+            info!(pid = gv, "ending a gvproxy left from an earlier boot");
+            end_process(gv, "gvproxy");
+        }
         clean_sockets(&boot);
         let _ = std::fs::remove_file(self.console_log());
-        let gv = self.spawn_gvproxy(&boot, self.cfg.ssh_port)?;
+        // Each in a systemd scope of its own where there is a user manager
+        // (`ssf-vm-<name>-gvproxy.scope`, `ssf-vm-<name>-firecracker.scope`):
+        // the VM's lifetime is not the supervising service's, so restarting
+        // `ssf@NAME` (a package upgrade does) leaves the guest running.
+        let gv = self.spawn_gvproxy(&boot, self.cfg.ssh_port, Some(&self.scope_name("gvproxy")))?;
         std::fs::write(self.gv_pid(), gv.to_string())?;
         let mut cmd = Command::new(self.firecracker());
         cmd.arg("--api-sock")
             .arg(&boot.api)
             .arg("--config-file")
             .arg(&boot.config);
-        let fc = match spawn_detached(&mut cmd, Some(&self.console_log())) {
+        let fc = match spawn_detached(
+            &mut cmd,
+            Some(&self.console_log()),
+            Some(&self.scope_name("firecracker")),
+        ) {
             Ok(pid) => pid,
             Err(e) => {
                 kill(gv, libc::SIGTERM);
@@ -698,7 +718,7 @@ impl Vm {
     pub(in crate::vm) async fn fc_stop(&self) -> Result<()> {
         let Some(fc) = self.firecracker_pid() else {
             if let Some(gv) = self.gvproxy_pid() {
-                kill(gv, libc::SIGTERM);
+                end_process(gv, "gvproxy");
             }
             println!("VM {} is not running", self.cfg.name);
             return Ok(());
@@ -724,7 +744,7 @@ impl Vm {
             kill(fc, libc::SIGKILL);
         }
         if let Some(gv) = self.gvproxy_pid() {
-            kill(gv, libc::SIGTERM);
+            end_process(gv, "gvproxy");
         }
         let _ = std::fs::remove_file(self.fc_pid());
         let _ = std::fs::remove_file(self.gv_pid());
@@ -733,9 +753,32 @@ impl Vm {
         Ok(())
     }
 
-    /// `ssf-server` on the host with `[vm] enabled`: start the VM and stay
-    /// until it ends or we are told to stop, shutting it down cleanly then.
+    /// `ssf-server` on the host with `[vm] enabled`: start the VM, or
+    /// reattach to it when it is already running, and stay until it ends
+    /// or we are told to stop. The VM has a lifetime of its own: being told
+    /// to stop (`systemctl --user stop|restart ssf@NAME`, a package upgrade)
+    /// ends only this supervisor and leaves the guest running. Only `ssf vm
+    /// stop|restart` and `ssf ui service disable` stop the guest. A VM that
+    /// shares this service's cgroup (started by an older ssf, or where no
+    /// systemd scope could be made) would be killed with the service, so
+    /// that one is still shut down cleanly first.
     pub async fn supervise(&self, host: &Config) -> Result<()> {
+        if self.running() {
+            info!("the VM is already running; supervising it");
+            // Firecracker without its gvproxy has no network and no ssh
+            // (gvproxy died on its own, or an older ssf's service took it
+            // down): start it again beside the running guest, whose
+            // forwarder reconnects.
+            if self.backend() == BackendKind::Firecracker && self.gvproxy_pid().is_none() {
+                warn!("the running VM has no gvproxy; starting one");
+                self.restart_gvproxy()?;
+            }
+            // A guest still booting (the service restarted during its
+            // boot) answers shortly; `start` needs it to answer.
+            if let Err(e) = self.wait_for_ssh(Duration::from_secs(90)).await {
+                warn!("{e:#}");
+            }
+        }
         self.start(host).await?;
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
@@ -768,7 +811,7 @@ impl Vm {
                         Some(false) => {
                             warn!("the VM exited");
                             if let Some(gv) = self.gvproxy_pid() {
-                                kill(gv, libc::SIGTERM);
+                                end_process(gv, "gvproxy");
                             }
                             bail!(
                                 "the VM exited; see {}",
@@ -781,7 +824,48 @@ impl Vm {
                 }
             }
         }
-        info!("stopping the VM");
-        self.stop().await
+        if self.host_pids().into_iter().any(shares_our_cgroup) {
+            info!("stopping the VM, which runs inside this service and would die with it");
+            return self.stop().await;
+        }
+        info!("leaving the VM running; `ssf vm stop` stops it");
+        Ok(())
+    }
+
+    /// The host processes that are the running VM, where ssf can name
+    /// them: Firecracker's and gvproxy's, or lima's host agent. Incus
+    /// containers belong to the Incus daemon.
+    pub(in crate::vm) fn host_pids(&self) -> Vec<u32> {
+        match self.backend() {
+            BackendKind::Firecracker => [self.firecracker_pid(), self.gvproxy_pid()]
+                .into_iter()
+                .flatten()
+                .collect(),
+            BackendKind::Lima => self
+                .lima_instance()
+                .ok()
+                .flatten()
+                .and_then(|inst| std::fs::read_to_string(Path::new(&inst.dir).join("ha.pid")).ok())
+                .and_then(|pid| pid.trim().parse().ok())
+                .into_iter()
+                .collect(),
+            BackendKind::Incus => Vec::new(),
+        }
+    }
+
+    /// A new gvproxy for the running Firecracker VM, in place of one that
+    /// is gone: only its own sockets are cleared, never Firecracker's.
+    pub(in crate::vm) fn restart_gvproxy(&self) -> Result<()> {
+        let boot = self.boot_files(&self.dir);
+        let _ = std::fs::remove_file(&boot.gv_api);
+        let _ = std::fs::remove_file(boot.vsock.with_extension(format!("sock_{NET_PORT}")));
+        let gv = self.spawn_gvproxy(&boot, self.cfg.ssh_port, Some(&self.scope_name("gvproxy")))?;
+        std::fs::write(self.gv_pid(), gv.to_string())?;
+        Ok(())
+    }
+
+    /// The name of the systemd scope a VM process of this VM runs in.
+    pub(in crate::vm) fn scope_name(&self, what: &str) -> String {
+        format!("ssf-vm-{}-{what}", self.cfg.name)
     }
 }

@@ -225,19 +225,23 @@ under the installed directory is overwritten by the next package upgrade.
 
 The guest runs `ssf` from its own `ssf` package (the release `.deb` for its
 architecture, amd64 or arm64), so upgrading the host does not change the
-guest's version. This holds under every backend. The first start of a root
-without the package (a new root, or one from 0.18 or earlier) installs this
-client's release package in it once, over SSH, keeping everything else on the
-root. If that fails, the start only warns and the guest keeps the copied-in
-binary until `ssf vm upgrade` succeeds. After that `ssf vm upgrade [VERSION]`
-(default: the client's version), or `ssf vm upgrade --deb PATH` for a local
-package, installs it in the running guest and restarts only the guest daemon,
-not the VM (a guest still without the package adopts it the same way); `apt`
-in the guest works too. The package also carries the guest's boot scripts, so
-they follow it. A guest without dpkg (an Arch lima guest) cannot take the
-package: it still runs the host's binary, copied in at every start, and `ssf
-vm upgrade` refuses it. Any guest runs the copied-in binary while `[vm]
-guest_binary` is set.
+guest's version, and it does not restart the VM either: the guest is upgraded
+only by `ssf vm upgrade`, when the person chooses. Until then `ssf status`
+prints a `version:` line comparing the two, `ssf doctor` names `ssf vm
+upgrade`, and a forwarded command that fails says "the guest runs ssf X and
+this host Y: run `ssf vm upgrade`". This holds under every backend. The first
+start of a root without the package (a new root, or one from 0.18 or earlier)
+installs this client's release package in it once, over SSH, keeping
+everything else on the root. If that fails, the start only warns and the
+guest keeps the copied-in binary until `ssf vm upgrade` succeeds. After that
+`ssf vm upgrade [VERSION]` (default: the client's version), or `ssf vm
+upgrade --deb PATH` for a local package, installs it in the running guest and
+restarts only the guest daemon, not the VM (a guest still without the package
+adopts it the same way); `apt` in the guest works too. The package also
+carries the guest's boot scripts, so they follow it. A guest without dpkg (an
+Arch lima guest) cannot take the package: it still runs the host's binary,
+copied in at every start, and `ssf vm upgrade` refuses it. Any guest runs the
+copied-in binary while `[vm] guest_binary` is set.
 herdr is installed when the guest is
 provisioned, so a newer host herdr reaches an existing guest through
 `ssf vm reset`, not through a restart. On a Mac the host's binaries cannot run
@@ -400,10 +404,30 @@ copied from the image only when the data disk is new, so a rebuilt image's
 hooks reach an existing VM only through `ssf vm destroy`, or by hand).
 `ssf vm destroy --yes` removes the VM and all its disks.
 
-Firecracker and gvproxy are started in a session of their own, and lima's host
-agent runs detached, so a VM started with `ssf vm start` outlives that shell.
-The service is different: `ssf-server` starts the VM if it is not up and owns
-it from then on, so stopping or restarting the service shuts the guest down
-cleanly. Moving an older installation's VM into the server catalog, and
+The VM has a lifetime of its own, independent of the `ssf` command and of the
+service that supervises it. Firecracker and gvproxy are started in a session
+of their own, and lima's host agent runs detached, so a VM started with
+`ssf vm start` outlives that shell. Where there is a systemd user manager
+they also run in scopes of their own, outside the service's cgroup:
+`ssf-vm-<name>-firecracker.scope` and `ssf-vm-<name>-gvproxy.scope`, or
+`ssf-vm-<name>-lima.scope` for lima's host agent and its VM
+(`systemctl --user list-units 'ssf-vm-*'` lists them). Incus containers
+belong to the Incus daemon. The service (`ssf-server`) starts the VM if it is
+not up, or reattaches to the one that is running (starting a new gvproxy
+beside a Firecracker VM whose gvproxy is gone), and watches it: a VM that
+exits is started again by the service's restart. Stopping or restarting the
+service (`systemctl --user stop|restart ssf@NAME`, a package upgrade)
+ends only the supervisor and leaves the guest and its sessions running.
+Only explicit actions stop the guest: `ssf vm stop`, `ssf vm restart`, and
+`ssf ui service disable`, which stops the service and then the VM. While the
+service is enabled it boots a guest that `ssf vm stop` stopped again, so
+disable the service to keep the VM down. Removing the package stops each
+target's service and then shuts down every VM ssf manages for that user
+(including one whose service was disabled by hand but whose scope still
+runs), and refuses the removal if a VM known to be running does not stop; a
+VM whose backend cannot be asked (lima or Incus uninstalled) only warns. A VM that runs inside the service's own cgroup (started
+by ssf 0.19 or earlier, or where no scope could be made, which the log
+warns about) would die with the service, so the supervisor still shuts
+that one down cleanly when it is stopped. Moving an older installation's VM into the server catalog, and
 recovering an incompatible root, are in
 [platform-specifics.md#upgrading-from-an-older-ssf](platform-specifics.md#upgrading-from-an-older-ssf).

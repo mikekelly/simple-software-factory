@@ -943,6 +943,18 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
             crate::platform::service_hint("stop"),
         ),
     }
+    // Stopping the service ends only its supervisor: a VM has a lifetime of
+    // its own, and the daemon inside it keeps working. Shut it down here,
+    // for the same reason as above. A VM whose state cannot be read is left
+    // to the destroy step, which says what it found.
+    if facts.vm_mode
+        && vm.running_state() == Some(true)
+        && let Err(e) = vm.stop().await
+    {
+        bail!(
+            "{e:#}\nthe steps after this one may not run while the guest's daemon may still be working, so none of them has run. Stop the VM by hand (`ssf vm stop`), then run this again"
+        );
+    }
 
     println!("==> sign the bot out");
     if !facts.bot_signed_in() {

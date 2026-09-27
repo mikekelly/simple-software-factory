@@ -108,6 +108,17 @@ impl Vm {
     pub(in crate::vm) fn limactl_run_within(&self, args: &[&str], limit: Duration) -> Result<()> {
         let mut cmd = self.limactl();
         cmd.args(args);
+        self.limactl_command_within(cmd, args, limit)
+    }
+
+    /// Run `cmd`, a `limactl <args>` possibly wrapped (see
+    /// [`Vm::limactl_start`]), with this terminal, bounded by `limit`.
+    pub(in crate::vm) fn limactl_command_within(
+        &self,
+        mut cmd: Command,
+        args: &[&str],
+        limit: Duration,
+    ) -> Result<()> {
         let label = limactl_label(args);
         let mut child = cmd
             .spawn()

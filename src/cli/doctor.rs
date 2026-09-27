@@ -72,6 +72,7 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
             client_version.as_deref(),
             Some(env!("CARGO_PKG_VERSION")),
             target.as_deref(),
+            crate::vm::in_guest(),
         ) {
             problems.set(problems.get() + 1);
         }
@@ -1117,12 +1118,20 @@ pub(super) fn report_versions(
     client: Option<&str>,
     server: Option<&str>,
     target: Option<&str>,
+    vm: bool,
 ) -> bool {
     let client = client.unwrap_or("unknown");
     let server_version = server.unwrap_or("unknown");
     let server = target
         .map(|target| format!("server {target:?} version"))
         .unwrap_or_else(|| "server version".into());
+    // A VM's guest is upgraded on its own, by `ssf vm upgrade`, never by
+    // upgrading the host: say so wherever the two differ.
+    let remedy = if vm {
+        "`ssf vm upgrade` installs this client's release in the guest"
+    } else {
+        "update the client or server to the same release and restart the server"
+    };
     match version_compatibility(client, server_version) {
         VersionCompatibility::Exact => {
             record(
@@ -1135,7 +1144,7 @@ pub(super) fn report_versions(
             record(
                 Level::Warn,
                 format!(
-                    "client version {client}; {server} {server_version}; patch-level differences are compatible, but update the client or server to the same release and restart the server"
+                    "client version {client}; {server} {server_version}; patch-level differences are compatible, but {remedy}"
                 ),
             );
             false
@@ -1143,9 +1152,7 @@ pub(super) fn report_versions(
         VersionCompatibility::Incompatible => {
             record(
                 Level::Fail,
-                format!(
-                    "client version {client}; {server} {server_version}; update the client or server to the same release and restart the server (for a VM, `ssf vm upgrade`)"
-                ),
+                format!("client version {client}; {server} {server_version}; {remedy}"),
             );
             true
         }
@@ -1169,6 +1176,19 @@ pub(super) fn version_skew_warning(client: &str, server: &str, vm: bool) -> Opti
             "update one of them to the same release"
         }
     ))
+}
+
+/// What a command that failed against a server on another release says,
+/// and what `ssf status` says of the difference: which release each side
+/// runs and how to bring them together.
+pub(crate) fn version_skew_hint(server: &str, client: &str, vm: bool) -> String {
+    if vm {
+        format!("the guest runs ssf {server} and this host {client}: run `ssf vm upgrade`")
+    } else {
+        format!(
+            "the server runs ssf {server} and this client {client}: upgrade ssf on the server to the same release"
+        )
+    }
 }
 
 /// SSF's client/server command surface may change at a minor release. Builds
@@ -1293,6 +1313,19 @@ mod version_tests {
             version_compatibility("1.2.3-dev", "1.2.3"),
             VersionCompatibility::Patch
         );
+    }
+
+    /// A VM's guest is upgraded on its own, so skew there names
+    /// `ssf vm upgrade`; any other server is upgraded where it runs.
+    #[test]
+    fn version_skew_names_the_remedy_for_the_kind_of_server() {
+        assert_eq!(
+            version_skew_hint("0.19.0", "0.20.0", true),
+            "the guest runs ssf 0.19.0 and this host 0.20.0: run `ssf vm upgrade`"
+        );
+        let other = version_skew_hint("0.19.0", "0.20.0", false);
+        assert!(other.contains("the server runs ssf 0.19.0"), "{other}");
+        assert!(!other.contains("vm upgrade"), "{other}");
     }
 
     #[test]

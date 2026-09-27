@@ -8,9 +8,12 @@ Documentation=https://github.com/mikekelly/simple-software-factory
 [Service]
 Type=simple
 ExecStart=/usr/bin/ssf-server
-# With `[vm] enabled`, `ssf-server` starts a Firecracker VM in a session of its
-# own and shuts it down cleanly on SIGTERM; only the main process gets the
-# signal, the VM is told by ssf.
+# With `[vm] enabled`, `ssf-server` only supervises the VM. Firecracker and
+# gvproxy (or lima's host agent) run in systemd scopes of their own
+# (ssf-vm-<name>-*.scope), so stopping or restarting this service, as a
+# package upgrade does, leaves the guest running and a new `ssf-server`
+# reattaches to it. `ssf ui service disable` stops both, and so does package
+# removal.
 KillMode=mixed
 TimeoutStopSec=90
 # Any exit, a clean one included: systemd counts SIGTERM as success, so

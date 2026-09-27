@@ -224,23 +224,34 @@ The client and the server it talks to should be the same release.
 `ssf doctor` prints both and judges them: identical passes; a difference in
 the patch component alone is a warning; a different major or minor version
 fails, because the command surface may have changed between them. Other
-commands only warn, on stderr, about a major or minor difference.
+commands only warn, on stderr, about a major or minor difference, and a
+forwarded command that fails against a server on another release names both
+releases and the remedy (for a VM, "the guest runs ssf X and this host Y:
+run `ssf vm upgrade`"). For a VM target, `ssf status` prints a `version:`
+line comparing the guest with the host (`host_vm.host_version`,
+`host_vm.guest_version` and `host_vm.version_note` in `--json`), and the
+browser dashboard shows the same note once the guest publishes its version.
 
 Upgrade both sides to the same release:
 
 1. Upgrade the package on the machine that runs the client (the package
    manager on Linux, `brew upgrade ssf` on macOS, or replacing the
-   standalone binaries). Ask before running `sudo`. Package upgrades
-   restart active target services.
+   standalone binaries). Ask before running `sudo`. On Arch, package
+   upgrades restart active target services; a VM target's service only
+   supervises the VM, which keeps running and is reattached to, so sessions
+   are not interrupted (a service started by ssf 0.19 or earlier still holds
+   its VM, is left running, and reboots the guest once when restarted by
+   hand).
 2. For an SSH target, upgrade the remote machine the same way.
-3. For a VM target, upgrading the host leaves the guest's version alone:
-   `ssf --server NAME vm upgrade` installs the client's release in the
-   running guest and restarts only its daemon, keeping everything else
-   there (`--deb PATH` installs a local package instead). This works under
-   every backend. The exception is an Arch lima guest (x86_64, built by an
-   older ssf), which has no dpkg: `ssf vm restart` gives it the host's
-   binary. Avoid `ssf vm build --force` and `ssf vm reset` for upgrading:
-   a new root loses whatever was installed in the guest. `ssf skill vm`
+3. For a VM target, upgrading the host leaves the guest's version alone
+   until you choose: `ssf --server NAME vm upgrade` installs the client's
+   release in the running guest and restarts only its daemon, keeping
+   everything else there (`--deb PATH` installs a local package instead).
+   Until then `ssf status` and `ssf doctor` show the difference. This works
+   under every backend. The exception is an Arch lima guest (x86_64, built by
+   an older ssf), which has no dpkg: `ssf vm restart` gives it the host's
+   binary. Avoid `ssf vm build --force` and `ssf vm reset` for upgrading: a
+   new root loses whatever was installed in the guest. `ssf skill vm`
    (docs/vm.md) has the detail.
 4. Run `ssf --server NAME doctor` again; it should look as it did before.
 
@@ -254,9 +265,17 @@ person is upgrading an installation that predates named servers, see
 ssf --server NAME ui service disable
 ```
 
-That stops the service and keeps it from starting at login. Running agents
-are left where they are; their workspaces and everything on GitHub are
-untouched, and enabling the service again resumes delivery.
+That stops the service and keeps it from starting at login; for a VM
+target it also shuts the guest down cleanly. Running agents are left where
+they are; their workspaces and everything on GitHub are untouched, and
+enabling the service again resumes delivery.
+
+A VM has a lifetime of its own. `systemctl --user stop|restart
+ssf@NAME.service` (or `brew services` on macOS) stops or restarts only the
+host supervisor and leaves the guest, its daemon and its sessions running;
+the next supervisor reattaches to it. Only `ssf vm stop`, `ssf vm restart`
+and `ssf ui service disable` stop the guest, and while the service is
+enabled it starts a guest stopped by `ssf vm stop` again.
 
 To take the machine back to just the package, or off it entirely, read
 `ssf skill uninstall` (docs/uninstall.md).
