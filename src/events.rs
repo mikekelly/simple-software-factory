@@ -4,10 +4,12 @@
 //! login, gave a binding up or released its workspace, without the
 //! daemon's journal.
 //!
-//! Every post has the same shape: the `🤖 ssf` byline with the origin tag
-//! carrying `event=<name>` (`origin::Origin::event_line`), a blank line,
-//! then one fenced `ssf` block: a header line `ssf <doing what> <item>:`
-//! and `key: value` lines, one per line, no prose, no blank lines. The tag
+//! Every post has the same shape: the `🤖 ssf <doing what> <item>` byline
+//! with the origin tag carrying `event=<name>` (`origin::Origin::event_line`),
+//! a blank line, then one plain fenced block of `key: value` lines, one per
+//! line, no prose, no blank lines. (Posts made before #588 had a bare
+//! `🤖 ssf` byline and an `ssf` fence opening with the header line; they
+//! are still recognised.) The tag
 //! is how the rest of ssf tells such a post from a session's or a
 //! person's: it is never delivered to an agent and never counted as a
 //! session's post (`origin::scan`, `Engine::diff`). Posting is switched by
@@ -176,11 +178,18 @@ impl Event {
         }
     }
 
-    /// The fenced block: header, then `key: value` lines. `item_kind` is
-    /// `issue` or `pull request`.
+    /// What the post says happened, as its first line puts it after
+    /// `🤖 ssf`: `attaching agent to issue`. `item_kind` is `issue` or
+    /// `pull request`.
+    pub fn headline(&self, item_kind: &str) -> String {
+        self.header_and_lines(item_kind).0
+    }
+
+    /// The fenced block: `key: value` lines in a plain fence. `item_kind`
+    /// is `issue` or `pull request`.
     pub fn block(&self, item_kind: &str) -> String {
-        let (header, lines) = self.header_and_lines(item_kind);
-        let mut out = format!("```ssf\nssf {header}:\n");
+        let (_, lines) = self.header_and_lines(item_kind);
+        let mut out = String::from("```\n");
         for (key, val) in lines {
             out.push_str(&format!("{key}: {}\n", value(&val)));
         }
@@ -386,7 +395,6 @@ impl Launch {
         if let Some(c) = command {
             lines.push(("command", c));
         }
-        lines.push(("driver", self.driver.clone()));
         if let Some(b) = &self.branch {
             lines.push(("branch", short_branch(b)));
         }
@@ -439,12 +447,12 @@ fn value(v: &str) -> String {
     }
 }
 
-/// The whole comment: the byline line with the tag, a blank line, the
-/// block. `origin` is the item the comment goes on.
+/// The whole comment: the byline with the headline and the tag, a blank
+/// line, the block. `origin` is the item the comment goes on.
 pub fn comment(origin: &Origin, item_kind: &str, event: &Event) -> String {
     format!(
         "{}\n\n{}",
-        origin.event_line(event.name()),
+        origin.event_line(event.name(), &event.headline(item_kind)),
         event.block(item_kind)
     )
 }

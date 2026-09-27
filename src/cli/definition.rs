@@ -709,7 +709,7 @@ pub(super) enum RepoCommand {
         #[arg(long)]
         accept_anyone_risk: bool,
         /// Post the daemon's events (session attached, resumed, held, given up, released) on this
-        /// repository's items as short `ssf` blocks, overriding daemon.event_comments (default: on).
+        /// repository's items as short `🤖 ssf` comments, overriding daemon.event_comments (default: on).
         #[arg(long, value_name = "true|false")]
         event_comments: Option<bool>,
     },
@@ -757,7 +757,7 @@ pub(super) enum RepoCommand {
         #[arg(long)]
         accept_anyone_risk: bool,
         /// Post the daemon's events (session attached, resumed, held, given up, released) on this
-        /// repository's items as short `ssf` blocks, overriding daemon.event_comments.
+        /// repository's items as short `🤖 ssf` comments, overriding daemon.event_comments.
         #[arg(long, value_name = "true|false")]
         event_comments: Option<bool>,
         /// Commit author and committer name for this repository's agents (with --git-email); default: the [git] table, else the bot.

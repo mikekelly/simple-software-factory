@@ -179,6 +179,8 @@ fn a_scratch_session_does_not_get_its_own_posts_back() {
     let mut e = engine();
     e.cfg.repos = vec![repo()];
     let rendered = |key: &str, origin: Option<&str>| crate::prompt::Rendered {
+        actor: None,
+        at: None,
         key: key.into(),
         text: String::new(),
         origin: origin.map(str::to_string),

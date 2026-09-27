@@ -27,9 +27,8 @@ async fn a_session_at_a_login_prompt_is_blocked_told_and_held() {
     assert_eq!(
         posts[0].1,
         format!(
-            "🤖 ssf <!-- ssf: origin=o/r#5 event=blocked -->\n\n\
-                 ```ssf\n\
-                 ssf holding deliveries to agent on issue:\n\
+            "🤖 ssf holding deliveries to agent on issue <!-- ssf: origin=o/r#5 event=blocked -->\n\n\
+                 ```\n\
                  harness: Claude Code\n\
                  reason: not signed in\n\
                  fix: {}\n\
@@ -122,9 +121,8 @@ async fn a_blocked_session_is_started_again_once_the_login_is_back() {
     assert_eq!(posts.len(), 1, "{posts:?}");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=unblocked -->\n\n\
-             ```ssf\n\
-             ssf resuming deliveries to agent on issue:\n\
+        "🤖 ssf resuming deliveries to agent on issue <!-- ssf: origin=o/r#5 event=unblocked -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              held for: 12 min\n\
              conversation: resumed\n\
@@ -239,9 +237,8 @@ async fn a_person_signing_in_at_the_terminal_lifts_the_block_without_a_restart()
     assert_eq!(posts.len(), 1, "{posts:?}");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=unblocked -->\n\n\
-             ```ssf\n\
-             ssf resuming deliveries to agent on issue:\n\
+        "🤖 ssf resuming deliveries to agent on issue <!-- ssf: origin=o/r#5 event=unblocked -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              held for: less than a minute\n\
              conversation: kept\n\

@@ -129,10 +129,15 @@ impl Origin {
     }
 
     /// The first line of one of the daemon's own posts on this item (see
-    /// `crate::events`): the `🤖 ssf` byline, then a tag naming the item
-    /// and the event.
-    pub fn event_line(&self, event: &str) -> String {
-        format!("{ROBOT} {DAEMON} {OPEN} {MARK} origin={self} {EVENT}={event} {CLOSE}")
+    /// `crate::events`): the `🤖 ssf <headline>` byline, then a tag naming
+    /// the item and the event. `headline` is ssf's own fixed wording (never
+    /// user text); an empty one gives the bare `🤖 ssf` byline.
+    pub fn event_line(&self, event: &str, headline: &str) -> String {
+        let headline = headline.trim();
+        let sep = if headline.is_empty() { "" } else { " " };
+        format!(
+            "{ROBOT} {DAEMON}{sep}{headline} {OPEN} {MARK} origin={self} {EVENT}={event} {CLOSE}"
+        )
     }
 }
 
@@ -350,13 +355,33 @@ pub fn is_event_post(body: &str) -> bool {
     let Some(at) = first.find(OPEN) else {
         return false;
     };
-    if first[..at].trim() != format!("{ROBOT} {DAEMON}") {
+    if !is_daemon_byline(&first[..at]) {
         return false;
     }
     tags(first)
         .into_iter()
         .next()
         .is_some_and(|t| t.event().is_some())
+}
+
+/// Is `s` (the text before a tag on its line) the daemon's byline: `🤖 ssf`
+/// alone (posts made before #588), or followed by a headline
+/// (`🤖 ssf attaching agent to issue`)?
+fn is_daemon_byline(s: &str) -> bool {
+    let s = s.trim();
+    let Some(rest) = s.strip_prefix(&format!("{ROBOT} {DAEMON}")) else {
+        return false;
+    };
+    rest.is_empty() || rest.starts_with(' ')
+}
+
+/// The `key=value` fields of a tag's inner text (after `<!--`, trimmed).
+fn rest_fields(inner: &str) -> impl Iterator<Item = (&str, &str)> {
+    inner
+        .strip_prefix(MARK)
+        .unwrap_or("")
+        .split_whitespace()
+        .filter_map(|f| f.split_once('='))
 }
 
 /// Every ssf tag in `body`, in order of appearance. Tags inside quoted
@@ -552,7 +577,12 @@ pub fn strip(body: &str) -> String {
             continue;
         }
         let line_start = body[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let cut = if is_byline(&body[line_start..start]) {
+        // The daemon's headline (`🤖 ssf attaching agent to issue`) goes
+        // with the event tag after it; only a tag carrying `event=` makes
+        // such text a byline.
+        let prefix = &body[line_start..start];
+        let is_event = rest_fields(inner).any(|(k, _)| k == EVENT);
+        let cut = if is_byline(prefix) || (is_event && is_daemon_byline(prefix)) {
             line_start
         } else {
             start
@@ -991,8 +1021,43 @@ mod tests {
     }
 
     #[test]
+    fn a_headline_after_the_daemon_byline_is_still_an_event_post() {
+        let first = o().event_line("attached", "attaching agent to issue");
+        assert_eq!(
+            first,
+            "🤖 ssf attaching agent to issue <!-- ssf: origin=acme/widgets#12 event=attached -->"
+        );
+        assert_eq!(parse(&first).unwrap().event(), Some("attached"));
+        let post = format!("{first}\n\n```\nharness: Claude Code\n```");
+        assert!(is_event_post(&post));
+        // The old form, from posts already on GitHub, still counts.
+        let old = format!(
+            "{}\n\n```ssf\nssf attaching agent to issue:\nharness: Claude Code\n```",
+            o().event_line("attached", "")
+        );
+        assert!(is_event_post(&old));
+        // The headline goes with the byline and tag when stripped.
+        assert_eq!(strip(&post), "```\nharness: Claude Code\n```");
+        // Quoted, fenced, pasted under a session's byline, or with other
+        // words in front of the robot, it is not the daemon's.
+        assert!(!is_event_post(&format!("> {first}\n\nreply")));
+        assert!(!is_event_post(&format!("see:\n```\n{first}\n```\n")));
+        assert!(!is_event_post(&stamp(&format!("{post}\n\nsaw this"), &o())));
+        assert!(!is_event_post(&format!("I said {first}")));
+        assert!(!is_event_post(&format!("🤖 said {first}")));
+        assert!(!is_event_post(
+            "🤖 ssfx <!-- ssf: origin=acme/widgets#12 event=attached -->"
+        ));
+        // Without `event=`, text after `🤖 ssf` is not a byline: strip
+        // leaves it (it is what someone wrote).
+        let words = format!("🤖 ssf hello {}", o().tag());
+        assert!(!is_event_post(&words));
+        assert_eq!(strip(&words), "🤖 ssf hello");
+    }
+
+    #[test]
     fn event_line_marks_a_daemon_post() {
-        let first = o().event_line("attached");
+        let first = o().event_line("attached", "");
         assert_eq!(
             first,
             "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=attached -->"

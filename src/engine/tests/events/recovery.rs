@@ -442,9 +442,8 @@ async fn a_handover_replaces_the_session_in_the_same_workspace() {
     assert_eq!(posts.len(), 2, "{posts:?}");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
-             ```ssf\n\
-             ssf handing over issue:\n\
+        "🤖 ssf handing over issue <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```\n\
              from: Claude Code\n\
              from model: the harness's default\n\
              from effort: the harness's default\n\
@@ -457,13 +456,11 @@ async fn a_handover_replaces_the_session_in_the_same_workspace() {
     );
     assert_eq!(
         posts[1].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=attached -->\n\n\
-             ```ssf\n\
-             ssf attaching agent to issue:\n\
+        "🤖 ssf attaching agent to issue <!-- ssf: origin=o/r#5 event=attached -->\n\n\
+             ```\n\
              harness: Pi\n\
              model: openai/gpt-6\n\
              effort: high\n\
-             driver: herdr\n\
              branch: bot/issue-5\n\
              handed over from: Claude Code\n\
              ```"

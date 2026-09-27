@@ -171,7 +171,8 @@ const SETUP_TAIL_LINES: usize = 32;
 /// a pasted prompt, the item's description, activity delivered from the
 /// item, where a person may well have quoted the phrase -- is relayed
 /// under that marker, and an echo carries `[ssf]` from its first line
-/// through the bullet and quote lines (`- `, `> `) that follow it. Every
+/// through the bullet, quote and tag lines (`- `, `> `, `<github-event>`)
+/// that follow it. Every
 /// string ssf itself writes into a terminal or that agents read stays
 /// free of these phrases (`prompt::login_back_prompt`, the `blocked` and
 /// `unblocked` event posts, `BlockedView::describe`, `SessionBlocked`),
@@ -229,7 +230,10 @@ fn dialog_candidates(screen: &str, limit: usize) -> Vec<&str> {
                 return false;
             }
             let quoted = l.starts_with("> ") && raw.len() > l.len();
-            if quoted || (in_echo && (l.starts_with('-') || l.starts_with('>'))) {
+            // ssf's tags around relayed events (`<history>`,
+            // `<github-event ...>`, `</github-event>`) carry the echo on.
+            let continues = l.starts_with('-') || l.starts_with('>') || l.starts_with('<');
+            if quoted || (in_echo && continues) {
                 return false;
             }
             in_echo = false;

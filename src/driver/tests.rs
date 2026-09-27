@@ -294,8 +294,18 @@ fn login_prompts_of_each_harness_are_recognised() {
     let first_prompt = "❯ [ssf] GitHub issue #5: Fix it\nhttps://gh/5\n\n\
 Opened by @mike on 2026-09-17 08:00Z. Labels: daemon.\n\n\
 ## Description\n\n  > Retry the sign-in when the token lapses.\n\n\
-## Activity so far\n\n- 09:20Z @mike commented (https://gh/c1):\n  > the daemon does not retry: Login expired · Please run /login\n\n❯ ";
+## History (before this session started)\n\n- 09:20Z @mike commented (https://gh/c1):\n  > the daemon does not retry: Login expired · Please run /login\n\n❯ ";
     assert_eq!(login_dialog("claude", first_prompt), None);
+    // The tags ssf wraps relayed events in (#588) carry the echo on, so
+    // a flush bullet line under them is still ssf's relaying...
+    let tagged = "❯ [ssf] New activity on #5:\n\n<new-activity>\n\
+<github-event kind=\"renamed\" actor=\"@mike\">\n\
+- 15:20Z @mike renamed the issue from \"a\" to \"Login expired · Please run /login\"\n\
+</github-event>\n</new-activity>\n❯ ";
+    assert_eq!(login_dialog("claude", tagged), None);
+    // ...and the harness's own answer after the closing tag still counts.
+    let after_tags = format!("{tagged}\nLogin expired · Please run /login\n❯ ");
+    assert!(login_dialog("claude", &after_tags).is_some());
     // A dialog drawn flush or in a box is still read, wherever it is.
     let after_first_prompt = format!("{first_prompt}Login expired · Please run /login");
     assert!(login_dialog("claude", &after_first_prompt).is_some());

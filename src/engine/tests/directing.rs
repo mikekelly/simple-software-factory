@@ -44,7 +44,7 @@ async fn a_slash_command_on_an_item_is_ordinary_activity() {
     let posts = stub.post_bodies();
     assert_eq!(posts.len(), 1, "{posts:?}");
     assert!(
-        posts[0].1.contains("ssf attaching agent to issue:"),
+        posts[0].1.contains("🤖 ssf attaching agent to issue <!--"),
         "{posts:?}"
     );
     assert!(

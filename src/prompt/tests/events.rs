@@ -143,6 +143,8 @@ fn long_issue() -> Issue {
 fn comment_events(n: usize) -> Vec<Rendered> {
     (0..n)
         .map(|i| Rendered {
+            actor: None,
+            at: None,
             key: format!("commented:{i}"),
             text: format!(
                 "- 2026-09-01 10:0{i}Z @alice commented (https://gh/406#c{i}):\n  > note {i}"
@@ -238,6 +240,8 @@ fn a_first_prompts_character_budget_keeps_the_newest_event() {
     let issue = long_issue();
     let mut events = comment_events(5);
     events.push(Rendered {
+        actor: None,
+        at: None,
         key: "line-commented:6".into(),
         text: format!(
             "- 2026-09-02 10:00Z @bob commented on `a.rs` line 3 (https://gh/406#c6):\n  > {}",
@@ -290,7 +294,10 @@ fn a_bound_items_first_message_is_bounded_too() {
         ..Default::default()
     };
     let p = tracked_prompt(&issue, &events, &first_prompt_ctx(&repo, &daemon));
-    assert!(p.contains("Activity so far:\n\nssf note:"), "{p}");
+    assert!(
+        p.contains("History so far (before this message):\n\nssf note:"),
+        "{p}"
+    );
     assert!(p.contains(&events[4].text) && !p.contains("note 3"), "{p}");
     assert!(p.contains("4 earlier events are left out"), "{p}");
 
@@ -418,5 +425,171 @@ fn tags_are_stripped_from_bodies_and_shown_as_sessions() {
         p.contains("\n\nOpened by @bot (from the agent on o/r#3) on t.\n"),
         "{p}"
     );
-    assert!(p.contains("## Description\n\n  > Fixes it\n\n## Activity"));
+    assert!(p.contains("## Description\n\n  > Fixes it\n\n## History"));
+}
+
+/// #588: a first prompt frames the replayed timeline as history that
+/// predates the session, and delimits every relayed event.
+#[test]
+fn a_first_prompt_frames_the_timeline_as_history_and_tags_each_event() {
+    let issue = long_issue();
+    let repo = RepoConfig {
+        name: "o/r".into(),
+        harness: "claude".into(),
+        ..Default::default()
+    };
+    let d = DaemonConfig::default();
+    let ev = json!({"event":"commented","id":1,"actor":{"login":"alice"},
+        "body":"please fix","html_url":"https://gh/406#c1","created_at":"2026-09-01T10:00:00Z"});
+    let comment = render_event(&ev, false, &d, "bot").unwrap();
+    let p = initial_prompt(&issue, &[comment], &first_prompt_ctx(&repo, &d));
+    assert!(!p.contains("Activity so far"), "{p}");
+    let history = &p[p
+        .find("## History (before this session started)\n\n")
+        .unwrap()..];
+    assert!(
+        history.contains(
+            "Everything below happened before this session was spawned. Posts by @bot here \
+were made by earlier sessions, not by you"
+        ),
+        "{p}"
+    );
+    assert!(history.contains("Act on the latest request."), "{p}");
+    assert!(!history.contains("reopened"), "{p}");
+    assert!(!history.contains("handed it over"), "{p}");
+    assert!(
+        history.ends_with(
+            "\n\n<history>\n<github-event kind=\"commented\" actor=\"@alice\" \
+at=\"2026-09-01T10:00:00Z\">\n- 2026-09-01 10:00Z @alice commented (https://gh/406#c1):\n  > \
+please fix\n</github-event>\n</history>\n"
+        ),
+        "{p}"
+    );
+    // The `[ssf]` markers stay plain text, never inside a tag.
+    assert!(p.starts_with("[ssf] Simple Software Factory"), "{p}");
+    assert!(p.contains("\n[ssf] GitHub issue #406: "), "{p}");
+    // Nothing on the item yet: no lead, no tags.
+    let p = initial_prompt(&issue, &[], &first_prompt_ctx(&repo, &d));
+    assert!(
+        p.ends_with("## History (before this session started)\n\n(no activity yet)\n"),
+        "{p}"
+    );
+    assert!(!p.contains("<history>"), "{p}");
+}
+
+/// #588: after a close and reopen, the first prompt says so and points at
+/// the previous session's work, even when the reopen itself is left out
+/// by the caps.
+#[test]
+fn a_reopened_items_first_prompt_says_it_was_reopened() {
+    let issue = long_issue();
+    let repo = RepoConfig {
+        name: "o/r".into(),
+        harness: "claude".into(),
+        ..Default::default()
+    };
+    let d = DaemonConfig::default();
+    let bot_post = json!({"event":"commented","id":1,"actor":{"login":"bot"},
+        "body":"🤖#406 says: <!-- ssf: origin=o/r#406 -->\n\nI'll open a PR.",
+        "html_url":"https://gh/406#c1","created_at":"2026-09-01T10:00:00Z"});
+    let closed = json!({"event":"closed","id":2,"actor":{"login":"alice"},
+        "created_at":"2026-09-02T10:00:00Z"});
+    let reopened = json!({"event":"reopened","id":3,"actor":{"login":"alice"},
+        "created_at":"2026-09-03T10:00:00Z"});
+    let again = json!({"event":"commented","id":4,"actor":{"login":"alice"},
+        "body":"one more thing","html_url":"https://gh/406#c4","created_at":"2026-09-03T10:05:00Z"});
+    let events: Vec<Rendered> = [bot_post, closed, reopened, again]
+        .iter()
+        .map(|e| render_event(e, false, &d, "bot").unwrap())
+        .collect();
+    let p = initial_prompt(&issue, &events, &first_prompt_ctx(&repo, &d));
+    assert!(
+        p.contains(
+            "#406 was closed and reopened (last reopened 2026-09-03T10:00:00Z): a previous \
+session may have worked on it -- check for its branch and pull request before starting over.\n"
+        ),
+        "{p}"
+    );
+    assert!(
+        p.contains("<github-event kind=\"reopened\" actor=\"@alice\""),
+        "{p}"
+    );
+    // The lead comes before the history, which holds the earlier session's
+    // post as an event like any other.
+    assert!(p.find("was closed and reopened").unwrap() < p.find("<history>").unwrap());
+    assert!(p.contains("I'll open a PR."), "{p}");
+    // Capped down to the newest event, the reopen is still called out.
+    let tight = DaemonConfig {
+        first_prompt_max_events: 1,
+        ..Default::default()
+    };
+    let p = initial_prompt(&issue, &events, &first_prompt_ctx(&repo, &tight));
+    assert!(p.contains("#406 was closed and reopened"), "{p}");
+    assert!(p.contains("3 earlier events are left out"), "{p}");
+    assert!(!p.contains("kind=\"reopened\""), "{p}");
+}
+
+/// #588: a handed-over session's first prompt says a previous session
+/// worked the item.
+#[test]
+fn a_handed_over_sessions_history_names_the_previous_session() {
+    let issue = long_issue();
+    let repo = RepoConfig {
+        name: "o/r".into(),
+        harness: "claude".into(),
+        ..Default::default()
+    };
+    let d = DaemonConfig::default();
+    let ctx = PromptContext {
+        handed_over_from: Some("Codex"),
+        ..first_prompt_ctx(&repo, &d)
+    };
+    let p = initial_prompt(&issue, &comment_events(1), &ctx);
+    assert!(
+        p.contains(
+            "A previous session on Codex worked on #406 and handed it over to you: check its \
+branch, pull request and last comments before starting over.\n"
+        ),
+        "{p}"
+    );
+    assert!(!p.contains("closed and reopened"), "{p}");
+}
+
+/// #588: a later message wraps its delta, and the reassignment message
+/// its catch-up, in `<new-activity>`.
+#[test]
+fn later_messages_wrap_their_events_in_new_activity() {
+    let issue = long_issue();
+    let repo = RepoConfig {
+        name: "o/r".into(),
+        harness: "claude".into(),
+        ..Default::default()
+    };
+    let d = DaemonConfig::default();
+    let ctx = first_prompt_ctx(&repo, &d);
+    let events = comment_events(2);
+    let p = reassigned_prompt(&issue, &events, &ctx);
+    assert!(
+        p.starts_with(
+            "[ssf] #406 has been assigned to @bot again. Activity since then:\n\n<new-activity>\n\
+<github-event kind=\"commented\">\n- 2026-09-01 10:00Z"
+        ),
+        "{p}"
+    );
+    assert!(
+        p.ends_with("</github-event>\n</new-activity>\n\nResume work on it."),
+        "{p}"
+    );
+    let p = reassigned_prompt(&issue, &[], &ctx);
+    assert!(
+        p.contains("(no new activity)") && !p.contains("<new-activity>"),
+        "{p}"
+    );
+    let p = followup_prompt(&issue, &events, &ctx);
+    assert_eq!(p.matches("<github-event").count(), 2, "{p}");
+    assert_eq!(p.matches("</github-event>").count(), 2, "{p}");
+    assert!(
+        p.starts_with("[ssf] New activity on #406:\n\n<new-activity>\n"),
+        "{p}"
+    );
 }

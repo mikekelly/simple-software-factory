@@ -21,6 +21,10 @@ pub struct Rendered {
     /// renamed ...), rather than carrying what someone wrote on it or
     /// echoing work done to it. What a follower at the default level hears.
     pub state_change: bool,
+    /// Who did it (the login, without `@`), when known.
+    pub actor: Option<String>,
+    /// When it happened (GitHub's ISO timestamp), when known.
+    pub at: Option<String>,
 }
 
 impl Rendered {
@@ -370,6 +374,8 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
         origin,
         assignee,
         state_change: state_change(&kind),
+        actor: Some(actor),
+        at: Some(when(ev)).filter(|w| !w.is_empty()),
     })
 }
 

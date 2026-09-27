@@ -17,22 +17,23 @@ fn launch(branch: Option<&str>) -> Launch {
     }
 }
 
-/// The shape every post shares: byline line, blank line, one fenced
-/// block whose lines are all non-blank `key: value` lines under an
-/// `ssf ...:` header.
+/// The shape every post shares: a byline line `🤖 ssf <headline>` with the
+/// tag, blank line, one plain fenced block whose lines are all non-blank
+/// `key: value` lines.
 fn check_shape(text: &str, event: &str) {
     let mut lines = text.lines();
-    assert_eq!(
-        lines.next().unwrap(),
-        format!("🤖 ssf <!-- ssf: origin=acme/widgets#12 event={event} -->")
+    let first = lines.next().unwrap();
+    let tag = format!(" <!-- ssf: origin=acme/widgets#12 event={event} -->");
+    let headline = first
+        .strip_prefix("🤖 ssf ")
+        .and_then(|r| r.strip_suffix(&tag))
+        .unwrap_or_else(|| panic!("{first}"));
+    assert!(
+        !headline.is_empty() && !headline.ends_with(':') && !headline.contains('<'),
+        "{headline}"
     );
     assert_eq!(lines.next().unwrap(), "");
-    assert_eq!(lines.next().unwrap(), "```ssf");
-    let header = lines.next().unwrap();
-    assert!(
-        header.starts_with("ssf ") && header.ends_with(':'),
-        "{header}"
-    );
+    assert_eq!(lines.next().unwrap(), "```");
     let body: Vec<&str> = lines.collect();
     assert_eq!(body.last().copied(), Some("```"));
     for l in &body[..body.len() - 1] {
@@ -58,13 +59,11 @@ fn attached_names_the_launch() {
     check_shape(&text, "attached");
     assert_eq!(
         text,
-        "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=attached -->\n\n\
-             ```ssf\n\
-             ssf attaching agent to issue:\n\
+        "🤖 ssf attaching agent to issue <!-- ssf: origin=acme/widgets#12 event=attached -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              model: fable-5.1\n\
              effort: high\n\
-             driver: herdr\n\
              branch: bot/issue-12-fix\n\
              ```"
     );
@@ -83,12 +82,10 @@ fn attached_names_the_launch() {
     check_shape(&text, "attached");
     assert_eq!(
         ev.block("issue"),
-        "```ssf\n\
-             ssf attaching agent to issue:\n\
+        "```\n\
              harness: Claude Code\n\
              model: the harness's default\n\
              effort: the harness's default\n\
-             driver: herdr\n\
              handed off from: acme/widgets#4\n\
              ```"
     );
@@ -107,13 +104,11 @@ fn a_configured_command_is_named_and_decides_the_defaults() {
     });
     assert_eq!(
         ev.block("issue"),
-        "```ssf\n\
-             ssf attaching agent to issue:\n\
+        "```\n\
              harness: Claude Code\n\
              model: the command's\n\
              effort: the command's\n\
              command: claude --dangerously-skip-permissions --model opus\n\
-             driver: herdr\n\
              ```"
     );
     // Set alongside a command, model and effort are named as given.
@@ -126,7 +121,7 @@ fn a_configured_command_is_named_and_decides_the_defaults() {
     });
     assert!(
         ev.block("issue")
-            .contains("model: fable-5.1\neffort: high\ncommand: claude\ndriver: herdr\n")
+            .contains("model: fable-5.1\neffort: high\ncommand: claude\n")
     );
 }
 
@@ -140,8 +135,7 @@ fn bound_names_the_owning_session() {
     check_shape(&text, "attached");
     assert_eq!(
         ev.block("pull request"),
-        "```ssf\n\
-             ssf attaching agent to pull request:\n\
+        "```\n\
              session: acme/widgets#4\n\
              shares: workspace of #4\n\
              ```"
@@ -159,12 +153,10 @@ fn re_created_says_why_and_how_the_conversation_went() {
     check_shape(&text, "attached");
     assert_eq!(
         ev.block("issue"),
-        "```ssf\n\
-             ssf attaching agent to issue again:\n\
+        "```\n\
              harness: Claude Code\n\
              model: fable-5.1\n\
              effort: high\n\
-             driver: herdr\n\
              branch: bot/issue-12-fix\n\
              re-created: workspace gone\n\
              conversation: fresh\n\
@@ -183,12 +175,10 @@ fn kept_says_the_workspace_was_there_already() {
     check_shape(&text, "attached");
     assert_eq!(
         ev.block("issue"),
-        "```ssf\n\
-             ssf attaching agent to issue again:\n\
+        "```\n\
              harness: Claude Code\n\
              model: fable-5.1\n\
              effort: high\n\
-             driver: herdr\n\
              branch: bot/issue-12-fix\n\
              handed off from: acme/widgets#4\n\
              workspace: kept\n\
@@ -215,9 +205,8 @@ fn handed_over_names_both_ends() {
     check_shape(&text, "handed-over");
     assert_eq!(
         text,
-        "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=handed-over -->\n\n\
-             ```ssf\n\
-             ssf handing over issue:\n\
+        "🤖 ssf handing over issue <!-- ssf: origin=acme/widgets#12 event=handed-over -->\n\n\
+             ```\n\
              from: Claude Code\n\
              from model: fable-5.1\n\
              from effort: high\n\
@@ -242,8 +231,8 @@ fn handed_over_names_both_ends() {
         refused: None,
     };
     assert!(
-        ev.block("pull request")
-            .starts_with("```ssf\nssf handing over pull request:\n"),
+        ev.headline("pull request") == "handing over pull request"
+            && ev.block("pull request").starts_with("```\nfrom: "),
         "{}",
         ev.block("pull request")
     );
@@ -281,8 +270,7 @@ fn a_handover_names_a_configured_command_on_each_side() {
     check_shape(&comment(&o(), "issue", &ev), "handed-over");
     assert_eq!(
         ev.block("issue"),
-        "```ssf\n\
-             ssf handing over issue:\n\
+        "```\n\
              from: Claude Code\n\
              from model: the command's\n\
              from effort: the command's\n\
@@ -308,8 +296,7 @@ fn a_handover_names_a_configured_command_on_each_side() {
     };
     assert_eq!(
         refused.block("issue"),
-        "```ssf\n\
-             ssf not handing over issue:\n\
+        "```\n\
              to: Codex\n\
              to model: the command's\n\
              to effort: medium\n\
@@ -338,8 +325,7 @@ fn a_refused_handover_says_only_what_it_would_have_been() {
     check_shape(&text, "handed-over");
     assert_eq!(
         ev.block("issue"),
-        "```ssf\n\
-             ssf not handing over issue:\n\
+        "```\n\
              to: Codex\n\
              to model: gpt-6\n\
              to effort: the harness's default\n\
@@ -364,12 +350,10 @@ fn attached_after_a_handover_names_the_harness_it_came_from() {
     check_shape(&text, "attached");
     assert_eq!(
         ev.block("issue"),
-        "```ssf\n\
-             ssf attaching agent to issue:\n\
+        "```\n\
              harness: Pi\n\
              model: openai/gpt-6\n\
              effort: the harness's default\n\
-             driver: herdr\n\
              branch: bot/issue-12-fix\n\
              handed over from: Claude Code\n\
              ```"
@@ -387,9 +371,8 @@ fn resumed_says_after_what() {
     check_shape(&text, "resumed");
     assert_eq!(
         text,
-        "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=resumed -->\n\n\
-             ```ssf\n\
-             ssf resuming agent on issue:\n\
+        "🤖 ssf resuming agent on issue <!-- ssf: origin=acme/widgets#12 event=resumed -->\n\n\
+             ```\n\
              harness: Codex\n\
              conversation: resumed\n\
              after: restart\n\
@@ -409,9 +392,8 @@ fn blocked_and_unblocked() {
     // Markdown backticks would render literally inside the fence.
     assert_eq!(
         text,
-        "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=blocked -->\n\n\
-             ```ssf\n\
-             ssf holding deliveries to agent on issue:\n\
+        "🤖 ssf holding deliveries to agent on issue <!-- ssf: origin=acme/widgets#12 event=blocked -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              reason: not signed in\n\
              fix: claude auth login on the host\n\
@@ -429,9 +411,8 @@ fn blocked_and_unblocked() {
     check_shape(&text, "blocked");
     assert_eq!(
         text,
-        "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=blocked -->\n\n\
-             ```ssf\n\
-             ssf holding deliveries to agent on issue:\n\
+        "🤖 ssf holding deliveries to agent on issue <!-- ssf: origin=acme/widgets#12 event=blocked -->\n\n\
+             ```\n\
              harness: Pi\n\
              reason: could not be started: pi exited at once\n\
              fix: start Pi by hand in the workspace, or fix the model or effort and hand over again\n\
@@ -446,9 +427,8 @@ fn blocked_and_unblocked() {
     check_shape(&text, "unblocked");
     assert_eq!(
         text,
-        "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=unblocked -->\n\n\
-             ```ssf\n\
-             ssf resuming deliveries to agent on issue:\n\
+        "🤖 ssf resuming deliveries to agent on issue <!-- ssf: origin=acme/widgets#12 event=unblocked -->\n\n\
+             ```\n\
              harness: Claude Code\n\
              held for: 12 min\n\
              conversation: resumed\n\
@@ -489,9 +469,8 @@ fn gave_up_keeps_the_error_on_one_line() {
     check_shape(&text, "gave-up");
     assert_eq!(
         text,
-        "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=gave-up -->\n\n\
-             ```ssf\n\
-             ssf giving up on agent binding for issue:\n\
+        "🤖 ssf giving up on agent binding for issue <!-- ssf: origin=acme/widgets#12 event=gave-up -->\n\n\
+             ```\n\
              failures: 5\n\
              last error: driver delivery failed: exit status 1 no such terminal\n\
              next: re-onboarding the item\n\
@@ -546,9 +525,8 @@ fn released_says_by_whom() {
     check_shape(&text, "released");
     assert_eq!(
         text,
-        "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=released -->\n\n\
-             ```ssf\n\
-             ssf releasing workspace of issue:\n\
+        "🤖 ssf releasing workspace of issue <!-- ssf: origin=acme/widgets#12 event=released -->\n\n\
+             ```\n\
              by: ssf release\n\
              branch: bot/issue-12-fix\n\
              ```"
@@ -561,8 +539,7 @@ fn released_says_by_whom() {
     check_shape(&comment(&o(), "pull request", &forced), "released");
     assert_eq!(
         forced.block("pull request"),
-        "```ssf\n\
-             ssf releasing workspace of pull request:\n\
+        "```\n\
              by: ssf purge\n\
              forced: yes\n\
              ```"

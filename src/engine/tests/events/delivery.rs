@@ -146,7 +146,7 @@ async fn an_item_assigned_again_is_told_its_own_posts() {
         prompts[0]
     );
     assert!(
-        prompts[0].contains("## Activity so far"),
+        prompts[0].contains("## History (before this session started)"),
         "and the item's own story with it: {}",
         prompts[0]
     );
@@ -213,9 +213,8 @@ async fn a_handover_without_a_summary_says_so() {
     let posts = stub.post_bodies();
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
-             ```ssf\n\
-             ssf handing over issue:\n\
+        "🤖 ssf handing over issue <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```\n\
              from: Claude Code\n\
              from model: the harness's default\n\
              from effort: the harness's default\n\
@@ -360,9 +359,8 @@ async fn a_model_only_handover_keeps_the_repository_command() {
     let posts = stub.post_bodies();
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
-             ```ssf\n\
-             ssf handing over issue:\n\
+        "🤖 ssf handing over issue <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```\n\
              from: Claude Code\n\
              from model: the command's\n\
              from effort: high\n\
@@ -570,9 +568,8 @@ async fn a_handover_the_pass_cannot_carry_out_is_refused_on_the_item() {
     assert_eq!(posts.len(), 1, "{posts:?}");
     assert_eq!(
         posts[0].1,
-        "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
-             ```ssf\n\
-             ssf not handing over issue:\n\
+        "🤖 ssf not handing over issue <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```\n\
              to: Pi\n\
              to model: the harness's default\n\
              to effort: the harness's default\n\
