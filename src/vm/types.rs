@@ -100,8 +100,14 @@ pub fn forwards(name: &str) -> bool {
 /// never forwards again, and the prompts say the agent has root there.
 pub const GUEST_ENV: &str = "SSF_VM_GUEST";
 
-/// Is this process inside the factory's VM?
+/// Is this process inside the factory's VM? A test holding a
+/// `crate::config::test_support::Sandbox` is not, even when `cargo test`
+/// runs in the guest and inherits `GUEST_ENV` (#579).
 pub fn in_guest() -> bool {
+    #[cfg(test)]
+    if crate::config::test_support::in_sandbox() {
+        return false;
+    }
     std::env::var_os(GUEST_ENV).is_some()
 }
 

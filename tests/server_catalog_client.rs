@@ -28,7 +28,8 @@ impl Temp {
             .env("TEST_ROOT", &self.0)
             .env("SSF_CONFIG_DIR", self.0.join("config"))
             .env("SSF_STATE_DIR", self.0.join("state"))
-            .env_remove("SSF_SERVER");
+            .env_remove("SSF_SERVER")
+            .env_remove("SSF_VM_GUEST");
         command
     }
 
