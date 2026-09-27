@@ -46,6 +46,28 @@ drive the factory, or passing `--force`. Hand `sudo` commands to the person
 to run; run them yourself only where you already have non-interactive root.
 The bot's credentials are the bot's, never the person's.
 
+## Reporting problems upstream
+
+When ssf itself gets in the way (a bug, an error, a misleading doc or a step
+that did not work as written), offer to report it on
+[the upstream issue board](https://github.com/mikekelly/simple-software-factory/issues).
+Ask the person first, show them the draft, and file it only with their
+permission. Search the existing issues before opening a new one.
+
+A good report gives:
+
+- what went wrong, in one or two sentences;
+- the steps to reproduce it, as the smallest sequence of `ssf` commands or
+  actions that shows it;
+- what you expected and what happened instead, with the exact error text;
+- the ssf version (`ssf --version`), the OS and the harness involved.
+
+Keep the person's environment out of it: no hostnames, IP addresses, user
+or account names, file paths, repository or organization names, tokens,
+keys, or configuration and log excerpts you have not reduced to the lines
+that matter and scrubbed. Replace specifics with placeholders such as
+`HOST` or `REPO`. When in doubt, leave it out and say it was omitted.
+
 ## Installing this skill
 
 ```sh
