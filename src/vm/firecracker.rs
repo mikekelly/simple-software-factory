@@ -789,7 +789,7 @@ impl Vm {
         let every = supervise_interval(self.backend());
         let mut unanswered = 0u32;
         let mut tunnel = dashboard_tunnel::DashboardTunnel::default();
-        tunnel.keep(self);
+        tunnel.keep(self).await;
         loop {
             tokio::select! {
                 _ = term.recv() => break,
@@ -802,7 +802,7 @@ impl Vm {
                     match self.running_state() {
                         Some(true) => {
                             unanswered = 0;
-                            tunnel.keep(self);
+                            tunnel.keep(self).await;
                         }
                         None => {
                             unanswered += 1;

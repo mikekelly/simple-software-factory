@@ -1524,7 +1524,7 @@ fn doctor_notes_a_host_dashboard_is_unused_in_vm_mode() {
     assert!(
         unused_host_dashboard_note(&host)
             .unwrap()
-            .contains("unused in VM mode")
+            .contains("new capability URL")
     );
     host.dashboard.enabled = false;
     assert_eq!(unused_host_dashboard_note(&host), None);

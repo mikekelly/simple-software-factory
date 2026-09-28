@@ -170,7 +170,9 @@ factory unreachable and keeps retrying.
 
 Setting it up, in order:
 
-1. Enable the listener and restart the server. Copy the capability URL it logs.
+1. Enable the listener and restart the daemon. Copy the capability URL it logs
+   (in VM mode, to the guest's journal: `ssf vm logs | grep 'Server web dashboard'`,
+   or `ssf vm ssh -- journalctl -u ssf`).
 2. Install the [Chrome extension](../chrome-extension/README.md) and add that
    URL there. Do it once: the secret is kept, so the URL survives every later
    restart.
@@ -178,7 +180,8 @@ Setting it up, in order:
    alone; a Tailscale bind serves the tailnet; anything else needs an
    authenticating TLS reverse proxy in front, per the rules below.
 
-The server logs a capability URL such as `http://127.0.0.1:8787/<secret>/`.
+The daemon logs a capability URL such as `http://127.0.0.1:8787/<secret>/`
+(in VM mode, in the guest's journal, as above).
 Open it yourself on the server machine or through your proxy; the server never
 opens a browser. Keep the whole URL private: it grants access to repository
 details and session summaries. The listener stays up until the server stops,
@@ -188,10 +191,17 @@ startup error.
 The secret is generated once, on the first start that serves the listener, and
 kept at `dashboard-token` in the factory's state directory
 (`~/.local/state/ssf/dashboard-token`, mode 0600; a catalog target has its own
-state directory). Every later start reads it, so a URL someone has already
+state directory; in VM mode the guest's state directory, so the file lives in
+the guest). Every later start reads it, so a URL someone has already
 configured keeps working across restarts — including one saved in the Chrome
 extension. A file this build did not write, made by hand or restored from a
 backup, is tightened to 0600 when it is read.
+
+A VM factory whose dashboard was served by the host before this release gets a
+new URL once: the guest mints its own secret. Enable `[dashboard]` in the guest
+(`ssf config set dashboard.enabled true`), take the URL from the guest journal
+and set up the extension with it again; the host's old token and `[dashboard]`
+are unused (`ssf doctor` notes the latter).
 
 Deleting that file and restarting generates a new one and invalidates every
 saved copy of the old URL. `ssf uninstall --data` removes it with the default

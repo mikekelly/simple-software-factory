@@ -70,61 +70,91 @@ pub(in crate::vm) fn incus_device_args(instance: &str, spec: &str) -> Vec<String
     .collect()
 }
 
+/// How long one ssh read of the guest config or one `incus` call may take:
+/// the supervisor awaits them between its signal checks.
+const CALL_LIMIT: Duration = Duration::from_secs(20);
+/// A forward that ran this long before it ended was working: it is
+/// restarted at once rather than backed off.
+const HEALTHY_RUN: Duration = Duration::from_secs(30);
+
+/// What the forward should become after a read of the guest's config:
+/// `Some(new)` when it changes, `None` to keep it. A read that failed says
+/// nothing about the guest's `[dashboard]`, so it never tears a forward down.
+pub(in crate::vm) fn after_read(
+    applied: &Option<Option<String>>,
+    read: &Result<Option<String>>,
+) -> Option<Option<String>> {
+    match read {
+        Ok(spec) if applied.as_ref() != Some(spec) => Some(spec.clone()),
+        _ => None,
+    }
+}
+
+/// How long to wait before starting the ssh forward again after `failures`
+/// ends in a row: none after one (a forward that had been working comes
+/// back on the next round), then doubling from 5s to a minute, so a
+/// forward that cannot start (its host port held) does not spin.
+pub(in crate::vm) fn restart_delay(failures: u32) -> Duration {
+    match failures {
+        0 | 1 => Duration::ZERO,
+        n => (Duration::from_secs(5) * 2u32.saturating_pow(n.min(8) - 2)).min(RETRY_EVERY),
+    }
+}
+
 /// The supervisor's forward of the guest's dashboard: an ssh child for
-/// Firecracker, started again when it ends, or the Incus proxy device.
-/// The guest's `[dashboard]` is read again every [`RETRY_EVERY`], and
-/// `applied` is the forward last set up for it.
+/// Firecracker, or the Incus proxy device. The guest's `[dashboard]` is
+/// read again every [`RETRY_EVERY`], and `applied` is the forward set up
+/// for the last successful read.
 #[derive(Default)]
 pub(in crate::vm) struct DashboardTunnel {
-    child: Option<tokio::process::Child>,
-    tried: Option<Instant>,
+    child: Option<(tokio::process::Child, Instant)>,
+    next_read: Option<Instant>,
     applied: Option<Option<String>>,
+    failures: u32,
+    restart_at: Option<Instant>,
 }
 
 impl DashboardTunnel {
-    /// Keep the forward up: called on every supervision round. Anything
-    /// that goes wrong is logged and tried again later; the dashboard is
-    /// never a reason to stop supervising the VM.
-    pub(in crate::vm) fn keep(&mut self, vm: &Vm) {
+    /// Keep the forward up: called on every supervision round. Every call
+    /// it makes is bounded by [`CALL_LIMIT`]. Anything that goes wrong is
+    /// logged and tried again later; the dashboard is never a reason to
+    /// stop supervising the VM.
+    pub(in crate::vm) async fn keep(&mut self, vm: &Vm) {
         match vm.backend() {
-            BackendKind::Firecracker => self.keep_ssh(vm),
-            BackendKind::Incus => self.keep_incus(vm),
+            BackendKind::Firecracker => self.keep_ssh(vm).await,
+            BackendKind::Incus => self.keep_incus(vm).await,
             BackendKind::Lima => {}
         }
     }
 
-    /// The forward the guest's configuration asks for, read over ssh.
-    fn wanted(vm: &Vm) -> Option<String> {
-        let config = vm.ssh_output(&["cat", GUEST_CONFIG]).unwrap_or_default();
-        match guest_dashboard(&config) {
-            Ok(dashboard) => forward_spec(&dashboard),
-            Err(e) => {
-                warn!("{e:#}");
-                None
-            }
+    /// The forward the guest's configuration asks for, read over ssh when
+    /// a read is due; `None` when none is due or the read failed.
+    async fn read(&mut self, vm: &Vm) -> Option<Option<String>> {
+        if self.next_read.is_some_and(|at| Instant::now() < at) {
+            return None;
         }
+        self.next_read = Some(Instant::now() + RETRY_EVERY);
+        let read = read_wanted(vm).await;
+        if let Err(e) = &read {
+            warn!("reading the guest's [dashboard]: {e:#}; keeping the dashboard forward as it is");
+        }
+        after_read(&self.applied, &read)
     }
 
-    fn keep_incus(&mut self, vm: &Vm) {
-        if self.tried.is_some_and(|at| at.elapsed() < RETRY_EVERY) {
+    async fn keep_incus(&mut self, vm: &Vm) {
+        let Some(spec) = self.read(vm).await else {
             return;
-        }
-        self.tried = Some(Instant::now());
-        let spec = Self::wanted(vm);
-        if self.applied.as_ref() == Some(&spec) {
-            return;
-        }
+        };
         let name = vm.incus_name();
         // Replaced rather than edited: a missing device is not an error.
-        let _ = vm.incus_run_within(
-            &["config", "device", "remove", &name, INCUS_DEVICE],
-            lima::QUICK_LIMIT,
-        );
+        let _ = incus(&["config", "device", "remove", &name, INCUS_DEVICE]).await;
         if let Some(spec) = &spec {
             let args = incus_device_args(&name, spec);
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            if let Err(e) = vm.incus_run_within(&args, lima::QUICK_LIMIT) {
+            if let Err(e) = incus(&args).await {
                 warn!("could not forward the guest's web dashboard: {e:#}");
+                // Tried again at the next read.
+                self.applied = None;
                 return;
             }
             info!("forwarding the guest's web dashboard to host {spec}");
@@ -132,41 +162,46 @@ impl DashboardTunnel {
         self.applied = Some(spec);
     }
 
-    fn keep_ssh(&mut self, vm: &Vm) {
-        let running = match self.child.as_mut().map(|child| child.try_wait()) {
-            Some(Ok(None)) => true,
-            Some(Ok(Some(status))) => {
-                warn!("the dashboard forward ended ({status})");
-                false
+    async fn keep_ssh(&mut self, vm: &Vm) {
+        if let Some((child, started)) = &mut self.child {
+            let ended = match child.try_wait() {
+                Ok(None) => false,
+                Ok(Some(status)) => {
+                    warn!("the dashboard forward ended ({status})");
+                    true
+                }
+                Err(e) => {
+                    warn!("the dashboard forward: {e}");
+                    true
+                }
+            };
+            if ended {
+                self.failures = if started.elapsed() >= HEALTHY_RUN {
+                    1
+                } else {
+                    self.failures + 1
+                };
+                self.restart_at = Some(Instant::now() + restart_delay(self.failures));
+                self.child = None;
             }
-            Some(Err(e)) => {
-                warn!("the dashboard forward: {e}");
-                false
-            }
-            None => false,
-        };
-        if !running {
-            self.child = None;
-            self.applied = None;
         }
-        if self.tried.is_some_and(|at| at.elapsed() < RETRY_EVERY) {
-            return;
-        }
-        self.tried = Some(Instant::now());
         // Read again while it runs, so a changed `[dashboard]` moves it.
-        let spec = Self::wanted(vm);
-        if self.applied.as_ref() == Some(&spec) {
+        if let Some(spec) = self.read(vm).await {
+            self.child = None;
+            self.applied = Some(spec);
+            self.failures = 0;
+            self.restart_at = None;
+        }
+        if self.child.is_some() || self.restart_at.is_some_and(|at| Instant::now() < at) {
             return;
         }
-        self.child = None;
-        self.applied = Some(spec.clone());
-        let Some(spec) = spec else {
+        let Some(Some(spec)) = &self.applied else {
             return;
         };
         let mut command = Command::new("ssh");
         command
             .args(vm.ssh_args(true))
-            .args(["-N", "-o", "ExitOnForwardFailure=yes", "-L", &spec])
+            .args(["-N", "-o", "ExitOnForwardFailure=yes", "-L", spec])
             .arg(vm.target())
             .stdin(Stdio::null())
             .stdout(Stdio::null());
@@ -175,14 +210,63 @@ impl DashboardTunnel {
         match command.spawn() {
             Ok(child) => {
                 info!("forwarding the guest's web dashboard to host {spec}");
-                self.child = Some(child);
+                self.child = Some((child, Instant::now()));
             }
             Err(e) => {
                 warn!("could not start the dashboard forward: {e}");
-                self.applied = None;
+                self.failures += 1;
+                self.restart_at = Some(Instant::now() + restart_delay(self.failures));
             }
         }
     }
+}
+
+/// The guest's wanted forward, from its config read over ssh. A config
+/// file that is not there is the default, off; any other failure is an
+/// error, not an answer.
+async fn read_wanted(vm: &Vm) -> Result<Option<String>> {
+    let remote = [
+        "sh".to_string(),
+        "-c".to_string(),
+        format!("[ ! -e {GUEST_CONFIG} ] || cat {GUEST_CONFIG}"),
+    ];
+    let mut command = tokio::process::Command::from(vm.ssh(&remote, false));
+    command.stdin(Stdio::null()).kill_on_drop(true);
+    let out = tokio::time::timeout(CALL_LIMIT, command.output())
+        .await
+        .context("reading the guest config timed out")?
+        .context("running ssh")?;
+    if !out.status.success() {
+        bail!(
+            "ssh failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(forward_spec(&guest_dashboard(&String::from_utf8_lossy(
+        &out.stdout,
+    ))?))
+}
+
+/// One `incus` call, bounded by [`CALL_LIMIT`].
+async fn incus(args: &[&str]) -> Result<()> {
+    let mut command = tokio::process::Command::new("incus");
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(CALL_LIMIT, command.output())
+        .await
+        .with_context(|| format!("`incus {}` timed out", args.join(" ")))?
+        .context("running incus")?;
+    if !out.status.success() {
+        bail!(
+            "`incus {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -222,5 +306,31 @@ mod tests {
             incus_device_args("ssf-factory", "[::1]:8787:[::1]:8787")[6..],
             ["listen=tcp:[::1]:8787", "connect=tcp:[::1]:8787"]
         );
+    }
+
+    #[test]
+    fn a_failed_read_keeps_the_forward() {
+        let up = Some(Some("127.0.0.1:8787:127.0.0.1:8787".to_string()));
+        assert_eq!(
+            after_read(&up, &Err(anyhow::anyhow!("ssh timed out"))),
+            None
+        );
+        assert_eq!(after_read(&up, &Ok(up.clone().unwrap())), None);
+        assert_eq!(after_read(&up, &Ok(None)), Some(None));
+        assert_eq!(
+            after_read(&None, &Err(anyhow::anyhow!("no answer yet"))),
+            None
+        );
+        assert_eq!(after_read(&None, &Ok(None)), Some(None));
+    }
+
+    #[test]
+    fn an_ended_forward_restarts_at_once_then_backs_off() {
+        assert_eq!(restart_delay(1), Duration::ZERO);
+        assert_eq!(restart_delay(2), Duration::from_secs(5));
+        assert_eq!(restart_delay(3), Duration::from_secs(10));
+        assert_eq!(restart_delay(5), Duration::from_secs(40));
+        assert_eq!(restart_delay(6), RETRY_EVERY);
+        assert_eq!(restart_delay(u32::MAX), RETRY_EVERY);
     }
 }
