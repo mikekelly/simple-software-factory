@@ -174,8 +174,8 @@ backup, is tightened to 0600 when it is read.
 
 Deleting that file and restarting generates a new one and invalidates every
 saved copy of the old URL. `ssf uninstall --data` removes it with the default
-factory's state; a catalog target's own directory is removed by hand, since
-[`ssf uninstall` is not target-aware](uninstall.md#recovery-cases).
+factory's state; a namespaced local target's own directory is removed by hand, since
+[`ssf uninstall` refuses one](uninstall.md#recovery-cases).
 
 The dashboard's own file never stops the factory: a secret that cannot be read
 or stored is a warning naming the path, not a startup error. A file that cannot

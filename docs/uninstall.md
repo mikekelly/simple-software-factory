@@ -111,13 +111,17 @@ so `status` does not go looking for it.
 
 ## Recovery cases
 
-- **Removing one factory from a multi-server installation.** `ssf uninstall` is
-  not target-aware and refuses rather than widening one selection into
-  installation-wide removal. To stop operating a target without deleting it, run
-  `ssf --server NAME ui service disable`, then `ssf server remove NAME`, which
-  reports and retains its local config and state paths and any managed VM
-  resources. Destroy the VM separately, while it is still selected, only when
-  that data loss is intended.
+- **Removing one VM server from a multi-server installation.**
+  `ssf --server NAME uninstall` removes that server only, with the same report,
+  prompt and refusal over unpushed work: it purges, signs the bot out inside
+  the guest (revoking the keys it enrolled) while the guest answers, stops and
+  disables that server's service, destroys its VM, and removes its setup marker,
+  its macOS service log and its catalog entry. The other servers, the shared
+  config and state directories and the package stay. `--data` is refused while
+  other servers remain; on the last one it removes the shared directories as a
+  plain uninstall does. A namespaced local target is still refused. To stop
+  operating a target without deleting it, run
+  `ssf --server NAME ui service disable`, then `ssf server remove NAME`.
 - **Backend switch.** `[vm] dir` is shared by the two backends. Switching
   `[vm] backend` from `firecracker` to `lima` while keeping `[vm] name` leaves
   the Firecracker VM's clones and worktrees in `<[vm] dir>/<name>`, where lima

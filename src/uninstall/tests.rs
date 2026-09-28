@@ -129,6 +129,7 @@ fn facts() -> Facts {
         state_dir: PathBuf::from("/s"),
         projects: vec![PathBuf::from("/p")],
         vm_stranded_disk: None,
+        server: None,
     }
 }
 
@@ -937,4 +938,19 @@ fn a_worktrees_directory_without_its_clone_is_unchecked() {
     assert_eq!(orphans.len(), 1, "{orphans:?}");
     assert!(orphans[0].contains("gone.worktrees"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_named_server_keeps_the_others_and_the_shared_directories() {
+    let mut f = facts();
+    f.server = Some(Server {
+        name: "mac".into(),
+        others: vec!["box".into()],
+    });
+    let text = render(&f, &Report::default(), &Opts::default());
+    assert!(text.contains("server mac from the catalog"), "{text}");
+    assert!(text.contains("server mac's guest"), "{text}");
+    assert!(text.contains("the other servers (box)"), "{text}");
+    assert!(!text.contains("remove with --data"), "{text}");
+    assert!(!text.contains("the package:"), "{text}");
 }

@@ -523,18 +523,6 @@ fn migrated_vm_configuration_drives_the_selected_endpoint() {
 
     let output = root
         .client()
-        .args(["--server", "ssf-server", "uninstall", "--report"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8(output.stderr)
-            .unwrap()
-            .contains("uninstall is not yet target-aware")
-    );
-
-    let output = root
-        .client()
         .args(["server", "migrate-vm"])
         .output()
         .unwrap();

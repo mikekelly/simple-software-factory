@@ -330,6 +330,15 @@ pub fn service_hint(action: &str) -> String {
     service_hint_for(std::env::consts::OS, action)
 }
 
+/// The log a named server's launchd agent writes on macOS; elsewhere the
+/// service logs to the journal and there is no file.
+pub fn service_log(target: &str) -> Option<std::path::PathBuf> {
+    (std::env::consts::OS == "macos")
+        .then(dirs::home_dir)
+        .flatten()
+        .map(|home| home.join(format!("Library/Logs/ssf/{target}.log")))
+}
+
 /// How a message names the daemon's service on `os`: the systemd user
 /// unit on Linux, Homebrew's service on macOS (there is no `ssf.service`
 /// on a Mac).

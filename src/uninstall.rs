@@ -365,6 +365,18 @@ pub struct Facts {
     /// depend on the guest -- the lima guest cannot see this disk by
     /// construction, and its report says nothing about the clones on it.
     pub vm_stranded_disk: Option<PathBuf>,
+    /// The named VM server this uninstall is for (`--server NAME`), with
+    /// the other servers the catalog keeps. Its bot sign-in lives in its
+    /// guest, and the host's config, state and package are shared with
+    /// the others, so only what is this server's own goes.
+    pub server: Option<Server>,
+}
+
+/// A named VM server and what else the catalog holds.
+#[derive(Debug, Clone, Default)]
+pub struct Server {
+    pub name: String,
+    pub others: Vec<String>,
 }
 
 impl Facts {
@@ -417,6 +429,7 @@ impl Facts {
             config_dir: config::config_dir(),
             state_dir: config::state_dir(),
             projects,
+            server: None,
         }
     }
 
@@ -652,6 +665,12 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
             facts.vm_name
         )),
     }
+    if let Some(server) = &facts.server {
+        remove.push(format!(
+            "server {} from the catalog, with its setup marker and service log",
+            server.name
+        ));
+    }
     if opts.data {
         remove.push(format!(
             "{} and {} (--data)",
@@ -662,7 +681,12 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
     section(&mut out, "remove:", &remove);
 
     // revoke
-    let revoke = if facts.bot_signed_in() {
+    let revoke = if let Some(server) = &facts.server {
+        format!(
+            "the bot's sign-in in server {}'s guest, and its SSH and signing keys on GitHub (while the guest answers)",
+            server.name
+        )
+    } else if facts.bot_signed_in() {
         let who = facts
             .bot
             .as_deref()
@@ -704,17 +728,26 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
             facts.vm_base.display()
         ));
     }
-    if !opts.data {
+    if let Some(server) = facts.server.as_ref().filter(|s| !s.others.is_empty()) {
         keep.push(format!(
-            "{} and {} (remove with --data)",
+            "the other servers ({}), {} and {}, and the package",
+            server.others.join(", "),
             facts.config_dir.display(),
             facts.state_dir.display()
         ));
+    } else {
+        if !opts.data {
+            keep.push(format!(
+                "{} and {} (remove with --data)",
+                facts.config_dir.display(),
+                facts.state_dir.display()
+            ));
+        }
+        keep.push(format!(
+            "the package: {} (yours: ssf never runs sudo)",
+            package_removal_command()
+        ));
     }
-    keep.push(format!(
-        "the package: {} (yours: ssf never runs sudo)",
-        package_removal_command()
-    ));
     section(&mut out, "keep:", &keep);
 
     // items
@@ -758,6 +791,24 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
         }
     }
     out
+}
+
+/// The named VM server this process was routed to, and the other
+/// servers the catalog holds.
+fn named_server() -> Result<Option<Server>> {
+    let Some(context) = crate::server_catalog::selected_vm_context()? else {
+        return Ok(None);
+    };
+    let catalog = crate::server_catalog::Catalog::load()?;
+    let others = catalog
+        .list()
+        .map(|(name, _)| name.to_owned())
+        .filter(|name| *name != context.name)
+        .collect();
+    Ok(Some(Server {
+        name: context.name,
+        others,
+    }))
 }
 
 /// Print the report as JSON: the guest's answer to the host, and what
@@ -1004,6 +1055,22 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     let cfg = Config::load()?;
     let vm = vm::Vm::new(&cfg);
     let mut facts = Facts::gather(&cfg, &vm);
+    facts.server = named_server()?;
+    if let Some(server) = &facts.server {
+        if data && !server.others.is_empty() {
+            bail!(
+                "--data removes {} and {}, which servers {} still use; uninstall those first, or run this without --data",
+                facts.config_dir.display(),
+                facts.state_dir.display(),
+                server.others.join(", ")
+            );
+        }
+        // The host's sign-in is not this server's: its bot is signed in
+        // inside its guest, and the host's token serves the others.
+        facts.bot = None;
+        facts.has_token = false;
+        facts.key_ids = false;
+    }
     let mut opts = Opts {
         data,
         ..Opts::default()
@@ -1092,6 +1159,29 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
         fail("purge", e);
     }
 
+    // A named server's bot is signed in inside its guest, so it is
+    // signed out there, while the guest still answers.
+    if let Some(server) = &facts.server {
+        println!("==> sign the bot out in server {}", server.name);
+        if opts.report_error.is_some() || facts.vm_running != Some(true) {
+            println!(
+                "skipped: the guest does not answer; any keys it enrolled stay on GitHub (revoke them in the bot's settings)"
+            );
+        } else {
+            match vm.exec_ssf(&["auth".to_string(), "logout".to_string()]) {
+                Ok(st) if st.success() => {}
+                Ok(st) => fail(
+                    "bot",
+                    anyhow::anyhow!(
+                        "`ssf auth logout` exited {} in the guest",
+                        st.code().unwrap_or(1)
+                    ),
+                ),
+                Err(e) => fail("bot", e),
+            }
+        }
+    }
+
     println!("==> stop and disable {}", crate::platform::service_name());
     let was_off = !facts.service_active && !facts.service_enabled;
     // The service command's own failure ends the uninstall here, and does
@@ -1136,11 +1226,13 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
         );
     }
 
-    println!("==> sign the bot out");
-    if !facts.bot_signed_in() {
-        println!("bot not signed in; nothing to revoke");
-    } else if let Err(e) = crate::auth_logout(false).await {
-        fail("bot", e);
+    if facts.server.is_none() {
+        println!("==> sign the bot out");
+        if !facts.bot_signed_in() {
+            println!("bot not signed in; nothing to revoke");
+        } else if let Err(e) = crate::auth_logout(false).await {
+            fail("bot", e);
+        }
     }
 
     println!("==> destroy the VM");
@@ -1163,7 +1255,7 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     // failed, it turns the next run into a host-mode one: no guest
     // report, no refusal over the workspaces on the surviving data disk,
     // and a `Continue?` that destroys them unchecked.
-    if facts.vm_mode && vm_gone && !data {
+    if facts.vm_mode && vm_gone && !data && facts.server.is_none() {
         match Config::load() {
             Ok(mut cfg) if cfg.vm.enabled => {
                 cfg.vm.enabled = false;
@@ -1177,6 +1269,26 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
             }
             Ok(_) => {}
             Err(e) => fail("vm", e),
+        }
+    }
+
+    if let Some(server) = facts.server.as_ref().filter(|_| vm_gone) {
+        println!("==> remove server {} from the catalog", server.name);
+        let paths = std::iter::once(crate::setup::completion_marker())
+            .chain(crate::platform::service_log(&server.name));
+        for path in paths {
+            match std::fs::remove_file(&path) {
+                Ok(()) => println!("removed {}", path.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => fail(
+                    "server",
+                    anyhow::Error::from(e).context(format!("removing {}", path.display())),
+                ),
+            }
+        }
+        match crate::server_catalog::Catalog::remove(&server.name) {
+            Ok(_) => println!("removed server {}", server.name),
+            Err(e) => fail("server", e),
         }
     }
 
@@ -1207,12 +1319,29 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
             facts.vm_base.display()
         );
     }
-    if !data {
+    let others = facts
+        .server
+        .as_ref()
+        .map(|s| s.others.clone())
+        .unwrap_or_default();
+    if !others.is_empty() {
+        println!("  the other servers: {}", others.join(", "));
+    }
+    if !data && others.is_empty() {
         println!(
             "  {} and {} (remove with `ssf uninstall --data`, or by hand)",
             facts.config_dir.display(),
             facts.state_dir.display()
         );
+    }
+    if !others.is_empty() {
+        if failed > 0 {
+            bail!(
+                "{failed} step{} failed (listed above)",
+                if failed == 1 { "" } else { "s" }
+            );
+        }
+        return Ok(());
     }
     let marketplace_removed = if failed == 0 {
         match remove_marketplace_runtime(data, marketplace_lock.as_ref()) {
