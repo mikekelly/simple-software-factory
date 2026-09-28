@@ -172,6 +172,12 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
                 check(false, format!("herdr config: {e:#}"));
             }
             record(Level::Note, crate::herdr::session_summary());
+            if !factory_vm::in_guest() {
+                record(
+                    Level::Note,
+                    format!("herdr session start: `{}`", crate::herdr::server_command()),
+                );
+            }
         }
         if cli_present {
             match d.status().await {

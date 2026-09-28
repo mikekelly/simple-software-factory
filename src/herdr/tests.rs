@@ -2044,7 +2044,7 @@ async fn a_long_prompt_is_not_pasted_into_a_question() {
 
 /// Every inherited `HERDR_*` variable is removed, `HERDR_SOCKET_PATH` (which
 /// wins over `HERDR_SESSION`) included, and the command names ssf's session
-/// and config (#602); other variables are left alone.
+/// (#602); other variables are left alone.
 #[test]
 fn herdr_command_leaves_the_inherited_session_for_ssfs_own() {
     let inherited = [
@@ -2058,11 +2058,10 @@ fn herdr_command_leaves_the_inherited_session_for_ssfs_own() {
         "PATH",
     ]
     .map(std::ffi::OsString::from);
-    let config = Path::new("/cfg/ssf/herdr.toml");
     let command = isolated(
         std::process::Command::new("herdr"),
         inherited,
-        Some((SESSION, config)),
+        Some(SESSION),
     );
     let envs: std::collections::BTreeMap<_, _> = command
         .get_envs()
@@ -2070,7 +2069,7 @@ fn herdr_command_leaves_the_inherited_session_for_ssfs_own() {
         .collect();
     let expected: std::collections::BTreeMap<_, _> = [
         ("HERDR_CLIENT_SOCKET_PATH", None),
-        ("HERDR_CONFIG_PATH", Some(config.as_os_str().to_owned())),
+        ("HERDR_CONFIG_PATH", None),
         ("HERDR_ENV", None),
         ("HERDR_PANE_ID", None),
         ("HERDR_SESSION", Some("ssf".into())),
