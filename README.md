@@ -190,6 +190,7 @@ repository they are one file per area under `docs/`, installed under
 | [Identity and bylines](docs/identity-and-bylines.md) | how `gh` and `git` act as the bot inside a session, and which session posted what |
 | [Under the hood](docs/internals.md) | polling, delivery, resume and restarts; `ssf status --json`; known limits |
 | [Development](docs/development.md) | building, scratch runs, a dev build as the service, the source layout |
+| [End-to-end smoke testing](docs/smoke-testing.md) | scratch VMs and the checks for restarts, upgrades and backends on a real host |
 
 Inside a session ssf started, `ssf guide` is the collaboration reference.
 

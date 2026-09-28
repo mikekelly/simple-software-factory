@@ -15,6 +15,9 @@ unset SSF_CONFIG_DIR SSF_STATE_DIR SSF_GITHUB_TOKEN   # in a guest shell, restor
 cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bump it makes to PKGBUILD
 ```
 
+For end-to-end checks on a real host (service restarts, upgrades, the incus
+backend without KVM), see [smoke-testing.md](smoke-testing.md).
+
 When reporting verification, a count must name what it is measured against:
 record the branch and base commits, and use the same command and Rust toolchain
 for both. Test totals need that context too; report the change from the base,
