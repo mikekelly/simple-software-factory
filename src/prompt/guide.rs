@@ -49,6 +49,10 @@ like on your item, and emoji reactions added to or removed from its posts (who, 
 which post). Your own posts are not echoed back here; a session started again is shown \
 the item's story, its own posts included -- the newest events, on a busy item, with a note \
 saying how much it left out and where to read the rest.\n\
+- CI on your pull request arrives here too, once per head commit: `CI started` when its \
+checks begin, then `CI passed`, or `CI failed` naming each failing check with a link to its \
+run. A re-run on the same commit is said again only if it ends differently; a new push \
+starts afresh.\n\
 - Inline review comments on a pull request arrive here too; to read them all, use \
 `gh api repos/{{owner}}/{{repo}}/pulls/<n>/comments` (`gh pr view --comments` leaves them out).\n\
 - `[ssf] Now tracking ...`: a pull request you opened or one on your branch has been bound \

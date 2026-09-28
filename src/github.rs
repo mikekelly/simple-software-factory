@@ -381,6 +381,83 @@ pub fn parse_project_items(data: &Value) -> Vec<ProjectCard> {
         .collect()
 }
 
+/// One CI check on a commit: a check run or a commit status (#641).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Check {
+    pub name: String,
+    /// Where its run is shown (`html_url`, `details_url` or `target_url`).
+    pub url: String,
+    /// It has finished (a check run `completed`, a status not `pending`).
+    pub done: bool,
+    /// It finished and did not pass.
+    pub failed: bool,
+    /// When it last moved, GitHub's ISO timestamp, or empty.
+    pub at: String,
+}
+
+/// The checks in a `check-runs` answer and a combined `status` answer.
+/// GitHub gives the latest run of each check and the latest status of each
+/// context, so a re-run replaces the run it repeats.
+pub fn ci_checks(runs: Option<&Value>, status: Option<&Value>) -> Vec<Check> {
+    let list = |v: Option<&Value>, key: &str| -> Vec<Value> {
+        v.and_then(|v| v.get(key))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut out = Vec::new();
+    for r in list(runs, "check_runs") {
+        let done = value_str(&r, &["status"]) == Some("completed");
+        let conclusion = value_str(&r, &["conclusion"]).unwrap_or("");
+        out.push(Check {
+            name: value_str(&r, &["name"]).unwrap_or("?").to_string(),
+            url: value_str(&r, &["html_url"])
+                .or_else(|| value_str(&r, &["details_url"]))
+                .unwrap_or("")
+                .to_string(),
+            done,
+            failed: done
+                && matches!(
+                    conclusion,
+                    "failure" | "timed_out" | "cancelled" | "action_required" | "startup_failure"
+                ),
+            at: value_str(&r, &["completed_at"])
+                .or_else(|| value_str(&r, &["started_at"]))
+                .unwrap_or("")
+                .to_string(),
+        });
+    }
+    for s in list(status, "statuses") {
+        let state = value_str(&s, &["state"]).unwrap_or("pending");
+        out.push(Check {
+            name: value_str(&s, &["context"]).unwrap_or("?").to_string(),
+            url: value_str(&s, &["target_url"]).unwrap_or("").to_string(),
+            done: state != "pending",
+            failed: matches!(state, "failure" | "error"),
+            at: value_str(&s, &["updated_at"]).unwrap_or("").to_string(),
+        });
+    }
+    out
+}
+
+/// Whether a `check-suites` answer has a suite with check runs that has
+/// not completed: a workflow whose `needs:` jobs have no run yet. Suites
+/// with no runs are left out, since some apps create suites they never run.
+pub fn ci_suites_running(suites: Option<&Value>) -> bool {
+    suites
+        .and_then(|v| v.get("check_suites"))
+        .and_then(Value::as_array)
+        .is_some_and(|a| {
+            a.iter().any(|s| {
+                s.get("latest_check_runs_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    > 0
+                    && value_str(s, &["status"]) != Some("completed")
+            })
+        })
+}
+
 /// Result of a conditional GET.
 pub enum Conditional<T> {
     NotModified,
@@ -806,6 +883,71 @@ impl GitHub {
             .await?;
         let v: Value = resp.json().await.context("decoding pull request")?;
         Ok(PrInfo::from_value(&v))
+    }
+
+    /// A GET asked with `If-None-Match: etag`: `NotModified` (free against
+    /// the rate limit) when the answer is as it was when `etag` was read.
+    async fn get_if_changed(
+        &self,
+        url: &str,
+        etag: Option<&str>,
+        what: &str,
+    ) -> Result<Conditional<Value>> {
+        let mut req = self.get(url);
+        if let Some(tag) = etag {
+            req = req.header(IF_NONE_MATCH, tag);
+        }
+        let resp = req.send().await.with_context(|| format!("GET {url}"))?;
+        let resp = self.check(resp, what).await?;
+        if resp.status() == StatusCode::NOT_MODIFIED {
+            return Ok(Conditional::NotModified);
+        }
+        let etag = header_str(&resp, ETAG);
+        let value = resp
+            .json()
+            .await
+            .with_context(|| format!("decoding {what}"))?;
+        Ok(Conditional::Modified { value, etag })
+    }
+
+    /// The head commit of a pull request, asked against `etag` (#641).
+    pub async fn pull_head(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        etag: Option<&str>,
+    ) -> Result<Conditional<String>> {
+        let url = self.url(&format!("repos/{owner}/{repo}/pulls/{number}"));
+        let what = format!("fetching {owner}/{repo} PR #{number}");
+        Ok(match self.get_if_changed(&url, etag, &what).await? {
+            Conditional::NotModified => Conditional::NotModified,
+            Conditional::Modified { value, etag } => Conditional::Modified {
+                value: value_str(&value, &["head", "sha"])
+                    .unwrap_or("")
+                    .to_string(),
+                etag,
+            },
+        })
+    }
+
+    /// The check runs (`check-runs`), check suites (`check-suites`) or the
+    /// combined commit status (`status`) of a commit, asked against `etag` (#641); read with
+    /// [`ci_checks`]. Only the first hundred of either are read.
+    pub async fn commit_ci(
+        &self,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+        which: &str,
+        etag: Option<&str>,
+    ) -> Result<Conditional<Value>> {
+        let url = format!(
+            "{}?per_page=100",
+            self.url(&format!("repos/{owner}/{repo}/commits/{sha}/{which}"))
+        );
+        let what = format!("reading {which} of {owner}/{repo}@{sha}");
+        self.get_if_changed(&url, etag, &what).await
     }
 
     /// The open project boards an issue or pull request is on. Needs the

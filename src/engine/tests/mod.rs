@@ -51,6 +51,7 @@ pub(super) fn engine() -> Engine {
         adopting: None,
         conflict_checks: BTreeMap::new(),
         conflict_pairs: BTreeMap::new(),
+        ci_polls: BTreeMap::new(),
         identity_checked_at: Some(Instant::now()),
         _state_lock: None,
     }
@@ -264,6 +265,9 @@ struct GitHubStub {
     reactions: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Vec<Value>>>>,
     /// Inline review comments by pull request number.
     review_comments: std::sync::Arc<std::sync::Mutex<BTreeMap<u64, Vec<Value>>>>,
+    /// CI by commit and endpoint (`<sha>/check-runs`, `<sha>/status`);
+    /// a commit never set has none of either.
+    ci: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Value>>>,
 }
 
 impl GitHubStub {
@@ -315,6 +319,8 @@ impl GitHubStub {
         let rx = reactions.clone();
         let review_comments: Arc<Mutex<BTreeMap<u64, Vec<Value>>>> = Arc::default();
         let rc = review_comments.clone();
+        let ci: Arc<Mutex<BTreeMap<String, Value>>> = Arc::default();
+        let cx = ci.clone();
         tokio::spawn(async move {
             let other_etags = AtomicU32::new(1);
             loop {
@@ -477,7 +483,36 @@ impl GitHubStub {
                     .and_then(|n| n.parse::<u64>().ok())
                     .and_then(|n| pl.lock().unwrap().get(&n).cloned())
                 {
-                    ("200 OK", "\"pr\"".to_string(), pull.to_string())
+                    // The ETag follows the head commit, and is honoured.
+                    let etag = format!("\"pr{}\"", pull["head"]["sha"].as_str().unwrap_or(""));
+                    if if_none_match.as_deref() == Some(etag.as_str()) {
+                        ("304 Not Modified", etag, String::new())
+                    } else {
+                        ("200 OK", etag, pull.to_string())
+                    }
+                } else if let Some(on) = path.strip_prefix("/repos/o/r/commits/") {
+                    // CI of a commit, with an ETag that follows the content.
+                    let body = cx.lock().unwrap().get(on).cloned().unwrap_or_else(|| {
+                        if on.ends_with("/check-suites") {
+                            json!({"total_count": 0, "check_suites": []})
+                        } else if on.ends_with("/status") {
+                            json!({"state": "pending", "statuses": []})
+                        } else {
+                            json!({"total_count": 0, "check_runs": []})
+                        }
+                    });
+                    let body = body.to_string();
+                    let etag = {
+                        use std::hash::{Hash, Hasher};
+                        let mut hsh = std::collections::hash_map::DefaultHasher::new();
+                        body.hash(&mut hsh);
+                        format!("\"ci{:x}\"", hsh.finish())
+                    };
+                    if if_none_match.as_deref() == Some(etag.as_str()) {
+                        ("304 Not Modified", etag, String::new())
+                    } else {
+                        ("200 OK", etag, body)
+                    }
                 } else if let Some(item) = path
                     .strip_prefix("/repos/o/r/issues/")
                     .and_then(|n| n.parse::<u64>().ok())
@@ -561,7 +596,51 @@ impl GitHubStub {
             identity,
             reactions,
             review_comments,
+            ci,
         }
+    }
+
+    /// Serve check suites for commit `sha`, as `(status, runs so far)`.
+    fn set_suites(&self, sha: &str, suites: &[(&str, u64)]) {
+        let suites: Vec<Value> = suites
+            .iter()
+            .map(|(st, n)| json!({"status": st, "latest_check_runs_count": n}))
+            .collect();
+        self.ci.lock().unwrap().insert(
+            format!("{sha}/check-suites"),
+            json!({"total_count": suites.len(), "check_suites": suites}),
+        );
+    }
+
+    /// Serve CI for commit `sha`: its check runs, as
+    /// `(name, status, conclusion)`, and its commit statuses, as
+    /// `(context, state)`.
+    fn set_ci(&self, sha: &str, runs: &[(&str, &str, Option<&str>)], statuses: &[(&str, &str)]) {
+        let runs: Vec<Value> = runs
+            .iter()
+            .map(|(n, st, c)| {
+                json!({"name": n, "status": st, "conclusion": c,
+                       "html_url": format!("https://gh/runs/{n}"),
+                       "completed_at": "2026-01-01T10:00:00Z"})
+            })
+            .collect();
+        let statuses: Vec<Value> = statuses
+            .iter()
+            .map(|(c, st)| {
+                json!({"context": c, "state": st,
+                       "target_url": format!("https://ci/{c}"),
+                       "updated_at": "2026-01-01T10:00:00Z"})
+            })
+            .collect();
+        let mut ci = self.ci.lock().unwrap();
+        ci.insert(
+            format!("{sha}/check-runs"),
+            json!({"total_count": runs.len(), "check_runs": runs}),
+        );
+        ci.insert(
+            format!("{sha}/status"),
+            json!({"state": "pending", "statuses": statuses}),
+        );
     }
 
     /// Who reacted with what on `on` (`issues/5`, `issues/comments/2`),

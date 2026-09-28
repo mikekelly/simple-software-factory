@@ -130,6 +130,25 @@ See [Session dashboard](dashboard.md).
   follow-up. The bot's own
   reactions and those by logins the allow-list refuses are never delivered;
   `daemon.ignored_events` naming `reacted` silences all of them.
+- **CI.** For each open pull request an active session owns, every pass
+  reads the pull request's head commit, its check runs
+  (`commits/<sha>/check-runs`), its check suites (`commits/<sha>/check-suites`)
+  and its combined status (`commits/<sha>/status`), all conditionally against
+  ETags kept in memory, so a quiet pull request costs four 304s. A suite
+  with runs that has not completed (a workflow whose `needs:` jobs have no
+  run yet) keeps CI unsettled; suites with no runs are ignored. The session hears `CI started on commit <sha>: N checks
+  running (...)` the first time any check is seen running, unless the first
+  look finds them all finished, and then, once every check run and status
+  has finished, `CI passed on commit <sha>: all N checks passed` or `CI
+  failed on commit <sha>: K of N checks failed:` with one line per failing
+  check and the link to its run. Each is an `<event>` in `<new-activity>`.
+  A commit with no checks at all says nothing. What was said is kept per
+  item as `ci_notice` (commit, started, result) in the state file, so a
+  restart does not repeat it; a re-run on the same commit is said again
+  only when it passes where it failed, fails where it passed, or fails
+  different checks, and a new head commit starts afresh. Only the first 100
+  check runs and statuses are read. `daemon.ignored_events` naming `ci`
+  turns this off.
 - **Who is listened to.** Before an item gets a session, and before every
   delivery, the login behind the trigger or event is checked against the
   allow-list (see [Who may drive the

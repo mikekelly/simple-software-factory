@@ -304,6 +304,11 @@ pub struct IssueState {
     /// divergence is a new incident.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict_notice: Option<ConflictNotice>,
+    /// What the session has been told about CI on its pull request's
+    /// head commit (#641), so neither a re-run with the same result nor a
+    /// restart says it again. A new head commit starts afresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_notice: Option<CiNotice>,
     /// Whether the log has already said that the listings and the item
     /// disagree about this one, so that a hold announces itself once per
     /// incident rather than once in the item's life.
@@ -662,6 +667,19 @@ pub struct ConflictNotice {
     pub base_ref: String,
     pub base_sha: String,
     pub branch_sha: String,
+}
+
+/// The CI news delivered for one head commit of a pull request (#641).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CiNotice {
+    pub sha: String,
+    /// "CI started" was delivered, or a settled result made it moot.
+    #[serde(default)]
+    pub started: bool,
+    /// The settled result delivered last: `pass`, or `fail:` and the
+    /// failing checks' names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
 }
 
 /// What an item's session runs with instead of the repository's own

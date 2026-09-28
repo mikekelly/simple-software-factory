@@ -228,6 +228,15 @@ reposts nothing.
 owner/repo --event-comments false` for one. Nothing else changes, the hold on a blocked
 session included, and every event is still in the journal.
 
+## CI results
+
+For an open pull request an active session owns, ssf reads the head commit's check runs
+and commit statuses on every pass and tells the session, once per head commit, when CI
+starts and when it settles: passed, or failed with each failing check and a link to its
+run. Nothing is said while checks run, for a commit with no checks, or for a re-run that
+ends the way the last one did; a new push starts afresh. See
+[internals](internals.md). `daemon.ignored_events` naming `ci` turns this off.
+
 ## Branch conflicts
 
 ssf checks whether an active session's committed branch would conflict with the

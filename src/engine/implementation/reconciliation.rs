@@ -378,6 +378,7 @@ impl Engine {
         {
             debug!(repo = repo.name, "nothing changed");
             self.watch_reactions(repo, owner, name).await?;
+            self.watch_checks(repo, owner, name).await?;
             return self.watch_subscribed(repo, owner, name).await;
         }
 
@@ -660,6 +661,7 @@ impl Engine {
             rs.created_numbers = created_numbers;
         }
         self.watch_reactions(repo, owner, name).await?;
+        self.watch_checks(repo, owner, name).await?;
         self.watch_subscribed(repo, owner, name).await
     }
 
