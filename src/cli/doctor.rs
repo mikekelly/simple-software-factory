@@ -108,7 +108,7 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
             Ok(gh) => match gh.whoami().await {
                 Ok(me) => {
                     check(true, format!("GitHub token belongs to @{}", me.login));
-                    let missing = me.missing_scopes();
+                    let missing = me.missing_scopes(cfg.github.ssh_key_path.is_none());
                     if !missing.is_empty() {
                         check(
                             false,

@@ -226,7 +226,7 @@ pub(super) async fn auth(command: AuthCommand) -> Result<()> {
                     "{}",
                     json!({
                         "login": me.login, "type": me.kind, "id": me.id,
-                        "scopes": me.scopes, "missing_scopes": me.missing_scopes(),
+                        "scopes": me.scopes, "missing_scopes": me.missing_scopes(cfg.github.ssh_key_path.is_none()),
                         "email": cfg.github.email,
                         "ssh_key": cfg.github.ssh_key_path, "ssh_key_present": key_ok,
                         "ssh_key_id": cfg.github.ssh_key_id, "signing_key_id": cfg.github.signing_key_id,
@@ -251,7 +251,7 @@ pub(super) async fn auth(command: AuthCommand) -> Result<()> {
                 me.id,
                 cfg.token_source()
             );
-            let missing = me.missing_scopes();
+            let missing = me.missing_scopes(cfg.github.ssh_key_path.is_none());
             if !missing.is_empty() {
                 println!(
                     "warning: the token lacks scopes {}; run `ssf auth login`",

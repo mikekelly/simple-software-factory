@@ -111,13 +111,15 @@ pub struct User {
 
 impl User {
     /// Required scopes the token lacks; empty when its scopes are unknown.
-    pub fn missing_scopes(&self) -> Vec<&'static str> {
+    /// A keyless (`--no-keys`) setup needs only `repo` and `workflow`.
+    pub fn missing_scopes(&self, keyless: bool) -> Vec<&'static str> {
         let Some(have) = &self.scopes else {
             return Vec::new();
         };
         crate::ghcli::REQUIRED_SCOPES
             .iter()
             .copied()
+            .filter(|s| !keyless || matches!(*s, "repo" | "workflow"))
             .filter(|s| !have.iter().any(|h| h == s))
             .collect()
     }
@@ -549,8 +551,9 @@ impl GitHub {
                 v.split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .collect()
-            });
+                    .collect::<Vec<_>>()
+            })
+            .filter(|s| !s.is_empty());
         let mut me = resp.json::<User>().await.context("decoding /user")?;
         me.scopes = scopes;
         Ok(me)
@@ -1412,9 +1415,10 @@ mod user_scope_tests {
             "admin:public_key",
             "admin:ssh_signing_key",
         ]));
-        assert_eq!(old.missing_scopes(), vec!["workflow"]);
+        assert_eq!(old.missing_scopes(false), vec!["workflow"]);
+        assert_eq!(user(Some(&["repo"])).missing_scopes(true), vec!["workflow"]);
         let full = user(Some(crate::ghcli::REQUIRED_SCOPES));
-        assert!(full.missing_scopes().is_empty());
-        assert!(user(None).missing_scopes().is_empty());
+        assert!(full.missing_scopes(false).is_empty());
+        assert!(user(None).missing_scopes(false).is_empty());
     }
 }
