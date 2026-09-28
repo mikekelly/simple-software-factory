@@ -1,6 +1,7 @@
 # Release packages: on a vX.Y.Z tag, build the .deb, .rpm and bare x86_64
-# binary (packaging/linux), the Arch .pkg.tar.zst (packaging/release) and,
-# best effort, the aarch64 .deb, .rpm and bare binary, and attach them to a
+# binary (packaging/linux), the Arch .pkg.tar.zst (packaging/release) and
+# the aarch64 .deb, .rpm and bare binary, install each package format in a
+# clean container (install-check), and attach them to a
 # draft GitHub release of that tag, creating the draft if it does not exist
 # yet. Existing assets are preserved so a package tested on the release
 # target cannot be overwritten by a rebuild. Publishing is a separate, deliberate step after validation. On
@@ -68,10 +69,9 @@ jobs:
 
   # The same for aarch64 (arm64 .deb and aarch64 .rpm, which arm64 VM guests
   # install, and the bare static client/server binaries), built natively on
-  # GitHub's ARM runner. Best effort: a failure here never blocks the release.
+  # GitHub's ARM runner. Required: Apple-silicon Lima guests install these.
   linux-aarch64-binary:
     runs-on: ubuntu-24.04-arm
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -155,18 +155,57 @@ jobs:
           path: dist/*.pkg.tar.zst
           if-no-files-found: error
 
+  # Install each package format in a clean container with the distro's own
+  # tool and run the installed client: `ssf --version` must print the
+  # release's version and `ssf --help` must succeed. A package install check
+  # only; runtime behaviour is tested by hand. The release job depends on it.
+  install-check:
+    needs: [linux-packages, linux-aarch64-binary, arch-package]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { format: deb, runner: ubuntu-latest, image: 'ubuntu:24.04', artifact: linux-packages }
+          - { format: rpm, runner: ubuntu-latest, image: 'fedora:latest', artifact: linux-packages }
+          - { format: arch, runner: ubuntu-latest, image: 'archlinux:base', artifact: arch-package }
+          - { format: static, runner: ubuntu-latest, image: 'ubuntu:24.04', artifact: linux-packages }
+          - { format: deb, runner: ubuntu-24.04-arm, image: 'ubuntu:24.04', artifact: linux-aarch64-binary }
+          - { format: static, runner: ubuntu-24.04-arm, image: 'ubuntu:24.04', artifact: linux-aarch64-binary }
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+      - name: Install
+        run: |
+          case "${{ matrix.format }}" in
+            deb) apt-get update && apt-get install -y ./dist/ssf_*.deb ;;
+            rpm) dnf install -y ./dist/ssf-*.rpm ;;
+            # herdr is in Omarchy's repository, not Arch's.
+            arch) pacman -Sy --noconfirm && pacman -U --noconfirm --assume-installed herdr ./dist/*.pkg.tar.zst ;;
+            static)
+              install -m755 dist/ssf-[0-9]*-linux-* /usr/local/bin/ssf
+              install -m755 dist/ssf-server-*-linux-* /usr/local/bin/ssf-server ;;
+          esac
+      - name: Run the installed client
+        run: |
+          ssf --version | tee version.txt
+          grep -Eq '[0-9]+\.[0-9]+\.[0-9]+' version.txt
+          if [ -n "$TAG" ]; then grep -Fq "${TAG#v}" version.txt; fi
+          ssf --help >/dev/null
+
   # One job stages a draft release after the builds: no race on
   # `gh release create`, and a draft is only made once every package exists.
   # It never publishes the draft or changes a published release, and never
-  # replaces an existing asset. The condition spells
-  # that out: always() so a failed aarch64 job does not skip this one, then
-  # the two package jobs must have succeeded (the aarch64 files are uploaded
-  # when its job succeeded, skipped otherwise). Tag pushes and calls from
+  # replaces an existing asset. Every build and install check must have
+  # passed, and every expected asset must be present. Tag pushes and calls from
   # cut-release.yml only: a manual run on a tag ref builds and uploads
   # artifacts but stages nothing.
   release:
-    if: always() && ((github.event_name == 'push' && github.ref_type == 'tag') || inputs.tag != '') && needs.linux-packages.result == 'success' && needs.arch-package.result == 'success'
-    needs: [linux-packages, arch-package, linux-aarch64-binary]
+    if: (github.event_name == 'push' && github.ref_type == 'tag') || inputs.tag != ''
+    needs: [linux-packages, arch-package, linux-aarch64-binary, install-check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -176,6 +215,19 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Every expected asset is present
+        run: |
+          v=${TAG#v}
+          missing=0
+          for name in "ssf_${v}-1_amd64.deb" "ssf_${v}-1_arm64.deb" \
+              "ssf-${v}-1.x86_64.rpm" "ssf-${v}-1.aarch64.rpm" \
+              "ssf-${v}-linux-x86_64" "ssf-server-${v}-linux-x86_64" \
+              "ssf-${v}-linux-aarch64" "ssf-server-${v}-linux-aarch64"; do
+            [ -f "dist/$name" ] || { echo "::error::missing release asset $name"; missing=1; }
+          done
+          ls dist/ssf-${v}-*-x86_64.pkg.tar.zst >/dev/null 2>&1 \
+            || { echo "::error::missing Arch package for $v"; missing=1; }
+          exit "$missing"
       - name: Create a draft release if missing, add new packages
         env:
           GH_TOKEN: ${{ github.token }}
