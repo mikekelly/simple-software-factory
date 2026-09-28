@@ -182,12 +182,16 @@ the log line below carries the URL actually being served.
 ### Live terminal for an item's pane
 
 Where this page may type into an item's pane, its card has an **Open
-terminal** link. It opens the session's agent pane in a new tab as a live
-terminal (xterm.js), streamed from herdr as the pane draws it. Nothing is
+terminal** link. It opens the session's agent pane as a live terminal
+(xterm.js) in a panel beside the cards, streamed from herdr as the pane draws
+it. Panels can be tabbed, split and dragged, and the layout is kept per
+browser; the **Agents** panel of cards has no close control, so it keeps its
+place (and a layout restored without it gets it back). Nothing is
 redacted: anyone who opens it sees the pane's output as it is, GitHub tokens
 included.
 
-The terminal is a full terminal: keys, paste and the wheel all reach the pane.
+The terminal is a full terminal: once you take control, keys, paste and the
+wheel all reach the pane.
 The link shows, and the server opens the terminal, only where both of these are
 on:
 
@@ -206,10 +210,10 @@ paste and wheel reach the pane, and the pane takes its window's size. Everyone
 else is view-only: they see the pane at that size, the font shrunk to fit
 (13px down to 4px), the server drops what they type, and their title bar has
 **Take control**, which makes them the controller (the pane takes their size)
-and turns the previous controller view-only, with the button back. The first
-viewer to open a pane no one controls takes control; when the controller
-leaves, no one holds it until someone presses Take control or opens the
-terminal afresh, and the pane keeps its size meanwhile. A viewer who joins
+and turns the previous controller view-only, with the button back. Every
+terminal opens view-only, even on a pane no one controls: control is only
+ever taken with Take control. When the controller leaves, no one holds it
+until someone presses Take control, and the pane keeps its size meanwhile. A viewer who joins
 late is sent the whole screen. The title bar says who is in control and lists
 who is watching (`@login` for the extension, `dashboard` for this page); the
 names are for display only.
@@ -351,9 +355,9 @@ saying so. The protocol:
 - **Control**: one viewer holds it. Only the controller's typing (binary
   frames), `scroll` and `resize` reach the pane; everyone else's are dropped,
   though a view-only viewer's latest `resize` is kept and applied when it
-  takes control. The first viewer to join a pane no one controls takes it
-  (and the pane its size); `take` moves it to the sender; when the
-  controller leaves no one holds it until a viewer takes it or joins.
+  takes control. Joining never takes it, nor sizes the pane (a new stream
+  starts at the pane's own size); `take` moves it to the sender; when the
+  controller leaves no one holds it until a viewer takes it.
 - **text frames** from the server are JSON: `{"type": "size", "cols": N,
   "rows": N}` when the pane's size changes (and on joining);
   `{"type": "viewers", "names": [...], "controller": "dashboard", "control":

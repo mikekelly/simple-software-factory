@@ -480,9 +480,9 @@ It is a full terminal, shared like a tmux session, but one viewer at a time
 holds control: only the controller's typing, paste and wheel reach the pane,
 and the pane takes its window's size. The others see it at that size with the
 font shrunk to fit, and have **Take control** in the header, which makes them
-the controller (the previous one becomes view-only). The first to open a pane
-no one controls takes control; when the controller leaves, no one holds it
-until someone takes it. The terminal's header lists
+the controller (the previous one becomes view-only). The terminal always
+opens view-only, even when no one controls the pane: press **Take control** to
+type. When the controller leaves, no one holds it until someone takes it. The terminal's header lists
 who is watching: you as `@login` (the GitHub login this page is signed in as,
 or `extension`), the server page as `dashboard`. The factory never takes the
 pane over from someone else; while someone else holds it, a notice says so and
