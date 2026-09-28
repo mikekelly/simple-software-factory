@@ -50,6 +50,12 @@ pub struct Report {
     pub daemon: bool,
     #[serde(default)]
     pub items: Vec<Item>,
+    /// What could not be looked at (the state file, the config, a
+    /// clone's worktrees), each with its reason. Any of it refuses the
+    /// destructive steps without `--force`: an inventory with a hole in
+    /// it is not "nothing to lose".
+    #[serde(default)]
+    pub unchecked: Vec<String>,
 }
 
 impl Report {
@@ -93,11 +99,149 @@ pub async fn inspect_path(path: String) -> Inspection {
 }
 
 /// The report for this machine: the daemon on its socket, the state file
-/// on disk, git in each workspace.
+/// on disk, git in each workspace, and every clone under the projects
+/// directories with the worktrees next to it. The state file only names
+/// the workspaces its records still point at; a scratch session, a record
+/// lost with a corrupt or missing file, a branch whose directory was
+/// removed are found on disk or not at all.
 pub async fn report() -> Report {
     let daemon = ipc::call(&ipc::Request::Ping).await.is_ok();
-    let state = State::load().unwrap_or_default();
-    report_from(&state, daemon, inspect_path).await
+    let projects = Config::load().map(|cfg| {
+        let mut dirs: Vec<PathBuf> = cfg
+            .drivers_in_use()
+            .into_iter()
+            .map(|d| cfg.projects_dir(d))
+            .collect();
+        dirs.dedup();
+        dirs
+    });
+    report_at(State::load(), projects, daemon).await
+}
+
+/// [`report`] from what was loaded: a state file or config that could not
+/// be read is named as unchecked, never taken for an empty one.
+pub async fn report_at(
+    state: Result<State>,
+    projects: Result<Vec<PathBuf>>,
+    daemon: bool,
+) -> Report {
+    let mut unchecked = Vec::new();
+    let state = state.unwrap_or_else(|e| {
+        unchecked.push(format!("the state file could not be read: {e:#}"));
+        State::default()
+    });
+    let projects = projects.unwrap_or_else(|e| {
+        unchecked.push(format!(
+            "the config could not be read, so the projects directory is unknown: {e:#}"
+        ));
+        Vec::new()
+    });
+    let mut r = report_from(&state, daemon, inspect_path).await;
+    r.unchecked = unchecked;
+    add_clones(&mut r, &projects).await;
+    r
+}
+
+/// The clones directly under a projects directory: every directory with
+/// a `.git`. A `<name>.worktrees` directory whose clone is gone is not
+/// one, and cannot be asked about; it is named as unchecked.
+pub fn clones_in(dir: &Path) -> Result<(Vec<PathBuf>, Vec<String>)> {
+    let mut clones = Vec::new();
+    let mut orphans = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((clones, orphans)),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+    };
+    for entry in entries {
+        let p = entry
+            .with_context(|| format!("reading {}", dir.display()))?
+            .path();
+        if !p.is_dir() {
+            continue;
+        }
+        if p.join(".git").exists() {
+            clones.push(p);
+        } else if let Some(name) = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".worktrees"))
+            && !dir.join(name).join(".git").exists()
+            && std::fs::read_dir(&p).is_ok_and(|mut d| d.next().is_some())
+        {
+            orphans.push(format!(
+                "{} holds worktrees whose clone {} is gone",
+                p.display(),
+                dir.join(name).display()
+            ));
+        }
+    }
+    clones.sort();
+    orphans.sort();
+    Ok((clones, orphans))
+}
+
+/// Add what [`release::held_work`] finds under every clone in `projects`:
+/// worktrees at risk that no record named, and a record's workspace that
+/// looked clean but whose branch still holds work (a directory gone with
+/// its commits only on the branch).
+pub async fn add_clones(report: &mut Report, projects: &[PathBuf]) {
+    for dir in projects {
+        let (clones, orphans) = match clones_in(dir) {
+            Ok(found) => found,
+            Err(e) => {
+                report.unchecked.push(format!("{e:#}"));
+                continue;
+            }
+        };
+        report.unchecked.extend(orphans);
+        for clone in clones {
+            let root = clone.to_string_lossy().to_string();
+            match release::held_work(&root, None).await {
+                Ok(held) => add_held(report, &root, &held),
+                Err(e) => report
+                    .unchecked
+                    .push(format!("worktrees of {root} could not be checked: {e:#}")),
+            }
+        }
+    }
+}
+
+/// Fold one clone's [`release::HeldReport`] into the report.
+pub fn add_held(report: &mut Report, root: &str, held: &release::HeldReport) {
+    let clone = Path::new(root)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| root.to_string());
+    for h in &held.worktrees {
+        if !h.at_risk() {
+            continue;
+        }
+        let state = h.describe(&held.base);
+        match report
+            .items
+            .iter_mut()
+            .find(|i| same_dir(Path::new(&i.path), Path::new(&h.path)))
+        {
+            Some(i) if i.state == "clean and pushed" || i.state == "already gone" => {
+                i.state = state;
+            }
+            Some(_) => {}
+            None => report.items.push(Item {
+                session: format!("{clone}/{}", h.name),
+                title: "(no record)".into(),
+                open: false,
+                path: h.path.clone(),
+                state,
+                problems: Vec::new(),
+            }),
+        }
+    }
+}
+
+/// The same directory, whichever way each side spells it.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
 }
 
 /// The report from a given state and a way of looking at a path. Every
@@ -131,7 +275,11 @@ where
             });
         }
     }
-    Report { daemon, items }
+    Report {
+        daemon,
+        items,
+        unchecked: Vec::new(),
+    }
 }
 
 /// What is set up on this machine (the host), gathered without the daemon.
@@ -555,12 +703,15 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
     if let Some(e) = &opts.report_error {
         out.push_str(&format!("  {e}\n"));
     }
+    for u in &report.unchecked {
+        out.push_str(&format!("  unchecked: {u}\n"));
+    }
     if opts.vm_unchecked {
         let (what, remedy) = vm_uncheckable(facts);
         out.push_str(&format!(
             "  {what}: its workspaces (the clones on its data disk) cannot be checked; {remedy}, or --force destroys them unchecked\n"
         ));
-    } else if report.items.is_empty() {
+    } else if report.items.is_empty() && report.unchecked.is_empty() {
         out.push_str("  (none)\n");
     }
     let width = report
@@ -646,6 +797,16 @@ fn confirm_default_no(question: &str) -> Result<bool> {
 pub fn hard_stop(facts: &Facts, report: &Report, opts: &Opts, force: bool) -> Option<String> {
     if force {
         return None;
+    }
+    if !report.unchecked.is_empty() {
+        return Some(format!(
+            "the workspaces could not all be checked (listed above); fix that first, or pass --force to {}",
+            if facts.vm_mode {
+                "destroy the VM's disks unchecked"
+            } else {
+                "go ahead"
+            }
+        ));
     }
     let unpushed = report.unpushed();
     if !unpushed.is_empty() {

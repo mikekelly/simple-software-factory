@@ -223,6 +223,7 @@ fn render_lists_what_goes_and_what_stays() {
             state: "dirty".into(),
             problems: vec!["1 uncommitted change".into()],
         }],
+        ..Default::default()
     };
     let text = render(&facts(), &r, &Opts::default());
     assert!(
@@ -431,6 +432,7 @@ fn hard_stop_names_unpushed_work_and_what_force_does_to_it() {
             state: "dirty".into(),
             problems: vec![],
         }],
+        ..Default::default()
     };
     let host = Facts::default();
     let why = hard_stop(&host, &dirty, &Opts::default(), false).unwrap();
@@ -842,4 +844,97 @@ fn data_removal_tolerates_missing_dirs() {
     assert!(remove_dir(&dir).unwrap());
     assert!(!dir.exists());
     assert!(!remove_dir(&dir).unwrap());
+}
+
+/// #610: a guest whose `state.json` is corrupt gave an empty report, and
+/// the VM was destroyed with every clone on its data disk.
+#[tokio::test]
+async fn a_corrupt_state_file_is_unchecked_and_refuses() {
+    let dir = std::env::temp_dir().join(format!("ssf-uninstall-corrupt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.json");
+    std::fs::write(&path, "{ not json").unwrap();
+    let r = report_at(State::load_from(&path), Ok(vec![dir.clone()]), true).await;
+    assert_eq!(r.unchecked.len(), 1, "{:?}", r.unchecked);
+    assert!(r.unchecked[0].contains("state file"), "{:?}", r.unchecked);
+    let facts = Facts {
+        vm_mode: true,
+        ..Facts::default()
+    };
+    let why = hard_stop(&facts, &r, &Opts::default(), false).expect("refuses");
+    assert!(why.contains("--force"), "{why}");
+    assert!(hard_stop(&facts, &r, &Opts::default(), true).is_none());
+    assert!(render(&facts, &r, &Opts::default()).contains("unchecked: the state file"));
+    let back: Report = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+    assert_eq!(back, r, "the host sees what the guest could not check");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A scratch session has no record in the state file; its unpushed
+/// commits are found on disk.
+#[tokio::test]
+async fn a_scratch_workspace_with_unpushed_commits_is_found_on_disk() {
+    use crate::release::testkit::{scratch, sh};
+    let s = scratch("uninstall-scratch").await;
+    let (w, _) = crate::driver::add_local_worktree(&s.work, "scratch-abc", None)
+        .await
+        .unwrap();
+    std::fs::write(Path::new(&w).join("b.txt"), "b\n").unwrap();
+    sh(&w, &["add", "."]).await;
+    sh(&w, &["commit", "-q", "-m", "two"]).await;
+    let r = report_at(Ok(State::default()), Ok(vec![s.dir.clone()]), true).await;
+    assert!(r.unchecked.is_empty(), "{:?}", r.unchecked);
+    let unpushed = r.unpushed();
+    assert_eq!(unpushed.len(), 1, "{:?}", r.items);
+    assert_eq!(unpushed[0].session, "work/scratch-abc");
+    assert!(
+        unpushed[0].state.contains("not on origin"),
+        "{}",
+        unpushed[0].state
+    );
+    let facts = Facts {
+        vm_mode: true,
+        ..Facts::default()
+    };
+    assert!(hard_stop(&facts, &r, &Opts::default(), false).is_some());
+}
+
+/// A record lost with the state file, and its directory removed by hand:
+/// the branch still holds the commits, and they are found.
+#[tokio::test]
+async fn an_orphaned_worktree_whose_directory_is_gone_still_counts() {
+    use crate::release::testkit::{scratch, sh};
+    let s = scratch("uninstall-orphan").await;
+    let (w, _) = crate::driver::add_local_worktree(&s.work, "issue-7-x", None)
+        .await
+        .unwrap();
+    std::fs::write(Path::new(&w).join("c.txt"), "c\n").unwrap();
+    sh(&w, &["add", "."]).await;
+    sh(&w, &["commit", "-q", "-m", "three"]).await;
+    std::fs::remove_dir_all(&w).unwrap();
+    // A record that says the directory is gone is not the last word.
+    let st = state_with(vec![issue(7, Some(&w))]);
+    let r = report_at(Ok(st), Ok(vec![s.dir.clone()]), true).await;
+    assert!(r.unchecked.is_empty(), "{:?}", r.unchecked);
+    assert_eq!(r.items.len(), 1, "{:?}", r.items);
+    assert_eq!(r.unpushed().len(), 1, "{:?}", r.items);
+    assert!(
+        r.items[0].state.contains("directory gone"),
+        "{}",
+        r.items[0].state
+    );
+}
+
+#[test]
+fn a_worktrees_directory_without_its_clone_is_unchecked() {
+    let dir = std::env::temp_dir().join(format!("ssf-uninstall-orphans-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("gone.worktrees/issue-1-x")).unwrap();
+    std::fs::create_dir_all(dir.join("empty.worktrees")).unwrap();
+    let (clones, orphans) = clones_in(&dir).unwrap();
+    assert!(clones.is_empty());
+    assert_eq!(orphans.len(), 1, "{orphans:?}");
+    assert!(orphans[0].contains("gone.worktrees"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
