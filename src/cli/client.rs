@@ -404,11 +404,6 @@ fn refuse_unsafe_global_command(route: &server_catalog::Route, command: &Command
             "this command still manages the installation-wide service or VM; it is not yet supported for a namespaced local server"
         );
     }
-    if route.vm_context.is_some() && matches!(command, Command::Uninstall { .. }) {
-        bail!(
-            "uninstall is not yet target-aware; refusing to apply installation-wide removal to a named VM server"
-        );
-    }
     Ok(())
 }
 

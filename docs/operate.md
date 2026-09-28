@@ -58,8 +58,9 @@ Two commands ignore server selection. `ssf server ...` manages the client's
 own catalog and errors with `--server does not apply to 'ssf server'`.
 `ssf skill TOPIC` always prints the bundled local guidance and contacts no
 server. `ssf vm ...` refuses a target whose transport is not a managed VM,
-and `ssf uninstall` refuses a named VM or namespaced local target: it is
-still installation-wide.
+and `ssf uninstall` refuses a namespaced local target. A named VM target is
+uninstalled on its own and dropped from the catalog
+([uninstall](uninstall.md#recovery-cases)).
 
 ## Inspect before you change anything
 

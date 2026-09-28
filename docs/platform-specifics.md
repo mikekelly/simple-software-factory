@@ -451,8 +451,9 @@ the factory's configuration, credentials, repositories and worktrees is
 kept. If `vm.rootfs` points at a custom image, replace it with one built
 from the matching guest scripts first.
 
-**Uninstall on an old installation.** `ssf uninstall` is still
-installation-wide and refuses a migrated VM or namespaced local target. If
+**Uninstall on an old installation.** `ssf uninstall` refuses a
+namespaced local target; `ssf --server NAME uninstall` removes one named VM
+server. If
 it cannot stop the service it stops there and changes nothing, telling you
 to stop it by hand (`systemctl --user stop ssf.service`, or
 `brew services stop ssf`) and run it again.
