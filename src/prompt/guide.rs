@@ -43,6 +43,8 @@ like on your item, and emoji reactions added to or removed from its posts (who, 
 which post). Your own posts are not echoed back here; a session started again is shown \
 the item's story, its own posts included -- the newest events, on a busy item, with a note \
 saying how much it left out and where to read the rest.\n\
+- Inline review comments on a pull request arrive here too; to read them all, use \
+`gh api repos/{{owner}}/{{repo}}/pulls/<n>/comments` (`gh pr view --comments` leaves them out).\n\
 - `[ssf] Now tracking ...`: a pull request you opened or one on your branch has been bound \
 to this session; its activity comes here from now on.\n\
 - `[ssf] FYI: ...`: activity on an item you follow but do not work on. For information only.\n\

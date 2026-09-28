@@ -189,7 +189,11 @@ fn tagged_bot_comments_are_kept_and_sorted_per_recipient() {
         ],
         "the untagged bot comment is a person's; tagged ones stay; the daemon's event post is nobody's"
     );
-    assert_eq!(d.seen.len(), 7, "everything is recorded as seen");
+    assert_eq!(
+        d.seen.len(),
+        8,
+        "everything, and the review-comments marker, is recorded as seen"
+    );
     assert!(d.seen.contains_key("commented:8"));
     assert!(
         d.rendered[1]
@@ -644,4 +648,104 @@ async fn first_identity_check_enrols_the_stable_github_id() {
     assert_eq!(e.cfg.repos[0].github_id, Some(1));
     assert_eq!(e.cfg.repos[0].name, "o/r");
     assert_eq!(stub.hits(), vec!["/repos/o/r"]);
+}
+
+#[test]
+fn edited_review_comment_is_delivered_again() {
+    let mut e = engine();
+    let r = repo();
+    e.cfg.repos.push(r.clone());
+    let comment = |updated: &str, body: &str| {
+        crate::github::review_comment_event(json!({
+            "id": 42, "user": {"login": "alice"}, "path": "src/a.rs", "line": null,
+            "original_line": 7, "body": body, "html_url": "u42",
+            "created_at": "2026-01-02T03:04:05Z", "updated_at": updated,
+        }))
+    };
+    let first = e.diff(
+        &r,
+        &BTreeMap::new(),
+        &[comment("2026-01-02T03:04:05Z", "typo")],
+    );
+    assert_eq!(first.rendered.len(), 1);
+    assert_eq!(first.rendered[0].key, "line-commented:42");
+    assert!(
+        first.rendered[0]
+            .text
+            .contains("@alice commented on `src/a.rs` line 7 (u42):"),
+        "{}",
+        first.rendered[0].text
+    );
+    let same = e.diff(&r, &first.seen, &[comment("2026-01-02T03:04:05Z", "typo")]);
+    assert!(same.rendered.is_empty());
+    let edited = e.diff(
+        &r,
+        &first.seen,
+        &[comment("2026-01-03T00:00:00Z", "two typos")],
+    );
+    assert_eq!(edited.rendered.len(), 1);
+    assert!(
+        edited.rendered[0]
+            .text
+            .contains("@alice edited their comment on `src/a.rs` line 7 (u42):\n  > two typos"),
+        "{}",
+        edited.rendered[0].text
+    );
+}
+
+#[tokio::test]
+async fn review_comments_join_the_timeline_and_its_etags() {
+    let stub = GitHubStub::start().await;
+    let e = engine_at(&stub.base);
+    stub.set_timeline(4, vec![comment(1, "alice", "hi")]);
+    let rc = |id: u64, at: &str| {
+        json!({"id": id, "user": {"login": "bob"}, "path": "a.rs", "line": 2,
+               "body": "nit", "html_url": "u", "created_at": at, "updated_at": at})
+    };
+    stub.set_review_comments(
+        4,
+        vec![
+            rc(12, "2026-01-03T00:00:00Z"),
+            rc(11, "2026-01-02T00:00:00Z"),
+        ],
+    );
+    let (events, etags) = e.gh.timeline_tagged("o", "r", 4).await.unwrap();
+    let keys: Vec<String> = events.iter().filter_map(crate::prompt::event_key).collect();
+    assert_eq!(
+        keys,
+        vec!["commented:1", "line-commented:11", "line-commented:12"]
+    );
+    assert_eq!(etags.len(), 2);
+    assert!(etags[1].starts_with(crate::github::PULLS_ETAG));
+    assert!(!e.gh.timeline_changed("o", "r", 4, &etags).await.unwrap());
+    stub.set_review_comments(4, vec![rc(11, "2026-01-02T00:00:00Z")]);
+    assert!(e.gh.timeline_changed("o", "r", 4, &etags).await.unwrap());
+
+    // An issue: the comments listing is not found, and adds nothing.
+    stub.set_timeline(5, vec![comment(2, "alice", "hi")]);
+    let (events, etags) = e.gh.timeline_tagged("o", "r", 5).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(etags.len(), 1);
+    assert!(!e.gh.timeline_changed("o", "r", 5, &etags).await.unwrap());
+}
+
+#[test]
+fn review_comments_already_on_a_pr_are_adopted_once_after_upgrade() {
+    let mut e = engine();
+    let r = repo();
+    e.cfg.repos.push(r.clone());
+    let review = |id: u64| {
+        crate::github::review_comment_event(json!({
+            "id": id, "user": {"login": "alice"}, "path": "a.rs", "line": 1,
+            "body": "old", "html_url": "u", "created_at": "t", "updated_at": "t",
+        }))
+    };
+    // State written before review comments were listed: no marker.
+    let old: BTreeMap<String, String> = [("commented:1".to_string(), String::new())].into();
+    let d = e.diff(&r, &old, &[review(1)]);
+    assert!(d.rendered.is_empty(), "history is not news");
+    assert!(d.seen.contains_key("line-commented:1"));
+    let d = e.diff(&r, &d.seen, &[review(1), review(2)]);
+    assert_eq!(d.rendered.len(), 1, "a later comment is delivered");
+    assert_eq!(d.rendered[0].key, "line-commented:2");
 }

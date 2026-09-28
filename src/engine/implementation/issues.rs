@@ -1,5 +1,7 @@
 use super::super::*;
 use tracing::{debug, info, warn};
+/// Marks `seen` as written by a daemon that lists review comments (#612).
+const REVIEW_COMMENTS_SEEN: &str = "review-comments:listed";
 
 impl Engine {
     pub(in crate::engine) fn ctx<'a>(
@@ -214,20 +216,25 @@ impl Engine {
         let allowed = self.allow_list(repo);
         let mut rendered = Vec::new();
         let mut observed = BTreeMap::new();
+        // Before #612 review comments were not listed, so state seen by an
+        // older daemon holds none of them: count them as seen once rather
+        // than deliver a PR's whole review history as new.
+        let adopt = !seen.is_empty() && !seen.contains_key(REVIEW_COMMENTS_SEEN);
+        observed.insert(REVIEW_COMMENTS_SEEN.to_string(), String::new());
         let mut filtered: Value;
         for ev in timeline {
             let mut ev = ev;
             let Some(key) = event_key(ev) else { continue };
             let kind = ev.get("event").and_then(Value::as_str).unwrap_or("");
             let marker = crate::github::value_str(ev, &["updated_at"])
-                .filter(|_| kind == "commented")
+                .filter(|_| matches!(kind, "commented" | "line-commented"))
                 .unwrap_or("")
                 .to_string();
             let previous = seen.get(&key);
             let is_new = previous.is_none();
             let edited = previous.is_some_and(|m| !m.is_empty() && *m != marker);
             observed.insert(key.clone(), marker.clone());
-            if !is_new && !edited {
+            if !is_new && !edited || adopt && kind == "line-commented" {
                 continue;
             }
             // The bot's own commits and cross-references would only echo

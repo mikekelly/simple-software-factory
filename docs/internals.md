@@ -119,8 +119,12 @@ See [Session dashboard](dashboard.md).
   delivery, the login behind the trigger or event is checked against the
   allow-list (see [Who may drive the
   factory](configuration.md#who-may-drive-the-factory)).
-- **Pull requests.** Review comments, reviews, force-pushes and merges are
-  rendered like issue activity. A PR from a fork gets a workspace on the base
+- **Pull requests.** Reviews, force-pushes and merges are rendered like
+  issue activity. Inline review comments and their replies, which the issue
+  timeline leaves out, are read from `pulls/N/comments` and delivered one by
+  one; an edited comment (issue or inline review comment) is delivered again.
+  Not delivered: deleted comments (they drop out silently), edits to the
+  item's description, and edits to review bodies. A PR from a fork gets a workspace on the base
   branch and the agent is told it cannot push to the fork.
 - **One workspace per issue.** The binding lives in
   `~/.local/state/ssf/state.json` and is also recoverable from the driver

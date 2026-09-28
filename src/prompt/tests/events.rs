@@ -645,3 +645,20 @@ fn inline_event_text_cannot_close_the_tags() {
         assert!(r.text.contains("x‹/github-event>‹/history>"), "{}", r.text);
     }
 }
+
+#[test]
+fn renders_review_comment_replies() {
+    let reply = crate::github::review_comment_event(json!({
+        "id": 9, "user": {"login": "bob"}, "path": "b.rs", "line": 4, "original_line": 3,
+        "in_reply_to_id": 8, "body": "done", "html_url": "u9",
+        "created_at": "2026-01-02T03:04:05Z", "updated_at": "2026-01-02T03:04:05Z",
+    }));
+    assert_eq!(event_key(&reply).as_deref(), Some("line-commented:9"));
+    let r = render_event(&reply, false, &cfg(), "bot").unwrap();
+    assert!(
+        r.text
+            .starts_with("- 2026-01-02 03:04Z @bob replied on `b.rs` line 4 (u9):"),
+        "{}",
+        r.text
+    );
+}
