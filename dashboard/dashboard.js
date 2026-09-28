@@ -133,11 +133,15 @@ function rowFor(issue) {
 
 // GitHub-style octicons for an issue and a pull request (#637).
 const ICONS = {
-  issue:
-    '<path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"/><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"/>',
-  pull_request:
-    '<path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>',
+  issue: [
+    "M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z",
+    "M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z",
+  ],
+  pull_request: [
+    "M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z",
+  ],
 };
+const SVG = "http://www.w3.org/2000/svg";
 
 function kindOf(issue) {
   return issue.kind === "pull_request" ? "pull_request" : "issue";
@@ -154,16 +158,19 @@ function shortRef(id, home) {
 // for a followed item, the level it is followed at.
 function relatedRow(row, issue, home) {
   if (!row) {
-    row = document.createElement("li");
-    row.innerHTML =
-      '<svg class="icon kind" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" role="img"></svg>' +
-      '<a class="ref" target="_blank" rel="noopener noreferrer"></a><span class="title"></span><span class="level"></span>';
+    row = document.querySelector("#related-template").content.firstElementChild.cloneNode(true);
   }
   const kind = kindOf(issue);
   const icon = row.querySelector(".kind");
   if (icon.dataset.kind !== kind) {
     icon.dataset.kind = kind;
-    icon.innerHTML = ICONS[kind];
+    icon.replaceChildren(
+      ...ICONS[kind].map((d) => {
+        const path = document.createElementNS(SVG, "path");
+        path.setAttribute("d", d);
+        return path;
+      }),
+    );
     icon.setAttribute("aria-label", kind === "pull_request" ? "Pull request" : "Issue");
   }
   const state = String(issue.github_state || "").toLowerCase();
