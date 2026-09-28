@@ -13,7 +13,7 @@ At the end:
 - A harness (the coding agent program) is signed in where sessions run.
 - One repository is watched, with a harness, model and effort the person chose.
 - One small issue assigned to the bot has produced an agent comment on GitHub.
-- `ssf doctor` passes.
+- `ssf doctor` passes (with the default Codex launch, its `Codex item-activity channel; standalone TUI: terminal fallback` line is expected, not a failure).
 - When the agents run on a VM or a rented server: that machine is reachable over SSH, the agents can become root on it without asking anyone (so they administer their own environment), and it is saved in the person's local herdr, so the person and any agents on their machine can oversee the sessions there.
 
 Work through the sections in order. Every step says what a good result looks like and what is safe to re-run.
@@ -81,7 +81,7 @@ command -v gh herdr
 - Memory: half the RAM, at least 4096 MiB.
 - Data disk: half the free space where the disk lands, at least 20 GiB, sparse so it reserves nothing up front.
 
-Rule of thumb for judging "reasonable": each parallel agent session wants about one vCPU and 2 GiB of RAM, and the person's own desktop needs to keep about 4 GB. A 4-core, 8 GB machine gives a guest of 3 vCPUs and 4 GiB, which is one or two sessions at a time and leaves the machine usable. An 8-core, 8 GB machine gets the same 4 GiB but 7 vCPUs by the rule, which is more CPU than that memory can use: pass `--vcpus 2` or `--vcpus 3` to `ssf vm build` on a small machine rather than accept the rule. With 8 GB or less in total, present all three options and recommend host mode or a rented host over a VM; below 8 GB, the VM is not reasonable. Allow roughly 30 GB of disk headroom for images and data, plus room for the repositories and their builds.
+Rule of thumb for judging "reasonable": each parallel agent session wants about one vCPU and 2 GiB of RAM, and the person's own desktop needs to keep about 4 GB. A 4-core, 8 GB machine gives a guest of 3 vCPUs and 4 GiB, which is one or two sessions at a time and leaves the machine usable. An 8-core, 8 GB machine gets the same 4 GiB but 7 vCPUs by the rule, which is more CPU than that memory can use: pass `--vcpus 2` or `--vcpus 3` to `ssf vm build` on a small machine rather than accept the rule. With 8 GB or less in total, present all three options and recommend host mode or a rented host over a VM; below 8 GB, the VM is not reasonable. An Incus guest is a container: its vCPUs and memory are limits shared with the host, not reserved, so the 8 GB rule does not apply to it, and a small VPS with 4 GB can run one session at a time. Allow roughly 30 GB of disk headroom for images and data, plus room for the repositories and their builds.
 
 Say to the person, in one line each, what the options cost them: the VM keeps agents away from their files but takes half the machine; host mode takes only what the sessions use but the agents run as their user with permission prompts bypassed; a rented host costs money and puts the factory on a machine they administer over SSH.
 
@@ -120,13 +120,22 @@ Tier 1, tested by hand before each release: **Arch/Omarchy with Firecracker**, *
 
 ### 3.1 Linux package
 
-Download the matching asset from [GitHub Releases](https://github.com/mikekelly/simple-software-factory/releases) yourself (`gh release download --repo mikekelly/simple-software-factory --pattern PATTERN`), print its absolute path, then give the person the install command for their family with that path filled in, and wait for them to confirm it ran:
+Download the matching asset from [GitHub Releases](https://github.com/mikekelly/simple-software-factory/releases) yourself, print its absolute path, then give the person the install command for their family with that path filled in, and wait for them to confirm it ran:
 
 | Family | Command |
 |---|---|
 | Arch | `sudo pacman -U ssf-*.pkg.tar.zst` |
 | Debian / Ubuntu | `sudo apt install ./ssf_*_$(dpkg --print-architecture).deb` |
 | Fedora / RHEL | `sudo dnf install ./ssf-*.x86_64.rpm` |
+
+On a fresh server `gh` is not there yet (the package brings it) and is not signed in, so download the public asset with `curl`:
+
+```sh
+tag=$(curl -fsSL https://api.github.com/repos/mikekelly/simple-software-factory/releases/latest | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)
+curl -fsSLO "https://github.com/mikekelly/simple-software-factory/releases/download/$tag/ASSET"   # ASSET: the file name for the family, from the release page
+```
+
+Where `gh` is already installed, `gh release download --repo mikekelly/simple-software-factory --pattern PATTERN` does the same.
 
 One package holds both the `ssf` client and the `ssf-server` daemon. Packages are x86_64.
 
@@ -153,9 +162,10 @@ Releases publish static musl Linux binaries for `x86_64` and `aarch64`. Take the
 ```sh
 arch=$(uname -m)                 # x86_64 or aarch64
 dir=$(mktemp -d)
-gh release download --repo mikekelly/simple-software-factory \
-  --pattern "ssf-[0-9]*-linux-$arch" --pattern "ssf-server-[0-9]*-linux-$arch" --dir "$dir"
-gh release download --repo mikekelly/simple-software-factory --pattern SHA256SUMS --dir "$dir"
+tag=$(curl -fsSL https://api.github.com/repos/mikekelly/simple-software-factory/releases/latest | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)
+base=https://github.com/mikekelly/simple-software-factory/releases/download/$tag
+curl -fsSL "$base/SHA256SUMS" -o "$dir/SHA256SUMS"
+for f in $(grep -o "ssf-\(server-\)\?[0-9][^ ]*-linux-$arch\$" "$dir/SHA256SUMS"); do curl -fsSL "$base/$f" -o "$dir/$f"; done
 (cd "$dir" && sha256sum --check --ignore-missing SHA256SUMS)
 install -Dm755 "$dir"/ssf-[0-9]*-linux-$arch   "$HOME/.local/bin/ssf"
 install -Dm755 "$dir"/ssf-server-*-linux-$arch "$HOME/.local/bin/ssf-server"
@@ -319,13 +329,14 @@ Good: `ssf status` names the account and repositories (or none yet), `ssh ssf-de
    Host ssf-factory
      HostName 127.0.0.1
      Port 2222
+     HostKeyAlias ssf-factory
      User ssf
      ProxyJump user@server
      IdentityFile ~/.ssh/ssf-factory
      IdentitiesOnly yes
    ```
 
-   Then `ssh ssf-factory true`. The first connection asks to trust the guest's host key; that is expected.
+   Then `ssh ssf-factory true`. The first connection asks to trust the guest's host key; that is expected. `HostKeyAlias` records it under `ssf-factory` rather than `[127.0.0.1]:2222`, which every guest forwarded to that port would share.
 5. **herdr** on the laptop, so the person opens the agents' terminals in their own herdr and agents on the laptop reach running sessions:
 
    ```sh
@@ -415,13 +426,16 @@ Login records `github.login` and `github.email`, and enrolls a dedicated ed25519
 gh api repos/OWNER/NAME/collaborators/BOT -X PUT -f permission=push
 ```
 
-Then the bot accepts, in a bot-authenticated `gh` session or from its own notifications:
+Then the bot accepts. After `ssf auth login` the bot's token is in ssf's own token file, not in `gh`, so where ssf runs (inside the guest in VM mode) pass it explicitly:
 
 ```sh
+export GH_TOKEN=$(cat ~/.config/ssf/token)
 gh api user/repository_invitations --jq '.[] | {id, repository: .repository.full_name}'
 gh api user/repository_invitations/ID -X PATCH
 gh api repos/OWNER/NAME --jq '{repository: .full_name, push: .permissions.push}'
 ```
+
+Or accept from the bot's own notifications in a browser signed in as the bot.
 
 The last command must name the repository with `push: true`. A pending invitation makes a private repository return 404, which looks like a missing repository.
 
@@ -463,7 +477,7 @@ Do this step with the person, one harness at a time, through herdr. In VM mode r
    herdr pane run PANE claude     # PANE: result.root_pane.pane_id in the JSON printed above
    ```
 
-2. **Clear the first-run screens.** Read the pane with `herdr pane read PANE` and answer with `herdr pane send-keys PANE KEY...`. Take the default on preference screens, or ask the person in one line if the choice matters; for Claude Code's "Try the new fullscreen renderer?" pick **Not now**; finish Oh My Pi's setup wizard here too, since it is kept per user and covers every later repository. Accept folder trust. Read again after every key: screens change with every harness release.
+2. **Clear the first-run screens.** Read the pane with `herdr pane read PANE` and answer with `herdr pane send-keys PANE KEY...`. Take the default on preference screens, or ask the person in one line if the choice matters; for Claude Code's "Try the new fullscreen renderer?" pick **Not now**; finish Oh My Pi's setup wizard here too, since it is kept per user and covers every later repository. Accept folder trust. Codex's first launch asks to review and trust hooks: the one listed is herdr's `SessionStart` agent-state hook, which provisioning installed and sessions rely on, so trust it. Read again after every key: screens change with every harness release.
 
 3. **Start the harness's own sign-in** (for example `/login`, typed with `herdr pane run PANE /login`) only when the person is ready for it; never run two sign-ins at once, since each code expires while the person is busy with the other.
    - **The link.** `herdr pane read` returns screen rows, so a long URL is split across lines. Rejoin it before handing it over, for example `herdr pane read PANE | tr -d '\n' | grep -o 'https://[^ ]*'`, and check it against the screen. The person's browser may be on another computer, so do not open it on the factory machine: give the URL as text, alone in a fenced code block so it copies whole even where the terminal wraps it.
@@ -477,7 +491,7 @@ Do this step with the person, one harness at a time, through herdr. In VM mode r
 
    Enter keys through the harness's interface rather than writing its files by hand, so the harness writes the format it reads.
 
-5. **Relaunch, confirm and quit.** Some first-run screens appear only on a later launch (Claude Code's fullscreen-renderer question came on the second), so quit the harness and run it again in the same pane, clearing any screen as in step 2, until a launch reaches the prompt with nothing to answer. `ssf doctor` shows the harness signed in where the sessions run (in VM mode, `ssf vm status` also lists it on its `logins:` line). Then quit the harness (`/exit`, `/quit` or `ctrl+c`, whatever it takes) and close the workspace.
+5. **Relaunch, confirm and quit.** Some first-run screens appear only on a later launch (Claude Code's fullscreen-renderer question came on the second), so quit the harness and run it again in the same pane, clearing any screen as in step 2, until a launch reaches the prompt with nothing to answer. Confirm the sign-in with the harness's own status (`claude auth status`, `codex login status`), or in VM mode `ssf vm status` on the host, which lists signed-in harnesses on its `logins:` line. Then quit the harness (`/exit`, `/quit` or `ctrl+c`, whatever it takes) and close the workspace.
 
 6. **If a screen makes no sense**, stop sending keys and tell the person where to look: the herdr machine (`ssf-default` for the local VM, saved in section 5, or Local in host mode), the workspace label (`claude login`) and the pane. They can finish it by hand there.
 
@@ -507,7 +521,7 @@ Before the first issue, the repository also needs `SSF.md` committed at the root
 
 ## 10. Other devices, then verify
 
-Ask one yes/no question: "Do you want to reach the factory or the dashboard from other devices?" If yes, on a VM target run `ssf vm tailscale` and pass the login URL it prints to the person; it prints the machine name and address once enrolled. In host mode or on a rented host, Tailscale goes on that machine itself: give the person the install command from [tailscale.com/download](https://tailscale.com/download) and `sudo tailscale up`, and pass along its login URL. Details in [platform-specifics.md](platform-specifics.md#tailscale). If no, move on.
+Ask one yes/no question: "Do you want to reach the factory or the dashboard from other devices?" If yes, on a VM target run `ssf vm tailscale` and pass the login URL it prints to the person; it prints the machine name and address once enrolled. That enrolls the guest, which serves SSH and herdr; the dashboard listener runs on the host in VM mode, so for the dashboard also install Tailscale on the host as below. In host mode or on a rented host, Tailscale goes on that machine itself: give the person the install command from [tailscale.com/download](https://tailscale.com/download) and `sudo tailscale up`, and pass along its login URL. Details in [platform-specifics.md](platform-specifics.md#tailscale). If no, move on.
 
 ```sh
 ssf doctor
