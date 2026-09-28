@@ -27,8 +27,8 @@ use crate::prompt::{
 use crate::release::{self, git};
 use crate::sessions;
 use crate::state::{
-    AdoptionCandidate, Blocked, ConflictNotice, Events, HandoverNote, Ignored, IssueState,
-    Overrides, PendingHandover, State, StateLock, now_iso, owner_in,
+    AdoptionCandidate, Blocked, CiNotice, ConflictNotice, Events, HandoverNote, Ignored,
+    IssueState, Overrides, PendingHandover, State, StateLock, now_iso, owner_in,
 };
 use crate::status::session_id;
 
@@ -258,6 +258,11 @@ pub struct Engine {
     /// Merge simulations keyed by repository and branch, reused while the
     /// base and branch commit pair remains unchanged.
     conflict_pairs: BTreeMap<(String, String), ConflictPair>,
+    /// Per pull request, its head commit and CI as last read, with the
+    /// ETags that make an unchanged read a 304 (#641). In memory only: a
+    /// restart reads each once in full, and `IssueState::ci_notice` keeps
+    /// what was already said.
+    ci_polls: BTreeMap<(String, u64), CiPoll>,
     /// Repository identity runs separately from the normal issue-poll cadence.
     identity_checked_at: Option<Instant>,
     /// Held from construction through shutdown, before the state is ever
@@ -292,6 +297,17 @@ struct Current {
     /// effort and command above are empty because ssf does not have the
     /// stack that session was started with (see `Engine::current_stack`).
     unknown_stack: bool,
+}
+
+/// A pull request's head commit and CI as last read (`Engine::ci_polls`).
+#[derive(Debug, Clone, Default)]
+struct CiPoll {
+    sha: String,
+    pull_etag: Option<String>,
+    runs: Option<Value>,
+    runs_etag: Option<String>,
+    status: Option<Value>,
+    status_etag: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -423,6 +439,7 @@ enum OwnPosts {
 
 mod implementation {
     mod assignment;
+    mod checks;
     mod conflicts;
     mod delivery;
     mod handovers;

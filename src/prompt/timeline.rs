@@ -417,3 +417,76 @@ pub fn state_change(kind: &str) -> bool {
             | "cross-referenced"
     )
 }
+
+/// The outcome a [`render_ci`] event names while checks are still running.
+pub const CI_STARTED: &str = "started";
+
+/// CI on a pull request's head commit `sha`, as one event (#641): started,
+/// while any check is still running; else passed, or failed with each
+/// failing check and a link to its run. `None` when the commit has no
+/// checks at all. The key is `ci:<sha>:` then [`CI_STARTED`], `pass`, or
+/// `fail:` and the failing checks' names, so a re-run that ends the same
+/// way has the same key.
+pub fn render_ci(sha: &str, checks: &[crate::github::Check]) -> Option<Rendered> {
+    if checks.is_empty() {
+        return None;
+    }
+    let latest = checks.iter().map(|c| c.at.as_str()).max().unwrap_or("");
+    let at = fmt_when(latest, &today_utc());
+    let lead = if at.is_empty() {
+        "-".to_string()
+    } else {
+        format!("- {at}")
+    };
+    let commit = short(sha);
+    let total = checks.len();
+    let plural = |n: usize| if n == 1 { "check" } else { "checks" };
+    let running: Vec<&crate::github::Check> = checks.iter().filter(|c| !c.done).collect();
+    let (outcome, text) = if !running.is_empty() {
+        let mut names: Vec<String> = running.iter().take(10).map(|c| inline(&c.name)).collect();
+        if running.len() > names.len() {
+            names.push("…".into());
+        }
+        (
+            CI_STARTED.to_string(),
+            format!(
+                "{lead} CI started on commit `{commit}`: {} {} running ({})",
+                running.len(),
+                plural(running.len()),
+                names.join(", ")
+            ),
+        )
+    } else {
+        let mut failed: Vec<&crate::github::Check> = checks.iter().filter(|c| c.failed).collect();
+        failed.sort_by(|a, b| a.name.cmp(&b.name));
+        if failed.is_empty() {
+            (
+                "pass".to_string(),
+                format!(
+                    "{lead} CI passed on commit `{commit}`: all {total} {} passed",
+                    plural(total)
+                ),
+            )
+        } else {
+            let names: Vec<&str> = failed.iter().map(|c| c.name.as_str()).collect();
+            let mut s = format!(
+                "{lead} CI failed on commit `{commit}`: {} of {total} {} failed:",
+                failed.len(),
+                plural(total)
+            );
+            for c in &failed {
+                let url = if c.url.is_empty() { "no link" } else { &c.url };
+                s.push_str(&format!("\n  - {} ({url})", inline(&c.name)));
+            }
+            (format!("fail:{}", names.join("\n")), s)
+        }
+    };
+    Some(Rendered {
+        key: format!("ci:{sha}:{outcome}"),
+        text,
+        origin: None,
+        assignee: None,
+        state_change: true,
+        at: Some(latest.to_string()).filter(|w| !w.is_empty()),
+    })
+}

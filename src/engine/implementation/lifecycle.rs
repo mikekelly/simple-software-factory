@@ -360,6 +360,7 @@ impl Engine {
             adopting: None,
             conflict_checks: BTreeMap::new(),
             conflict_pairs: BTreeMap::new(),
+            ci_polls: BTreeMap::new(),
             identity_checked_at: None,
             _state_lock: Some(state_lock),
         };
