@@ -153,6 +153,7 @@ pub(crate) async fn serve_guest(target: SocketAddr) -> Result<std::convert::Infa
 }
 
 /// A minimal AF_VSOCK listener on libc (Linux only).
+#[cfg(target_os = "linux")]
 mod vsock {
     use anyhow::{Result, bail};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -162,7 +163,6 @@ mod vsock {
     pub(super) struct Listener(AsyncFd<OwnedFd>);
 
     impl Listener {
-        #[cfg(target_os = "linux")]
         pub(super) fn bind(port: u32) -> Result<Self> {
             // SAFETY: plain socket calls on a descriptor this function owns.
             unsafe {
@@ -190,11 +190,6 @@ mod vsock {
                 }
                 Ok(Self(AsyncFd::new(fd)?))
             }
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        pub(super) fn bind(_port: u32) -> Result<Self> {
-            bail!("vsock is Linux only")
         }
 
         /// The next connection. A vsock stream socket reads, writes and
@@ -225,6 +220,23 @@ mod vsock {
                 }
                 return Err(error);
             }
+        }
+    }
+}
+
+/// No vsock off Linux: a guest is always Linux, so this is only ever
+/// "no vsock device", as in a lima or Incus guest.
+#[cfg(not(target_os = "linux"))]
+mod vsock {
+    pub(super) struct Listener;
+
+    impl Listener {
+        pub(super) fn bind(_port: u32) -> anyhow::Result<Self> {
+            anyhow::bail!("vsock is Linux only")
+        }
+
+        pub(super) async fn accept(&self) -> std::io::Result<tokio::net::UnixStream> {
+            std::future::pending().await
         }
     }
 }
