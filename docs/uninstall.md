@@ -66,6 +66,7 @@ Without `--force`, the command stops before destroying anything when:
 | --- | --- | --- |
 | a workspace holds uncommitted or unpushed work, including an open item's | the work is only on that machine | push or discard it |
 | a workspace cannot be checked (no origin, a git error) | ssf cannot rule out unpushed work | fix the repository or look at it yourself |
+| the state file or config cannot be read, a clone's worktrees cannot be listed, or a `<name>.worktrees` directory has lost its clone (`unchecked:` lines) | the inventory has a hole in it; workspaces are found by looking at every clone in the projects directory, not only at the state file's records | repair or remove what the line names |
 | the VM is stopped, so its workspaces cannot be checked | in VM mode the clones live on the data disk | `ssf vm start`, then run uninstall again |
 | a data disk's clones cannot be checked: the disk outlived its instance, `[vm] enabled = false` so ssf never asks the guest, or lima will not say whether it or the disk is running | an unanswered question, not a clean machine | follow the remedy the message names; it is not always `ssf vm start` |
 | a data disk a backend switch left behind | see [Recovery cases](#recovery-cases) and [troubleshooting](troubleshooting.md#vm-backend-switch) | put `[vm] backend` back and run it again |
