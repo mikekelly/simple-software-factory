@@ -795,7 +795,22 @@ impl Engine {
             "issue assigned again; reactivating"
         );
         self.record_origins(repo, issue, &timeline);
-        let diff = self.diff(repo, &st.seen, &timeline);
+        // A compacted record kept no `seen`: what the session heard is
+        // taken to be everything up to the newest event it had heard, so
+        // only what came after is news, as it would have been with `seen`
+        // kept.
+        let seen = match st.compacted_through.as_deref() {
+            Some(cutoff) => {
+                let heard: Vec<Value> = timeline
+                    .iter()
+                    .filter(|ev| event_time(ev).is_some_and(|at| at <= cutoff))
+                    .cloned()
+                    .collect();
+                self.diff(repo, &BTreeMap::new(), &heard).seen
+            }
+            None => st.seen.clone(),
+        };
+        let diff = self.diff(repo, &seen, &timeline);
         self.refresh_projects(repo, owner, name, issue.number).await;
         let st = IssueState {
             projects: self.entry(repo, issue.number).projects.clone(),
@@ -820,6 +835,7 @@ impl Engine {
         e.title = issue.title.clone();
         e.github_state = Some(github_state(issue, st.pr.as_ref(), false));
         e.replace_seen(diff.seen);
+        e.compacted_through = None;
         e.active = true;
         e.cleanup_pending = false;
         // A release the agent asked for before the item came back is off:
@@ -1168,4 +1184,14 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// When a timeline event happened, as GitHub stamps each kind: most carry
+/// `created_at`, a review `submitted_at`, a commit its committer's date
+/// (when it reached the branch; the author's can be much older).
+fn event_time(ev: &Value) -> Option<&str> {
+    crate::github::value_str(ev, &["created_at"])
+        .or_else(|| crate::github::value_str(ev, &["submitted_at"]))
+        .or_else(|| crate::github::value_str(ev, &["committer", "date"]))
+        .or_else(|| crate::github::value_str(ev, &["author", "date"]))
 }

@@ -1769,6 +1769,13 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
     }
     std::fs::rename(&tmp, path)
         .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
+    // The rename is only durable once the directory entry is: without this
+    // a power cut can bring back the old file, or none.
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::File::open(parent)
+            .and_then(|d| d.sync_all())
+            .with_context(|| format!("syncing {}", parent.display()))?;
+    }
     Ok(())
 }
 

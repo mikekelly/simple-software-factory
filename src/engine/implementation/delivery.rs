@@ -121,6 +121,7 @@ impl Engine {
                     self.state.repo_mut(&repo.name).issues.remove(&number);
                 }
             }
+            self.persist()?;
         }
         if failed {
             anyhow::bail!("polling a subscribed item failed");
@@ -142,7 +143,7 @@ impl Engine {
         repo: &RepoConfig,
         owner: &str,
         name: &str,
-    ) {
+    ) -> Result<()> {
         let lost = self.channel_lost.clone();
         let active: Vec<(u64, Vec<String>)> = self
             .state
@@ -166,16 +167,18 @@ impl Engine {
                     .timeline_changed(owner, name, number, &etags)
                     .await?
                 {
-                    return Ok(());
+                    return Ok(false);
                 }
                 let issue = self.gh.issue(owner, name, number).await?;
                 let st = self.entry(repo, number).clone();
                 debug!(repo = repo.name, issue = number, "timeline moved");
-                self.follow_up(repo, owner, name, &issue, st).await
+                self.follow_up(repo, owner, name, &issue, st).await?;
+                Ok(true)
             }
             .await;
             match result {
-                Ok(()) => {}
+                Ok(false) => {}
+                Ok(true) => self.persist()?,
                 // Not `note_mailbox_hold`: forgetting the listing ETags on
                 // every pass would cost full listings for as long as the
                 // bridge is away. The item waits for the listings instead.
@@ -190,6 +193,7 @@ impl Engine {
                 ),
             }
         }
+        Ok(())
     }
 
     /// The session (`owner/repo#N`) that acts on the item a post's origin

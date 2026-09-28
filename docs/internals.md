@@ -130,6 +130,18 @@ See [Session dashboard](dashboard.md).
   `~/.local/state/ssf/state.json` and is also recoverable from the driver
   (herdr names the workspace after the repository and issue number), so a lost
   state file re-attaches instead of creating a second workspace.
+- **The state file.** `state.json` is written atomically (temporary file,
+  fsync, rename, directory fsync) after each item whose record changed and at
+  the end of each repository's pass; a save that fails stops the rest of that
+  pass, so what was delivered and what is recorded never drift more than one
+  item apart. The first save of each pass keeps the file as the previous pass
+  left it as `state.json.bak`. The file carries a format `version`: a newer
+  one than ssf knows is refused at start, and loading an older one keeps it
+  as `state.json.v{N}.bak` (see [Rolling back
+  ssf](troubleshooting.md#rolling-back-ssf)). An item that is closed, retired
+  and released has its delivered-event bookkeeping (`seen`, timeline ETags,
+  `origins`) dropped, keeping the time of the newest event it had heard; if
+  it comes back, events up to then count as already delivered.
 - **One engine per state directory.** `state.lock` is an exclusive
   process-held lock beside `state.json`; both `ssf-server` and
   `ssf-server --once` take it before reading state, and it is released when

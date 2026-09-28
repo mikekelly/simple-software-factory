@@ -12,6 +12,7 @@ impl Engine {
             return;
         }
         self.state.last_poll_at = Some(now_iso());
+        self.state.new_pass();
         // Per-pass state only. `refetch` is deliberately not reset here: it
         // has to outlive the pass that armed it (issue #141).
         self.probes.clear();
@@ -62,12 +63,15 @@ impl Engine {
             if let Err(e) = self.tick_repo(&repo).await {
                 warn!(repo = repo.name, "pass failed: {e:#}");
                 self.state.last_error = Some(format!("{}: {e:#}", repo.name));
+                if state_not_saved(&e) {
+                    return;
+                }
             }
             // Until the first full listing snapshot succeeds, retained state
             // must not resume, hand over, deliver, conflict-check or clean up.
             if self.enrollment_pending(&repo) {
-                if let Err(e) = self.state.save() {
-                    error!("saving state: {e:#}");
+                if !self.save_or_stop(&repo) {
+                    return;
                 }
                 continue;
             }
@@ -80,10 +84,39 @@ impl Engine {
             self.run_cleanups(&repo).await;
             self.run_scratch_cleanups(&repo).await;
             self.drop_released_scratch(&repo);
-            if let Err(e) = self.state.save() {
-                error!("saving state: {e:#}");
+            self.state.compact();
+            if !self.save_or_stop(&repo) {
+                return;
             }
         }
+    }
+
+    /// Save at the end of a repository's pass. A failure ends the whole
+    /// pass: the next repository's deliveries would be as unrecorded as
+    /// this one's. The error is kept for `ssf status` (in memory: the
+    /// file is what could not be written).
+    fn save_or_stop(&mut self, repo: &RepoConfig) -> bool {
+        match self.persist() {
+            Ok(()) => true,
+            Err(e) => {
+                error!(repo = repo.name, "{e:#}");
+                self.state.last_error = Some(format!("{}: {e:#}", repo.name));
+                false
+            }
+        }
+    }
+
+    /// An item's record as it would be saved, to tell whether handling it
+    /// changed anything worth a write.
+    fn record_of(&self, repo: &RepoConfig, number: u64) -> Option<serde_json::Value> {
+        self.peek(repo, number)
+            .and_then(|s| serde_json::to_value(s).ok())
+    }
+
+    /// Save now, with a failure marked so the pass that asked stops
+    /// (see [`StateNotSaved`]).
+    pub(in crate::engine) fn persist(&self) -> Result<()> {
+        self.state.save().map_err(|e| e.context(StateNotSaved))
     }
 
     /// The startup pass. A daemon restart is invisible to agents, but after a
@@ -292,7 +325,7 @@ impl Engine {
             && matches!(created, Conditional::NotModified)
         {
             debug!(repo = repo.name, "nothing changed");
-            self.watch_reactions(repo, owner, name).await;
+            self.watch_reactions(repo, owner, name).await?;
             return self.watch_subscribed(repo, owner, name).await;
         }
 
@@ -477,6 +510,7 @@ impl Engine {
                     }
                 },
             };
+            let before = self.record_of(repo, number);
             match self
                 .reconcile_issue(repo, owner, name, &issue, pr, triggers)
                 .await
@@ -493,6 +527,13 @@ impl Engine {
                     all_ok = false;
                     self.note_failure(repo, issue.number, &e).await;
                 }
+            }
+            // Each delivery is on disk before the next one is made, so a
+            // crash or a failed save repeats at most this one. A delivery
+            // always moves the item's record; a look that changed nothing
+            // costs no write.
+            if self.record_of(repo, number) != before {
+                self.persist()?;
             }
         }
 
@@ -516,6 +557,7 @@ impl Engine {
                 );
                 continue;
             }
+            let before = self.record_of(repo, number);
             match self.retire_issue(repo, owner, name, number).await {
                 Ok(()) => {}
                 Err(e) if is_held(&e) => self.note_mailbox_hold(repo, number, &e),
@@ -523,6 +565,9 @@ impl Engine {
                     all_ok = false;
                     warn!(repo = repo.name, issue = number, "retiring failed: {e:#}");
                 }
+            }
+            if self.record_of(repo, number) != before {
+                self.persist()?;
             }
         }
 
@@ -555,7 +600,7 @@ impl Engine {
             rs.pulls_etag = None;
             rs.created_etag = None;
         }
-        self.watch_reactions(repo, owner, name).await;
+        self.watch_reactions(repo, owner, name).await?;
         self.watch_subscribed(repo, owner, name).await
     }
 

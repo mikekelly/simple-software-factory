@@ -60,6 +60,7 @@ async fn release_is_refused_for_unknown_active_and_non_forced_dependent_sessions
 }
 #[tokio::test]
 async fn forced_release_removes_a_workspace_with_open_bound_items() {
+    let _sandbox = crate::config::test_support::sandbox();
     use crate::release::testkit::scratch;
 
     let clean = scratch("force-bound-release").await;

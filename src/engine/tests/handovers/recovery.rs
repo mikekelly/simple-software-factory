@@ -104,6 +104,7 @@ fn events_by_unlisted_users_are_not_delivered() {
 }
 #[tokio::test]
 async fn items_asked_for_by_unlisted_users_are_ignored_until_an_allowed_user_asks() {
+    let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
     e.cfg.daemon.allowed_users = Some(vec!["Alice".into()]);
@@ -136,6 +137,7 @@ async fn items_asked_for_by_unlisted_users_are_ignored_until_an_allowed_user_ask
 }
 #[tokio::test]
 async fn a_retired_item_assigned_again_by_an_unlisted_user_stays_retired() {
+    let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
     e.cfg.daemon.allowed_users = Some(vec!["alice".into()]);
