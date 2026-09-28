@@ -68,7 +68,7 @@ fn events_by_unlisted_users_are_not_delivered() {
     // Everything is still counted as seen, so nothing dropped comes
     // back as news later, and each drop is remembered so it is logged
     // once (info) however often the timeline is walked again.
-    assert_eq!(d.seen.len(), 11);
+    assert_eq!(d.seen.len(), 12, "plus the review-comments marker");
     assert!(e.dropped_logged.lock().unwrap().contains("o/r:commented:2"));
     assert_eq!(e.dropped_logged.lock().unwrap().len(), 6);
     // A repository list replaces the instance list.

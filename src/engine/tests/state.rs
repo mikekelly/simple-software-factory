@@ -189,7 +189,11 @@ fn tagged_bot_comments_are_kept_and_sorted_per_recipient() {
         ],
         "the untagged bot comment is a person's; tagged ones stay; the daemon's event post is nobody's"
     );
-    assert_eq!(d.seen.len(), 7, "everything is recorded as seen");
+    assert_eq!(
+        d.seen.len(),
+        8,
+        "everything, and the review-comments marker, is recorded as seen"
+    );
     assert!(d.seen.contains_key("commented:8"));
     assert!(
         d.rendered[1]
@@ -723,4 +727,25 @@ async fn review_comments_join_the_timeline_and_its_etags() {
     assert_eq!(events.len(), 1);
     assert_eq!(etags.len(), 1);
     assert!(!e.gh.timeline_changed("o", "r", 5, &etags).await.unwrap());
+}
+
+#[test]
+fn review_comments_already_on_a_pr_are_adopted_once_after_upgrade() {
+    let mut e = engine();
+    let r = repo();
+    e.cfg.repos.push(r.clone());
+    let review = |id: u64| {
+        crate::github::review_comment_event(json!({
+            "id": id, "user": {"login": "alice"}, "path": "a.rs", "line": 1,
+            "body": "old", "html_url": "u", "created_at": "t", "updated_at": "t",
+        }))
+    };
+    // State written before review comments were listed: no marker.
+    let old: BTreeMap<String, String> = [("commented:1".to_string(), String::new())].into();
+    let d = e.diff(&r, &old, &[review(1)]);
+    assert!(d.rendered.is_empty(), "history is not news");
+    assert!(d.seen.contains_key("line-commented:1"));
+    let d = e.diff(&r, &d.seen, &[review(1), review(2)]);
+    assert_eq!(d.rendered.len(), 1, "a later comment is delivered");
+    assert_eq!(d.rendered[0].key, "line-commented:2");
 }
