@@ -666,6 +666,11 @@ pub fn sessions_with(
                 workspaces.is_some(),
             );
             row.pane_input = cfg.item_pane_input(repo);
+            // The branch the agent pushed, as its pull request names it,
+            // wins over the one ssf assigned the workspace (#660).
+            if let Some(b) = pushed_branch(repo, rs, owner) {
+                row.branch = Some(b);
+            }
             out.push(row);
         }
         for st in rs.scratch.values() {
@@ -689,6 +694,29 @@ pub fn sessions_with(
         }
     }
     out
+}
+
+/// The head branch of a same-repository pull request owned by the session of
+/// `owner`, an open one first: the branch its agent actually pushed.
+fn pushed_branch(repo: &RepoConfig, rs: &crate::state::RepoState, owner: u64) -> Option<String> {
+    let mut prs: Vec<&IssueState> = rs
+        .issues
+        .values()
+        .filter(|i| crate::state::owner_in(&rs.issues, i.number) == owner)
+        .filter(|i| {
+            i.pr.as_ref()
+                .is_some_and(|p| p.same_repo(&repo.name) && !p.head_ref.is_empty())
+        })
+        .collect();
+    prs.sort_by_key(|i| {
+        (
+            i.github_state.as_deref() != Some("open"),
+            std::cmp::Reverse(i.number),
+        )
+    });
+    prs.first()
+        .and_then(|i| i.pr.as_ref())
+        .map(|p| p.head_ref.clone())
 }
 
 /// Whether a scratch session was last started in tmux (#491), where it is

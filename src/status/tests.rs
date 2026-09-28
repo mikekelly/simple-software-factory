@@ -161,6 +161,27 @@ fn pr_joining_an_issue_workspace_is_owned_by_that_session() {
     assert!(pr.is_pull_request());
 }
 
+/// The branch an agent pushed, as its pull request names it, is the one its
+/// session shows, not the one ssf assigned the workspace (#660).
+#[test]
+fn a_session_shows_the_branch_its_pull_request_pushed() {
+    let mut pr = item(9, Some("r1::/w/one"));
+    pr.kind = Some("pull_request".into());
+    pr.shares_workspace_of = Some(1);
+    pr.github_state = Some("open".into());
+    pr.pr = Some(crate::github::PrInfo {
+        head_ref: "issue-1-omp-haiku".into(),
+        head_repo: "acme/widgets".into(),
+        ..Default::default()
+    });
+    let st = state_with(vec![item(1, Some("r1::/w/one")), pr, item(2, None)]);
+    let s = sessions(&cfg(), &st, Some(&[workspace("r1::/w/one", None, None)]));
+    let branch = |n| s.iter().find(|s| s.number == n).unwrap().branch.clone();
+    assert_eq!(branch(1).as_deref(), Some("issue-1-omp-haiku"));
+    assert_eq!(branch(9).as_deref(), Some("issue-1-omp-haiku"));
+    assert_eq!(branch(2).as_deref(), Some("bot/issue-1"));
+}
+
 #[test]
 fn json_keeps_the_issue_fields() {
     let _sandbox = crate::config::test_support::sandbox();
