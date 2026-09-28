@@ -164,6 +164,15 @@ impl Engine {
         } else {
             self.rehydrate(repo, target).await?
         };
+        // A branch kept ahead of origin is news to the session itself.
+        let noted;
+        let text = match re_created.as_ref().and_then(|r| r.note.as_deref()) {
+            Some(note) => {
+                noted = format!("[ssf] {note}\n\n{text}");
+                noted.as_str()
+            }
+            None => text,
+        };
         let st = self.entry(repo, target).clone();
         let worktree_id = st
             .worktree_id
@@ -293,7 +302,7 @@ impl Engine {
                 "harness relaunched"
             );
             // A re-created workspace is news whatever the harness shows.
-            if let Some(reason) = re_created {
+            if let Some(ReCreated { reason, note }) = re_created.clone() {
                 let launch = self.launch_of(repo, target);
                 self.post_event(
                     repo,
@@ -301,6 +310,7 @@ impl Engine {
                     Event::Attached(Attach::ReCreated {
                         launch,
                         reason,
+                        note,
                         conversation: Conversation::of(d.resumed),
                     }),
                 )
@@ -399,13 +409,14 @@ impl Engine {
 
     /// Re-create the workspace for an issue whose worktree is gone,
     /// starting from its old branch when that still exists. Says why it
-    /// was re-created (`workspace gone`), or `None` when the driver already
-    /// had a workspace linked to the issue and nothing was made.
+    /// was re-created (`workspace gone`), with a note when the old branch
+    /// was kept rather than moved to origin, or `None` when the driver
+    /// already had a workspace linked to the issue and nothing was made.
     pub(in crate::engine) async fn rehydrate(
         &mut self,
         repo: &RepoConfig,
         number: u64,
-    ) -> Result<Option<&'static str>> {
+    ) -> Result<Option<ReCreated>> {
         let repo_id = self.repo_id_for(repo, number).await?;
         let st = self.entry(repo, number).clone();
         if let Some(existing) = self
@@ -487,6 +498,7 @@ impl Engine {
             Err(e) => return Err(e),
         };
         let mut created = created;
+        let mut note = None;
         if let Some(branch) = st
             .branch
             .as_deref()
@@ -494,7 +506,10 @@ impl Engine {
         {
             if base.is_some() {
                 match checkout_branch(&created.path, &branch).await {
-                    Ok(()) => created.branch = Some(format!("refs/heads/{branch}")),
+                    Ok(kept) => {
+                        created.branch = Some(format!("refs/heads/{branch}"));
+                        note = kept;
+                    }
                     Err(e) => warn!(
                         repo = repo.name,
                         issue = number,
@@ -508,7 +523,10 @@ impl Engine {
         let e = self.entry(repo, number);
         e.terminal_handle = None;
         e.worktree_name = Some(name);
-        Ok(Some("workspace gone"))
+        Ok(Some(ReCreated {
+            reason: "workspace gone",
+            note,
+        }))
     }
 
     /// Record harness session ids for workspaces that do not have one yet.
@@ -1059,4 +1077,12 @@ mod launch_command_tests {
         assert!(!line(Some(&bare)).contains("--model"));
         assert!(!line(None).contains("--harness"));
     }
+}
+
+/// A workspace `rehydrate` made again: why, and what the session should
+/// know about the branch it was put back on.
+#[derive(Debug, Clone)]
+pub(in crate::engine) struct ReCreated {
+    pub reason: &'static str,
+    pub note: Option<String>,
 }

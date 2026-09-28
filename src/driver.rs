@@ -1376,8 +1376,9 @@ pub async fn default_base(repo_root: &str) -> Result<String> {
 
 /// A local worktree named `name` of the checkout at `repo_root`, on branch
 /// `bot/<name>`: the branch is made from `base` when it does not exist yet,
-/// and checked out as it is when it does (a re-created workspace keeps its
-/// history). Returns the worktree's path and full branch ref.
+/// and checked out as it is when it does, whatever `base` says (a
+/// re-created workspace keeps its history, and an existing branch is never
+/// reset). Returns the worktree's path and full branch ref.
 pub async fn add_local_worktree(
     repo_root: &str,
     name: &str,
@@ -1403,7 +1404,7 @@ pub async fn add_local_worktree(
     )
     .await
     .is_ok();
-    if have_branch && base.is_none_or(|b| b == branch) {
+    if have_branch {
         git(repo_root, &["worktree", "add", &path_s, &branch]).await?;
     } else {
         let base = match base {
@@ -1413,10 +1414,9 @@ pub async fn add_local_worktree(
         if let Some(remote) = base.strip_prefix("origin/") {
             let _ = git(repo_root, &["fetch", "origin", remote]).await;
         }
-        let flag = if have_branch { "-B" } else { "-b" };
         git(
             repo_root,
-            &["worktree", "add", flag, &branch, &path_s, &base],
+            &["worktree", "add", "-b", &branch, &path_s, &base],
         )
         .await?;
     }
