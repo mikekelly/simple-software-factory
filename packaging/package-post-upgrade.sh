@@ -19,7 +19,8 @@ for user in $users; do
   ctl="systemctl --machine=${user}@.host --user"
   case "$($ctl is-system-running 2>/dev/null)" in
     running|degraded|starting) ;;
-    *) continue ;;
+    offline) continue ;;
+    *) echo "==> could not reach $user's user manager; if ssf runs there, restart it: systemctl --user restart ssf.service (or ssf@NAME.service)" >&2; continue ;;
   esac
   target_files=$($ctl list-unit-files --no-legend --plain 'ssf@*.service' 2>/dev/null) || target_files=
   target_units=$($ctl list-units --all --no-legend --plain 'ssf@*.service' 2>/dev/null) || target_units=
