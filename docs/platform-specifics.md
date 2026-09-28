@@ -158,10 +158,18 @@ Older Debian and Ubuntu releases can use the Zabbly packages
 
 ```sh
 sudo usermod -aG incus-admin "$USER"   # then log in again
+sudo systemctl restart "user@$(id -u).service"   # lingering user manager keeps old groups
 sudo incus admin init --minimal        # a storage pool and the incusbr0 network
 ssf config set vm.backend incus
 ssf vm build
 ```
+
+`ssf@NAME.service` runs under the systemd user manager, which lingering keeps
+alive across logins with the groups it started with, so logging in again is not
+enough for the service: restart the user manager as above, or the service fails
+with "You don't have the needed permissions to talk to the incus daemon". This
+stops the user's other services too; run it before anything else is started
+under that account. The guest's sizes are container limits, not reservations.
 
 The kernel needs idmapped mounts (5.12 or newer; any current distribution
 kernel), which ssf uses to share `share/` with the container read-only. Incus's
