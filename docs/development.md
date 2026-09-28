@@ -352,7 +352,12 @@ automates, for reference:
    GitHub's ARM runner and uses its musl compiler so bundled C dependencies
    and Rust use the same libc target and architecture. VM guests install the
    `.deb` of their architecture (`ssf vm upgrade`), so an arm64 guest needs
-   the arm64 one. A run
+   the arm64 one. The release job also attaches `SHA256SUMS` over every
+   asset on the draft (guests verify their downloads against it) and records
+   SLSA build provenance for the packages it built (`gh attestation verify
+   FILE -R mikekelly/simple-software-factory`). Workflow actions are pinned by
+   commit SHA, and only the jobs that push, upload or publish get
+   `contents: write`. A run
    started by hand
    (`workflow_dispatch`) builds the same from the working tree and leaves
    workflow artifacts, no release. Locally, `packaging/linux/build.sh`

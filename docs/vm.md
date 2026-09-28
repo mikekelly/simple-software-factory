@@ -121,7 +121,7 @@ neither backend: both seed a Linux `ssf` into the guest.
 
 | command | Firecracker | lima | incus |
 |---|---|---|---|
-| `build` | downloads Firecracker, gvproxy, a kernel and a pinned Ubuntu 24.04 minimal-cloud root tarball into `vm.dir`, verifies SHA-256, makes the root image and boots it once to provision | writes `lima.yaml` and `share/`, creates the data disk if absent, `limactl create`, then a first start during which the guest provisions itself; stops the instance afterwards | writes `share/`, creates the data volume if absent, `incus init` and the devices, then a first start in which `incus exec` provisions the guest with the lima guest scripts; stops the container afterwards |
+| `build` | downloads Firecracker, gvproxy, a kernel and a pinned Ubuntu 24.04 minimal-cloud root tarball into `vm.dir`, verifies each against the SHA-256 pinned in `src/vm.rs`, makes the root image and boots it once to provision | writes `lima.yaml` and `share/`, creates the data disk if absent, `limactl create`, then a first start during which the guest provisions itself; stops the instance afterwards | writes `share/`, creates the data volume if absent, `incus init` and the devices, then a first start in which `incus exec` provisions the guest with the lima guest scripts; stops the container afterwards |
 | `start` | boots the microVM, waits for ssh and the guest daemon | writes `share/` fresh, `limactl start`, waits for the provisioning marker, ssh and the daemon | writes `share/` fresh, applies `limits.cpu`/`limits.memory`, `incus start`, provisions a reset container, waits for ssh and the daemon |
 | `stop` | Ctrl-Alt-Del through Firecracker's API | `limactl stop`, then `limactl stop -f` if that fails | `incus stop`, then `incus stop --force` if that fails |
 | `grow` | `e2fsck -f`, lengthens the file, `resize2fs` | `limactl disk resize`; the guest grows the filesystem at its next boot | sets the volume's `size` (a pool that cannot cap volumes leaves them uncapped, and there is nothing to grow) |
@@ -217,7 +217,9 @@ a current GitHub CLI from its own apt repository (`cli.github.com/packages`;
 Ubuntu's own `gh` is too old), a pinned upstream Node.js LTS with npm, `tmux`, the harness
 CLIs from `ssf agents` that npm or a release tarball provide (each best effort
 and listed at the end of the build), an `ssf` user that is root through `sudo`,
-herdr, and herdr's agent integrations for the agents present. The list lives in
+herdr, and herdr's agent integrations for the agents present. herdr and the
+harness CLIs are installed at the versions pinned in one block at the top of
+`provision.sh`; bump them there and rebuild. The list lives in
 `vm/guest/provision.sh` (`/usr/share/ssf/vm/` when installed on Linux,
 `$(brew --prefix)/share/ssf/vm/` on macOS). To change it, copy that directory,
 edit the copy and run `SSF_VM_DIR=<copy> ssf vm build --force`; a file edited
@@ -248,9 +250,13 @@ provisioned, so a newer host herdr reaches an existing guest through
 in the Linux guest: the guest's `ssf` is `[vm] guest_binary` when set (its
 matching `ssf-server` must sit beside it), otherwise both release assets for
 this version and architecture are downloaded once with `gh release download`
-into `guest-bin/` and reused at every start. `[vm] herdr` pins a Linux herdr
-the same way; with none set and no host herdr, the guest downloads herdr's
-latest Linux release while it provisions itself.
+into `guest-bin/` and reused at every start. Each download (and the `.deb`
+`ssf vm upgrade` fetches) is checked against the release's `SHA256SUMS` and
+refused on a mismatch or when that file does not list it; releases made before
+`SHA256SUMS` was published have none, and their assets are used with a
+warning. `[vm] herdr` pins a Linux herdr the same way; with none set and no
+host herdr, the guest downloads the herdr release pinned in `provision.sh`
+while it provisions itself.
 
 ## What gets in, and what does not
 

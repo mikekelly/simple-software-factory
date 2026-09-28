@@ -439,6 +439,7 @@ impl Vm {
         if !self.firecracker().exists() {
             let tgz = dl.join("firecracker.tgz");
             download(&firecracker_url(), &tgz).await?;
+            verify_sha256(&tgz, FIRECRACKER_SHA256)?;
             let out = Command::new("tar")
                 .arg("-xzf")
                 .arg(&tgz)
@@ -457,14 +458,17 @@ impl Vm {
         }
         if !self.gvproxy().exists() {
             download(&gvproxy_url("gvproxy-linux-amd64"), &self.gvproxy()).await?;
+            verify_sha256(&self.gvproxy(), GVPROXY_SHA256)?;
             make_executable(&self.gvproxy())?;
         }
         if !self.gvforwarder().exists() {
             download(&gvproxy_url("gvforwarder"), &self.gvforwarder()).await?;
+            verify_sha256(&self.gvforwarder(), GVFORWARDER_SHA256)?;
             make_executable(&self.gvforwarder())?;
         }
         if !self.kernel().exists() {
             download(KERNEL_URL, &self.kernel()).await?;
+            verify_sha256(&self.kernel(), KERNEL_SHA256)?;
         }
         let tarball = dl.join("ubuntu-24.04-root.tar.xz");
         if !tarball.exists() {

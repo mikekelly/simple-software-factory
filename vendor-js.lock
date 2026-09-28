@@ -1,0 +1,15 @@
+# Vendored JavaScript: one line per committed file, checked and refreshed by
+# scripts/fetch-vendored-js.sh (#617). Every file is upstream's, unmodified.
+# To upgrade: change the version and URL, run the script with --update, and
+# review the diff. dockview-core.min.js is upstream's
+# dist/dockview-core.min.noStyle.js (the styles ship as dockview.css), and
+# dockview's LICENSE is not in its npm package, so it comes from the tag.
+# package version path url sha256
+@xterm/xterm 6.0.0 chrome-extension/vendor/xterm/xterm.mjs https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.mjs b336ec65a086c056d4804b3d4c2347da5663d3f23c3f25be866467bd8857ad59
+@xterm/xterm 6.0.0 chrome-extension/vendor/xterm/xterm.css https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css 854a7c0fb70e8b1a083c16797ab827299fb18744f5ad34f227b48337e33293c6
+@xterm/xterm 6.0.0 chrome-extension/vendor/xterm/LICENSE-xterm https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/LICENSE b569f629d00f2626a8100df2a1798210535621e42164dfd426a6fe5aac7b0ccd
+@xterm/addon-fit 0.11.0 chrome-extension/vendor/xterm/addon-fit.mjs https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/lib/addon-fit.mjs 2d87e1bddc73be9111de8beee5370c3bb7aac9c94e18e6f245f02ca741ef1769
+@xterm/addon-fit 0.11.0 chrome-extension/vendor/xterm/LICENSE-addon-fit https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/LICENSE e256f01188af527e4d06d21d06fbf785ae9c50d4b328bf03cbe0ba7f0aa4228f
+dockview-core 4.13.1 dashboard/vendor/dockview/dockview-core.min.js https://cdn.jsdelivr.net/npm/dockview-core@4.13.1/dist/dockview-core.min.noStyle.js c6db6e10446942eee8b64281118d9ca2960a483ef925ee3f05515255949f82b6
+dockview-core 4.13.1 dashboard/vendor/dockview/dockview.css https://cdn.jsdelivr.net/npm/dockview-core@4.13.1/dist/styles/dockview.css e46f6d9d72bf780114be5c2f3b3dbaae517f3e45b5e801fdd26519bcc951bd9d
+dockview-core 4.13.1 dashboard/vendor/dockview/LICENSE https://raw.githubusercontent.com/mathuo/dockview/v4.13.1/LICENSE 1d56757fdc06c9b33c0f80821efe4f4b11960dd7fb6544232cff61752101f513

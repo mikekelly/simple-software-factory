@@ -56,6 +56,48 @@ fn a_bad_download_checksum_removes_the_cached_file() {
 }
 
 #[test]
+fn every_host_download_is_pinned_by_sha256_and_guest_tools_by_version() {
+    for sum in [
+        FIRECRACKER_SHA256,
+        GVPROXY_SHA256,
+        GVFORWARDER_SHA256,
+        KERNEL_SHA256,
+        UBUNTU_ROOT_SHA256,
+    ] {
+        assert_eq!(sum.len(), 64);
+        assert!(
+            sum.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        );
+    }
+    let fc = include_str!("../firecracker.rs");
+    for c in [
+        "FIRECRACKER_SHA256",
+        "GVPROXY_SHA256",
+        "GVFORWARDER_SHA256",
+        "KERNEL_SHA256",
+    ] {
+        assert!(fc.contains(&format!(", {c})?;")), "{c} unchecked");
+    }
+    let provision = include_str!("../../../vm/guest/provision.sh");
+    assert!(!provision.contains("releases/latest"));
+    let pkgs = provision
+        .split("npm_pkgs=(")
+        .nth(1)
+        .unwrap()
+        .split(')')
+        .next()
+        .unwrap();
+    for p in pkgs.split_whitespace() {
+        assert!(
+            p.rsplit_once('@')
+                .is_some_and(|(n, v)| !n.is_empty() && !v.is_empty()),
+            "{p} is unpinned"
+        );
+    }
+}
+
+#[test]
 fn disabled_vm_management_preserves_host_factory_and_credentials() {
     let sandbox = crate::config::test_support::sandbox();
     let mut config = Config::default();
