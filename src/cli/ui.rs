@@ -88,3 +88,12 @@ async fn stop_supervised_vm() -> Result<()> {
 pub(super) fn reports_backend_tooling(in_guest: bool) -> bool {
     !in_guest
 }
+
+/// What `ssf doctor` says on a VM host about a `[dashboard]` of its own: the
+/// guest daemon serves the dashboard with the guest's `[dashboard]` (#653),
+/// so the host's is not read. Nothing migrates it.
+pub(super) fn unused_host_dashboard_note(host: &Config) -> Option<&'static str> {
+    (host.vm.enabled && host.dashboard.enabled).then_some(
+        "[dashboard] in this host's config is unused in VM mode: the guest daemon serves the dashboard with the guest's own [dashboard] (`ssf config set dashboard.enabled true` sets it there), with a new capability URL in the guest journal (`ssf vm logs | grep 'Server web dashboard'`): add it to the extension once",
+    )
+}

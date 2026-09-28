@@ -32,6 +32,8 @@
 //! commands are run inside the guest that way, so `ssf status --json` for
 //! the dashboards works as before; `ssf-server`
 //! on the host starts the VM and watches it, so the service is unchanged.
+//! The guest daemon serves the web dashboard; `dashboard_tunnel.rs` puts a
+//! loopback-bound one on the host's loopback where the backend does not.
 
 mod lima;
 pub(crate) use lima::MAX_NAME_LEN as MAX_LIMA_NAME_LEN;
@@ -118,6 +120,7 @@ pub const FORWARDED: [&str; 21] = [
     "__pane",
 ];
 
+mod dashboard_tunnel;
 mod firecracker;
 mod guest;
 mod incus;

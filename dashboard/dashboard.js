@@ -270,15 +270,18 @@ async function refresh() {
     fill(buildNode, body.build || "");
     render(body.cards, body.monitored_items || []);
     if (body.warning) show(emptyNode, false);
-    // A VM guest is upgraded on its own (`ssf vm upgrade`), so its release
-    // can differ from the host's that serves this page; the note says so.
-    fill(noticeNode, body.warning ? `Status may be incomplete: ${body.warning}` : body.version_note || "");
-    show(noticeNode, Boolean(body.warning || body.version_note));
+    fill(noticeNode, body.warning ? `Status may be incomplete: ${body.warning}` : "");
+    show(noticeNode, Boolean(body.warning));
     fill(statusNode, `Updated ${new Date(body.refreshed_at * 1000).toLocaleTimeString()}`);
     return true;
   } catch (error) {
     show(emptyNode, false);
-    fill(noticeNode, `Could not refresh: ${error.message}`);
+    // No answer at all is a factory that is not there: the daemon serves
+    // this page itself (in a VM, the guest's), so with it or its VM down
+    // there is no listener to say anything else (#653).
+    fill(noticeNode, error instanceof TypeError
+      ? "Factory unreachable: its daemon (or its VM) is not running or cannot be reached. This page retries on refresh."
+      : `Could not refresh: ${error.message}`);
     show(noticeNode, true);
     fill(statusNode, "Refresh failed");
   } finally {

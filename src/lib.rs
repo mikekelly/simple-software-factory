@@ -11,6 +11,7 @@ mod claude_delivery;
 mod codex_delivery;
 mod config;
 mod dashboard;
+mod dashboard_relay;
 mod dashboard_term;
 mod dashboard_transport;
 mod dashboard_web;

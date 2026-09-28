@@ -221,7 +221,8 @@ pub fn guest_config(host: &Config) -> Config {
         r.path = None;
     }
     g.vm = VmConfig::default();
-    // The optional web endpoint belongs to the supervising host server.
+    // The guest serves the web dashboard with its own [dashboard] (#653);
+    // a host's is never carried into it.
     g.dashboard = crate::config::DashboardConfig::default();
     g.daemon.startup_driver_wait_secs = 0;
     g

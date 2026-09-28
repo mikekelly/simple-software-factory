@@ -131,8 +131,10 @@ are covered in
 
 ## Optional server web dashboard
 
-The HTTP listener belongs to the factory's server process and is off by
-default. Enable it in that server's configuration and restart the server:
+The HTTP listener belongs to the factory's daemon, wherever the daemon runs,
+and is off by default: in host mode the machine's `ssf-server`, in VM mode the
+guest's daemon, with the guest's own `[dashboard]`. Enable it in that
+configuration and restart the daemon:
 
 ```toml
 [dashboard]
@@ -143,13 +145,40 @@ port = 8787
 
 The same keys can be set with `ssf config set dashboard.enabled true`,
 `ssf config set dashboard.bind 127.0.0.1` and
-`ssf config set dashboard.port 8787`. In VM mode the listener settings stay on
-the host, which forwards to read guest status. Changes to them require a
-restart. `--once` does not serve the UI.
+`ssf config set dashboard.port 8787`; in VM mode `ssf config` sets them in the
+guest like every other factory setting. Changes to them require a restart of
+the daemon (in VM mode, `ssf vm ssh -- sudo systemctl restart ssf`). `--once`
+does not serve the UI. A `[dashboard]` in a VM host's own config is unused;
+`ssf doctor` notes it.
+
+In VM mode the guest's listener is reached the same way under every backend:
+
+- **Tailscale:** after `ssf vm tailscale` the guest is on the tailnet; bind the
+  dashboard to the guest's tailnet address. That one step covers SSH, herdr
+  and the dashboard.
+- **Loopback:** a loopback-bound guest dashboard is also on the host's
+  loopback, at the same address and port. lima forwards it itself; for
+  Incus, the host supervisor adds a `proxy` device (`ssf-dashboard`) beside
+  the ssh one; for Firecracker, whose gvproxy network can only expose the
+  guest's network address, the host supervisor itself listens on that
+  address and port for as long as the VM runs and relays each connection
+  over vsock (guest port 1026) to the guest daemon, which relays it to its
+  own loopback listener. A guest that is down or restarting closes that one
+  connection, and the next one works once it is back. A host port that is
+  already taken is logged as an error by the supervisor
+  (`could not listen on ...`) and tried again each minute. The supervisor
+  reads the guest's `[dashboard]` about once a minute and follows changes;
+  a read that fails leaves the forward as it is.
+
+While the factory's daemon (or its VM) is down nothing listens: the page says
+**Factory unreachable** on its next refresh, and the extension marks the
+factory unreachable and keeps retrying.
 
 Setting it up, in order:
 
-1. Enable the listener and restart the server. Copy the capability URL it logs.
+1. Enable the listener and restart the daemon. Copy the capability URL it logs
+   (in VM mode, to the guest's journal: `ssf vm logs | grep 'Server web dashboard'`,
+   or `ssf vm ssh -- journalctl -u ssf`).
 2. Install the [Chrome extension](../chrome-extension/README.md) and add that
    URL there. Do it once: the secret is kept, so the URL survives every later
    restart.
@@ -157,7 +186,8 @@ Setting it up, in order:
    alone; a Tailscale bind serves the tailnet; anything else needs an
    authenticating TLS reverse proxy in front, per the rules below.
 
-The server logs a capability URL such as `http://127.0.0.1:8787/<secret>/`.
+The daemon logs a capability URL such as `http://127.0.0.1:8787/<secret>/`
+(in VM mode, in the guest's journal, as above).
 Open it yourself on the server machine or through your proxy; the server never
 opens a browser. Keep the whole URL private: it grants access to repository
 details and session summaries. The listener stays up until the server stops,
@@ -167,10 +197,17 @@ startup error.
 The secret is generated once, on the first start that serves the listener, and
 kept at `dashboard-token` in the factory's state directory
 (`~/.local/state/ssf/dashboard-token`, mode 0600; a catalog target has its own
-state directory). Every later start reads it, so a URL someone has already
+state directory; in VM mode the guest's state directory, so the file lives in
+the guest). Every later start reads it, so a URL someone has already
 configured keeps working across restarts — including one saved in the Chrome
 extension. A file this build did not write, made by hand or restored from a
 backup, is tightened to 0600 when it is read.
+
+A VM factory whose dashboard was served by the host before this release gets a
+new URL once: the guest mints its own secret. Enable `[dashboard]` in the guest
+(`ssf config set dashboard.enabled true`), take the URL from the guest journal
+and set up the extension with it again; the host's old token and `[dashboard]`
+are unused (`ssf doctor` notes the latter).
 
 Deleting that file and restarting generates a new one and invalidates every
 saved copy of the old URL. `ssf uninstall --data` removes it with the default
@@ -336,7 +373,7 @@ once; a seventeenth is `503`.
 
 A terminal is one viewer of the pane's shared stream: `ssf __pane control
 <session>` run over pipes, through the same client transport as the status
-stream (so a factory in a VM is reached in the guest), which runs `herdr
+stream, which runs `herdr
 terminal session control` on the pane (never `--takeover`). The server starts
 it for the pane's first viewer and stops it, releasing the pane, when the last
 one goes. Since it types at an agent, it is opened only for a request whose
@@ -450,13 +487,9 @@ The read endpoints accept an `Origin` of `http://<bind>:<port>` or any
 them; the `Host` header must still match the configured bind address and port.
 
 Everything above the status stream is answered by the factory, through the same
-client the TUI and the commands use. With `[vm] enabled` the listener is bound
-by the host that supervises the VM while the daemon, the harnesses and their
-model catalogues are in the guest, so the agent and model listings, and every
-write, are asked there and forwarded rather than answered from the host. A
-factory the host cannot reach (a VM that is not running, a stopped daemon) is a
-`502` naming what could not be reached, never a listing of the host's own
-harnesses.
+client the TUI and the commands use, run beside the daemon that serves the
+listener (in VM mode, in the guest). A factory daemon that does not answer is a
+`502` naming what could not be reached.
 
 ### Write endpoints
 

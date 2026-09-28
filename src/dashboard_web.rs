@@ -66,18 +66,32 @@ pub(crate) async fn bind(config: &crate::config::DashboardConfig) -> Result<Opti
 /// The listener and daemon share a lifetime. Dropping either future closes the
 /// listener, and every connection it accepted ends with the status stream the
 /// handler reads; there is no browser idle expiration.
-pub(crate) async fn with_daemon<F>(listener: Option<TcpListener>, daemon: F) -> Result<()>
+///
+/// `relay` is the dashboard's loopback address in a VM guest: it is also
+/// relayed from vsock, so a Firecracker host can reach it
+/// (`crate::dashboard_relay`).
+pub(crate) async fn with_daemon<F>(
+    listener: Option<TcpListener>,
+    relay: Option<std::net::SocketAddr>,
+    daemon: F,
+) -> Result<()>
 where
     F: Future<Output = Result<()>>,
 {
     let Some(listener) = listener else {
         return daemon.await;
     };
+    let relay = async move {
+        if let Some(target) = relay {
+            crate::dashboard_relay::serve_guest_retrying(target).await;
+        }
+        std::future::pending::<Result<()>>().await
+    };
     let token = capability()?;
     // The factory this listener answers for is asked through its own client,
-    // the same way the status stream below is: for a factory in a VM the
-    // daemon and the harnesses are in the guest, and the client is what
-    // forwards there.
+    // the same way the status stream below is. The listener is always the
+    // factory daemon's own (in a VM, the guest's; #653), so the client
+    // answers locally.
     let client = crate::server_executable()?;
     tracing::info!(
         "Server web dashboard: http://{}/{token}/",
@@ -91,7 +105,7 @@ where
     let mut source = crate::dashboard_transport::StatusSource::new_with_context(
         None,
         crate::server_catalog::service_local_context().cloned(),
-        crate::server_catalog::selected_vm_context()?,
+        None,
         crate::server_catalog::selected_target_identity()?,
     )?;
     let (latest_tx, latest_rx) =
@@ -114,6 +128,7 @@ where
     tokio::select! {
         result = daemon => result,
         result = stream => result,
+        result = relay => result,
         result = serve(listener, token, latest_rx, client) => result.context("server web dashboard stopped"),
     }
 }
@@ -841,16 +856,13 @@ async fn carry(
 }
 
 /// Ask this factory one client command and take its output. The transport is
-/// the status stream's own: a client run in this process's service identity,
-/// which forwards into the guest when the factory is in a VM. Without it a
-/// listener bound by a VM's host — the topology `ssf setup` creates — would
-/// answer from the host, where neither the daemon nor the harnesses are.
+/// the status stream's own: a client run in this process's service identity.
 async fn ask(client: &Path, args: &[&str], limit: Duration) -> Result<std::process::Output> {
     let mut command = crate::dashboard_transport::local_client_command(
         client,
         args,
         crate::server_catalog::service_local_context(),
-        crate::server_catalog::selected_vm_context()?.as_ref(),
+        None,
         crate::server_catalog::selected_target_identity()?.as_ref(),
     );
     match timeout(limit, command.output()).await {
@@ -1378,20 +1390,6 @@ fn presentation(payload: &Value) -> Result<Value> {
     }
     let mut dashboard = dashboard.clone();
     dashboard["build"] = json!(BUILD);
-    // The factory this server shows may run another release: a VM guest
-    // is upgraded on its own, by `ssf vm upgrade`. A factory from before
-    // `version` was published cannot be compared here.
-    let vm = payload["host_vm"].is_object()
-        || crate::server_catalog::selected_vm_context()
-            .ok()
-            .flatten()
-            .is_some();
-    dashboard["version_note"] = json!(
-        payload["version"]
-            .as_str()
-            .filter(|factory| *factory != env!("CARGO_PKG_VERSION"))
-            .map(|factory| crate::cli::version_skew_hint(factory, env!("CARGO_PKG_VERSION"), vm))
-    );
     dashboard["terminal_input"] = json!(TERMINAL_INPUT.load(std::sync::atomic::Ordering::Relaxed));
     Ok(dashboard)
 }
@@ -1779,34 +1777,9 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         let mut served = dashboard.clone();
         served["build"] = json!(BUILD);
         served["terminal_input"] = json!(false);
-        served["version_note"] = Value::Null;
         assert_eq!(
             presentation(&json!({"dashboard":dashboard})).unwrap(),
             served
-        );
-        // The factory on this server's release says nothing; a guest on
-        // another one is named, with the remedy.
-        let same = json!({"dashboard":dashboard,"version":env!("CARGO_PKG_VERSION")});
-        assert!(presentation(&same).unwrap()["version_note"].is_null());
-        let note = presentation(&json!({"dashboard":dashboard,"version":"0.0.1","host_vm":{}}))
-            .unwrap()["version_note"]
-            .clone();
-        assert_eq!(
-            note,
-            format!(
-                "the guest runs ssf 0.0.1 and this host {}: run `ssf vm upgrade`",
-                env!("CARGO_PKG_VERSION")
-            )
-        );
-        let other = presentation(&json!({"dashboard":dashboard,"version":"0.0.1"})).unwrap()
-            ["version_note"]
-            .clone();
-        assert!(
-            other
-                .as_str()
-                .unwrap()
-                .starts_with("the server runs ssf 0.0.1"),
-            "{other}"
         );
         assert!(BUILD.starts_with(concat!("ssf ", env!("CARGO_PKG_VERSION"), " \u{b7} ")));
         assert!(presentation(&json!({"sessions":[]})).is_err());
@@ -2664,7 +2637,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             .unwrap();
         let address = listener.local_addr().unwrap();
         let (finish, done) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(with_daemon(Some(listener), async move {
+        let task = tokio::spawn(with_daemon(Some(listener), None, async move {
             done.await.unwrap();
             Ok(())
         }));
@@ -2686,7 +2659,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             .await
             .unwrap();
         let address = listener.local_addr().unwrap();
-        let result = with_daemon(Some(listener), async { bail!("daemon failed") }).await;
+        let result = with_daemon(Some(listener), None, async { bail!("daemon failed") }).await;
         assert!(result.unwrap_err().to_string().contains("daemon failed"));
         assert_listener_closed(address).await;
     }

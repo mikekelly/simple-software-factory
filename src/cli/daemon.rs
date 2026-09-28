@@ -2,12 +2,18 @@ use super::prelude::*;
 
 pub(super) async fn run(once: bool) -> Result<()> {
     let cfg = Config::load()?;
-    let listener = if once {
+    // A factory in a VM serves its dashboard from the guest daemon, with the
+    // guest's own `[dashboard]` (#653); a host `[dashboard]` is unused.
+    let listener = if once || cfg.vm.enabled {
         None
     } else {
         dashboard_web::bind(&cfg.dashboard).await?
     };
-    dashboard_web::with_daemon(listener, run_factory(cfg, once)).await
+    // A guest's loopback dashboard is relayed from vsock for a Firecracker
+    // host (#653); elsewhere there is no vsock and nothing is relayed.
+    let relay = (listener.is_some() && factory_vm::in_guest() && cfg.dashboard.bind.is_loopback())
+        .then(|| std::net::SocketAddr::new(cfg.dashboard.bind, cfg.dashboard.port));
+    dashboard_web::with_daemon(listener, relay, run_factory(cfg, once)).await
 }
 
 pub(super) async fn run_factory(cfg: Config, once: bool) -> Result<()> {

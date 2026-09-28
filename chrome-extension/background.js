@@ -153,7 +153,7 @@ async function open(entry) {
       origins: [originPattern(entry.url)],
     });
     entry.error = granted
-      ? "the factory stopped sending events (is ssf-server running, and is this device on the tailnet?)"
+      ? "factory unreachable: its daemon (or its VM) is not running, or this device cannot reach it (is it on the tailnet?)"
       : "this factory is not allowed yet; grant its address on the extension's options page";
     retry(entry);
   });

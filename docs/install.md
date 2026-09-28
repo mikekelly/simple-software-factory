@@ -521,7 +521,7 @@ Before the first issue, the repository also needs `SSF.md` committed at the root
 
 ## 10. Other devices, then verify
 
-Ask one yes/no question: "Do you want to reach the factory or the dashboard from other devices?" If yes, on a VM target run `ssf vm tailscale` and pass the login URL it prints to the person; it prints the machine name and address once enrolled. That enrolls the guest, which serves SSH and herdr; the dashboard listener runs on the host in VM mode, so for the dashboard also install Tailscale on the host as below. In host mode or on a rented host, Tailscale goes on that machine itself: give the person the install command from [tailscale.com/download](https://tailscale.com/download) and `sudo tailscale up`, and pass along its login URL. Details in [platform-specifics.md](platform-specifics.md#tailscale). If no, move on.
+Ask one yes/no question: "Do you want to reach the factory or the dashboard from other devices?" If yes, on a VM target run `ssf vm tailscale` and pass the login URL it prints to the person; it prints the machine name and address once enrolled. That enrolls the guest, which serves SSH, herdr and the web dashboard: that one step is all remote access needs. In host mode or on a rented host, Tailscale goes on that machine itself: give the person the install command from [tailscale.com/download](https://tailscale.com/download) and `sudo tailscale up`, and pass along its login URL. Details in [platform-specifics.md](platform-specifics.md#tailscale). If no, move on.
 
 ```sh
 ssf doctor
@@ -536,21 +536,27 @@ Two lines are expected to fail before the first issue and need no action: the re
 
 Ask one yes/no question: "Do you want the web dashboard and the Chrome extension, which shows each agent's state on the GitHub issue and pull request pages?" If no, move on.
 
-If yes, the listener belongs to the machine running `ssf-server` (the host in VM mode). Bind it to that machine's Tailscale address when it is on the tailnet, so only tailnet devices can reach it; otherwise keep the loopback default, which serves that machine alone. Never bind anything else; [dashboard.md](dashboard.md#bind-rules) has the rules.
+If yes, the factory's daemon serves it wherever the daemon runs: the guest in VM mode, the machine itself in host mode. The setup is the same in every mode, and `ssf config` reaches the right config. Bind it to the factory's Tailscale address when it is on the tailnet (in VM mode, the guest's, after `ssf vm tailscale`), so only tailnet devices can reach it; otherwise keep the loopback default. A loopback dashboard in a VM is also on the host's loopback at the same port (lima forwards it; for Firecracker and Incus the ssf supervisor does, see [dashboard.md](dashboard.md#optional-server-web-dashboard)). Never bind anything else; [dashboard.md](dashboard.md#bind-rules) has the rules.
 
 ```sh
 ssf config set dashboard.enabled true
-ssf config set dashboard.bind "$(tailscale ip -4)"   # tailnet; skip for loopback
-systemctl --user list-units 'ssf*.service'           # the unit ssf setup made, e.g. ssf@ssf-server.service
+ssf config set dashboard.bind TAILSCALE_ADDRESS      # tailnet; skip for loopback. VM: the address `ssf vm tailscale` printed
+# VM mode: restart the guest daemon and read its URL
+ssf vm ssh -- sudo systemctl restart ssf
+ssf vm logs | grep 'Server web dashboard'
+# host mode: restart the unit ssf setup made (e.g. ssf@ssf-server.service)
+systemctl --user list-units 'ssf*.service'
 systemctl --user restart UNIT
 journalctl --user -u UNIT | grep 'Server web dashboard'
 ```
+
+A capability URL a host-side listener handed out before ssf served the dashboard from the guest no longer works: add the guest's URL to the extension once. A leftover `[dashboard]` in the host config is unused; `ssf doctor` notes it.
 
 Ask one more yes/no question: "Do you want to watch and type into an agent's terminal from the dashboard or the extension?" Both default to off; if yes, before the restart above:
 
 ```sh
 ssf config set daemon.item_pane_input true      # the factory's config (the guest in VM mode); repo.item_pane_input per repository
-ssf config set dashboard.terminal_input true    # this page's own terminal; the extension needs only the line above
+ssf config set dashboard.terminal_input true    # this page's own terminal (the factory's config too); the extension needs only the line above
 ```
 
 Without `item_pane_input`, neither offers **Show agent TUI**, and people speak to an agent by commenting on the item.

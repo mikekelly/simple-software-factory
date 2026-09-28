@@ -6,8 +6,8 @@
 # ~/.config/ssf/token (0600) after `ssf auth login --token`.
 # Named routes to factories are separate, in ~/.config/ssf/servers.toml;
 # create them with `ssf server add`, not in this factory-owned file.
-# In VM mode [vm] and [dashboard] belong to the host and everything else to
-# the guest, where the paths below are guest paths.
+# In VM mode [vm] belongs to the host and everything else, [dashboard]
+# included, to the guest, where the paths below are guest paths.
 
 [github]
 # api_url = "https://api.github.com"      # GitHub Enterprise: https://ghe.example.com/api/v3
@@ -144,8 +144,9 @@ effort = "high"                              # effort/thinking level; `ssf agent
 # the real programs with the session's own gh token, ssh command and git
 # configuration. See docs/identity-and-bylines.md; no configuration is needed.
 
-# Optional server browser dashboard. Restart ssf-server after changes.
-# In VM mode this section belongs to the host, not the guest.
+# Optional browser dashboard, served by the factory's daemon. Restart it after
+# changes. In VM mode this section belongs to the guest (the host's is unused);
+# a loopback bind there is also forwarded to the host's loopback.
 # The URL's secret is generated once and kept in the factory's state directory
 # (dashboard-token, 0600), so a restart serves the same URL a client saved.
 # Only loopback or a Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48) is

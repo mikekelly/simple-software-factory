@@ -72,7 +72,7 @@ fn release_asset_binaries_find_their_companions() {
 }
 
 #[test]
-fn factory_cli_routes_to_guest_but_vm_and_dashboard_settings_stay_on_host() {
+fn factory_cli_routes_to_guest_but_vm_settings_stay_on_host() {
     for args in [
         vec!["ssf", "repo", "list"],
         vec!["ssf", "repo", "add", "owner/repo", "--harness", "claude"],
@@ -86,6 +86,10 @@ fn factory_cli_routes_to_guest_but_vm_and_dashboard_settings_stay_on_host() {
         vec!["ssf", "config", "path"],
         vec!["ssf", "config", "get", "daemon"],
         vec!["ssf", "config", "set", "daemon.poll_interval_secs", "30"],
+        // The guest daemon serves the dashboard, with the guest's settings.
+        vec!["ssf", "config", "get", "dashboard"],
+        vec!["ssf", "config", "get", "dashboard.port"],
+        vec!["ssf", "config", "set", "dashboard.enabled", "true"],
         vec!["ssf", "agents"],
         vec!["ssf", "models", "claude"],
         // The web endpoint's own use of the daemon protocol: a factory in a
@@ -103,9 +107,6 @@ fn factory_cli_routes_to_guest_but_vm_and_dashboard_settings_stay_on_host() {
     for args in [
         vec!["ssf", "config", "get", "vm"],
         vec!["ssf", "config", "get", "vm.enabled"],
-        vec!["ssf", "config", "get", "dashboard"],
-        vec!["ssf", "config", "get", "dashboard.port"],
-        vec!["ssf", "config", "set", "dashboard.enabled", "true"],
         vec!["ssf", "config", "set", "vm.enabled", "false"],
         vec!["ssf", "vm", "start"],
         vec!["ssf", "login-probe", "omp"],
@@ -1512,4 +1513,19 @@ fn repo_launch_choices_required_without_partial_writes() {
     Config::load_from(&path).unwrap().repos[0]
         .require_launch_prefs()
         .unwrap();
+}
+
+#[test]
+fn doctor_notes_a_host_dashboard_is_unused_in_vm_mode() {
+    let mut host = Config::default();
+    host.dashboard.enabled = true;
+    assert_eq!(unused_host_dashboard_note(&host), None);
+    host.vm.enabled = true;
+    assert!(
+        unused_host_dashboard_note(&host)
+            .unwrap()
+            .contains("new capability URL")
+    );
+    host.dashboard.enabled = false;
+    assert_eq!(unused_host_dashboard_note(&host), None);
 }
