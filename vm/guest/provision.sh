@@ -28,6 +28,21 @@ case "$backend" in
         ;;
     *) echo "provision: SSF_VM_BACKEND=$backend is not firecracker, lima or incus" >&2; exit 1 ;;
 esac
+# Pinned guest tool versions: the one manifest of what provisioning
+# installs beyond the distribution's packages (#617). Bump a version here and
+# run `ssf vm build --force` (or `ssf vm reset`) to pick it up.
+HERDR_VERSION=v0.9.1
+CRUSH_VERSION=0.96.1
+OMP_VERSION=v18.4.1
+npm_pkgs=(
+    @anthropic-ai/claude-code@2.1.283
+    @openai/codex@0.158.0
+    @google/gemini-cli@0.61.0
+    @github/copilot@1.0.88
+    opencode-ai@1.18.33
+    @earendil-works/pi-coding-agent@0.87.1
+    @xai-official/grok@1.0.41
+)
 machine=$(uname -m)
 case "$pkg" in
     pacman)
@@ -172,22 +187,14 @@ if [ "$backend" != firecracker ]; then
             *) echo "provision: no herdr release for $machine; set [vm] herdr to a Linux binary for it" >&2; exit 1 ;;
         esac
         # Release assets are raw binaries named herdr-linux-<x86_64|aarch64>.
-        curl -fsSL -o /tmp/herdr "https://github.com/herdrdev/herdr/releases/latest/download/herdr-linux-$machine"
+        curl -fsSL -o /tmp/herdr "https://github.com/herdrdev/herdr/releases/download/$HERDR_VERSION/herdr-linux-$machine"
         install -m755 /tmp/herdr /usr/local/bin/herdr
         rm -f /tmp/herdr
     fi
     echo "provision: herdr $(/usr/local/bin/herdr --version 2>&1 | head -1)"
 fi
-# Harness CLIs (best effort: a failed one is reported, not fatal).
-npm_pkgs=(
-    @anthropic-ai/claude-code
-    @openai/codex
-    @google/gemini-cli
-    @github/copilot
-    opencode-ai
-    @earendil-works/pi-coding-agent
-    @xai-official/grok
-)
+# Harness CLIs, at the versions pinned above (best effort: a failed one is
+# reported, not fatal).
 for p in "${npm_pkgs[@]}"; do
     npm install -g "$p" || echo "provision: npm install $p failed" >&2
 done
@@ -207,45 +214,26 @@ for root in "${npm_roots[@]}"; do
     done
 done
 # Release downloads pick the asset for this machine: crush names them
-# _Linux_x86_64 / _Linux_arm64, omp linux-x64 / linux-arm64.
+# _Linux_x86_64 / _Linux_arm64, omp linux-x64 / linux-arm64 (the glibc
+# build, not the musl one next to it, whose loader the guest does not have).
 case "$machine" in
-    x86_64) crush_arch=x86_64 omp_arch='x64|x86_64|amd64' ;;
-    aarch64|arm64) crush_arch=arm64 omp_arch='arm64|aarch64' ;;
+    x86_64) crush_arch=x86_64 omp_arch=x64 ;;
+    aarch64|arm64) crush_arch=arm64 omp_arch=arm64 ;;
     *) crush_arch= omp_arch= ;;
 esac
-# Crush ships release tarballs.
 if [ -z "$crush_arch" ]; then
     echo "provision: no crush release for $machine; skipped" >&2
-    crush_url=
 else
-    crush_url=$(curl -fsSL https://api.github.com/repos/charmbracelet/crush/releases/latest \
-        | jq -r --arg re "_Linux_${crush_arch}.tar.gz\$" '.assets[] | select(.name | test($re)) | .browser_download_url' | head -1 || true)
-    if [ -z "$crush_url" ]; then
-        echo "provision: crush release not found (GitHub API unreachable or rate-limited); skipped" >&2
-    fi
-fi
-if [ -n "$crush_url" ]; then
-    curl -fsSL "$crush_url" | tar -xz -C /tmp && install -m755 /tmp/crush*/crush /usr/local/bin/crush \
+    curl -fsSL "https://github.com/charmbracelet/crush/releases/download/v$CRUSH_VERSION/crush_${CRUSH_VERSION}_Linux_${crush_arch}.tar.gz" \
+        | tar -xz -C /tmp && install -m755 /tmp/crush*/crush /usr/local/bin/crush \
         || echo "provision: crush install failed" >&2
 fi
-# Oh My Pi ships release binaries: the glibc one (`omp-linux-x64`), not
-# the musl one next to it, whose loader the guest does not have.
 if [ -z "$omp_arch" ]; then
     echo "provision: no omp release for $machine; skipped" >&2
-    omp_url=
 else
-    omp_url=$(curl -fsSL https://api.github.com/repos/can1357/oh-my-pi/releases/latest \
-        | jq -r --arg re "^omp-linux-(${omp_arch})\$" '.assets[] | select(.name | test($re)) | .browser_download_url' | head -1 || true)
-    if [ -z "$omp_url" ]; then
-        echo "provision: omp release not found (GitHub API unreachable or rate-limited); skipped" >&2
-    fi
-fi
-if [ -n "$omp_url" ]; then
-    (cd /tmp && curl -fsSL -o omp.dl "$omp_url" && case "$omp_url" in
-        *.tar.gz|*.tgz) tar -xzf omp.dl && install -m755 "$(find . -maxdepth 2 -type f -name omp | head -1)" /usr/local/bin/omp ;;
-        *.zip) unzip -o omp.dl >/dev/null && install -m755 "$(find . -maxdepth 2 -type f -name omp | head -1)" /usr/local/bin/omp ;;
-        *) install -m755 omp.dl /usr/local/bin/omp ;;
-    esac) || echo "provision: omp install failed" >&2
+    curl -fsSL -o /tmp/omp "https://github.com/can1357/oh-my-pi/releases/download/$OMP_VERSION/omp-linux-$omp_arch" \
+        && install -m755 /tmp/omp /usr/local/bin/omp && rm -f /tmp/omp \
+        || echo "provision: omp install failed" >&2
 fi
 # Every harness CLI answers --version, or the build log says which did not.
 for c in claude codex gemini copilot opencode pi grok crush omp; do

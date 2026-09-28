@@ -151,13 +151,15 @@ arch=$(uname -m)                 # x86_64 or aarch64
 dir=$(mktemp -d)
 gh release download --repo mikekelly/simple-software-factory \
   --pattern "ssf-[0-9]*-linux-$arch" --pattern "ssf-server-[0-9]*-linux-$arch" --dir "$dir"
+gh release download --repo mikekelly/simple-software-factory --pattern SHA256SUMS --dir "$dir"
+(cd "$dir" && sha256sum --check --ignore-missing SHA256SUMS)
 install -Dm755 "$dir"/ssf-[0-9]*-linux-$arch   "$HOME/.local/bin/ssf"
 install -Dm755 "$dir"/ssf-server-*-linux-$arch "$HOME/.local/bin/ssf-server"
 export PATH="$HOME/.local/bin:$PATH"
 ssf --version && ssf-server --version
 ```
 
-Persist that `PATH` line for future shells. Supply the prerequisites yourself with the host's package manager: CA certificates, curl, Git, jq, GitHub CLI 2.40 or newer, an OpenSSH client, herdr, and the harness. The bare binaries carry no service units, no VM scripts and no configuration examples, so skip `ssf setup` on this path and leave the server catalog empty, so that the client and the foreground daemon share one configuration and state directory.
+The `SHA256SUMS` check stops on a tampered or truncated download; a release older than the one that introduced it has no `SHA256SUMS`, so drop those two lines there. Persist that `PATH` line for future shells. Supply the prerequisites yourself with the host's package manager: CA certificates, curl, Git, jq, GitHub CLI 2.40 or newer, an OpenSSH client, herdr, and the harness. The bare binaries carry no service units, no VM scripts and no configuration examples, so skip `ssf setup` on this path and leave the server catalog empty, so that the client and the foreground daemon share one configuration and state directory.
 
 Run `ssf-server` in a persistent terminal or under the host's process supervisor:
 

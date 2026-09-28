@@ -52,12 +52,23 @@ use crate::config::{
 use crate::platform;
 
 pub const FIRECRACKER_VERSION: &str = "v1.16.1";
+/// SHA-256 of `firecracker-{FIRECRACKER_VERSION}-x86_64.tgz`, as the
+/// release's `.sha256.txt` publishes it.
+pub const FIRECRACKER_SHA256: &str =
+    "382a02a869e4d6d5cb14c40577f9545e8458021ea8b0b2d3fc10ec14d9c242e6";
 pub const GVPROXY_VERSION: &str = "v0.8.9";
+/// SHA-256 of `gvproxy-linux-amd64` and `gvforwarder` at `GVPROXY_VERSION`,
+/// as the release's `sha256sums` publishes them.
+pub const GVPROXY_SHA256: &str = "3011c5629c9138d2050fb23c510e09ae53e30ec52e6a9ab85632bc1550e8ef63";
+pub const GVFORWARDER_SHA256: &str =
+    "a62731c3e07e6d98b26043d236f4d03c9e2d464d75f1f3ec3670e5b2825eb6a6";
 /// A Firecracker CI guest kernel: virtio-blk, vsock, tun and overlayfs built
 /// in. These dated CI artifacts get pruned eventually; when the download
 /// fails, `[vm] kernel` points at a kernel of your own (any x86_64 vmlinux
 /// with those drivers built in does).
 pub const KERNEL_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260902-a6146c8bb213-0/x86_64/vmlinux-6.1.182";
+/// SHA-256 of the `KERNEL_URL` download.
+pub const KERNEL_SHA256: &str = "9b7e715caab6629caa881a481a091dc33a65ec901ff1486904b5ac905a5f8578";
 /// A dated Ubuntu 24.04 LTS minimal cloud root. Pinning the released build
 /// keeps a clean build reproducible; apt upgrades it during provisioning.
 pub const UBUNTU_ROOT_URL: &str = "https://cloud-images.ubuntu.com/minimal/releases/noble/\

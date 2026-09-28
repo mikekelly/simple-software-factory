@@ -579,5 +579,8 @@ its fit addon, vendored unmodified in `vendor/xterm/` (a Manifest V3 extension
 may load no remote code) from the npm registry: `@xterm/xterm` 6.0.0
 (`lib/xterm.mjs`, `css/xterm.css`) and `@xterm/addon-fit` 0.11.0
 (`lib/addon-fit.mjs`), under the MIT license (`LICENSE-xterm`,
-`LICENSE-addon-fit`). To update them, `npm pack` the new versions, copy the
-same files over, and change the versions here.
+`LICENSE-addon-fit`). Each file's version, source URL and SHA-256 are in
+`vendor-js.lock` at the repository root; `scripts/fetch-vendored-js.sh --check`
+verifies them (CI runs it). To update, change the version and URLs there, run
+`scripts/fetch-vendored-js.sh --update`, review the diff and change the
+versions here.

@@ -239,24 +239,9 @@ impl Vm {
                 }
                 std::fs::create_dir_all(&dir)?;
                 info!(asset, "downloading the guest ssf binary with gh");
-                let out = Command::new("gh")
-                    .args([
-                        "release",
-                        "download",
-                        &format!("v{}", env!("CARGO_PKG_VERSION")),
-                    ])
-                    .args(["-R", RELEASE_REPO, "--pattern", &asset, "-D"])
-                    .arg(&dir)
-                    .stdin(Stdio::null())
-                    .output()
-                    .context("running gh (is the GitHub CLI installed?)")?;
-                if !out.status.success() || !path.is_file() {
-                    bail!(
-                        "no guest binary: `gh release download v{} -R {RELEASE_REPO} --pattern {asset}` failed ({}); build one for Linux and set [vm] guest_binary to it",
-                        env!("CARGO_PKG_VERSION"),
-                        String::from_utf8_lossy(&out.stderr).trim()
-                    );
-                }
+                download_release_asset(env!("CARGO_PKG_VERSION"), &asset, &dir).with_context(
+                    || "no guest binary; build one for Linux and set [vm] guest_binary to it",
+                )?;
                 make_executable(&path)?;
                 Ok(path)
             }
@@ -290,21 +275,14 @@ impl Vm {
                 .expect("server asset has a filename")
                 .to_string_lossy()
                 .to_string();
-            let out = Command::new("gh")
-                .args([
-                    "release",
-                    "download",
-                    &format!("v{}", env!("CARGO_PKG_VERSION")),
-                ])
-                .args(["-R", RELEASE_REPO, "--pattern", &asset, "-D"])
-                .arg(server.parent().expect("server asset has a directory"))
-                .stdin(Stdio::null())
-                .output()
-                .context("running gh (is the GitHub CLI installed?)")?;
-            if out.status.success() && server.is_file() {
-                make_executable(&server)?;
-                return Ok(server);
-            }
+            download_release_asset(
+                env!("CARGO_PKG_VERSION"),
+                &asset,
+                server.parent().expect("server asset has a directory"),
+            )
+            .context("no guest server binary")?;
+            make_executable(&server)?;
+            return Ok(server);
         }
         bail!(
             "no guest server binary at {}; build ssf and ssf-server together (or place the matching release asset beside [vm] guest_binary)",
@@ -335,19 +313,7 @@ impl Vm {
         }
         std::fs::create_dir_all(&dir)?;
         info!(asset, "downloading the guest ssf package with gh");
-        let out = Command::new("gh")
-            .args(["release", "download", &format!("v{version}")])
-            .args(["-R", RELEASE_REPO, "--pattern", &asset, "-D"])
-            .arg(&dir)
-            .stdin(Stdio::null())
-            .output()
-            .context("running gh (is the GitHub CLI installed?)")?;
-        if !out.status.success() || !path.is_file() {
-            bail!(
-                "no guest package: `gh release download v{version} -R {RELEASE_REPO} --pattern {asset}` failed ({})",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
+        download_release_asset(version, &asset, &dir).context("no guest package")?;
         Ok(path)
     }
 
@@ -1150,5 +1116,83 @@ fi
             println!("nothing to remove");
         }
         Ok(())
+    }
+}
+
+/// Download release asset `asset` of `v{version}` into `dir` with `gh`, and
+/// check it against the release's `SHA256SUMS` (#617). A release that
+/// publishes `SHA256SUMS` must list the asset with a matching digest, or the
+/// download is removed and this fails. Releases made before `SHA256SUMS`
+/// existed have none; their asset is accepted with a warning, since failing
+/// would strand every guest of those versions.
+fn download_release_asset(version: &str, asset: &str, dir: &Path) -> Result<PathBuf> {
+    let gh = |pattern: &str| -> Result<std::process::Output> {
+        Command::new("gh")
+            .args(["release", "download", &format!("v{version}")])
+            .args(["-R", RELEASE_REPO, "--clobber", "--pattern", pattern, "-D"])
+            .arg(dir)
+            .stdin(Stdio::null())
+            .output()
+            .context("running gh (is the GitHub CLI installed?)")
+    };
+    let path = dir.join(asset);
+    let out = gh(asset)?;
+    if !out.status.success() || !path.is_file() {
+        bail!(
+            "`gh release download v{version} -R {RELEASE_REPO} --pattern {asset}` failed ({})",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let sums = dir.join("SHA256SUMS");
+    let _ = std::fs::remove_file(&sums);
+    let out = gh("SHA256SUMS")?;
+    if !out.status.success() || !sums.is_file() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        // Only a release without the asset is "old"; any other failure
+        // (network, auth, rate limit) must not skip verification.
+        if !err.contains("no assets match") {
+            let _ = std::fs::remove_file(&path);
+            bail!(
+                "could not fetch SHA256SUMS for v{version} to verify {asset} ({})",
+                err.trim()
+            );
+        }
+        warn!(
+            asset,
+            "release v{version} publishes no SHA256SUMS (made before #617?); the asset is unverified"
+        );
+        return Ok(path);
+    }
+    let listed = std::fs::read_to_string(&sums)?;
+    let _ = std::fs::remove_file(&sums);
+    match sha256_listed(&listed, asset) {
+        Some(sum) => verify_sha256(&path, sum)?,
+        None => {
+            let _ = std::fs::remove_file(&path);
+            bail!("release v{version}'s SHA256SUMS does not list {asset}");
+        }
+    }
+    Ok(path)
+}
+
+/// The digest `sha256sum` output gives for `name` (text or `*`binary mode).
+fn sha256_listed<'a>(sums: &'a str, name: &str) -> Option<&'a str> {
+    sums.lines().find_map(|line| {
+        let (sum, file) = line.split_once(char::is_whitespace)?;
+        let file = file.trim_start();
+        (file.strip_prefix('*').unwrap_or(file) == name).then_some(sum)
+    })
+}
+
+#[cfg(test)]
+mod sha256sums_tests {
+    use super::sha256_listed;
+
+    #[test]
+    fn sha256sums_lines_are_matched_by_exact_name() {
+        let sums = "aaa  ssf_1.0.0-1_amd64.deb\nbbb *ssf-1.0.0-linux-x86_64\n";
+        assert_eq!(sha256_listed(sums, "ssf_1.0.0-1_amd64.deb"), Some("aaa"));
+        assert_eq!(sha256_listed(sums, "ssf-1.0.0-linux-x86_64"), Some("bbb"));
+        assert_eq!(sha256_listed(sums, "ssf-1.0.0-linux"), None);
     }
 }
