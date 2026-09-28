@@ -796,9 +796,10 @@ impl Engine {
         );
         self.record_origins(repo, issue, &timeline);
         // A compacted record kept no `seen`: what the session heard is
-        // taken to be everything up to its retirement, so only what came
-        // after is news, as it would have been with `seen` kept.
-        let seen = match st.retired_at.as_deref().filter(|_| st.compacted) {
+        // taken to be everything up to the newest event it had heard, so
+        // only what came after is news, as it would have been with `seen`
+        // kept.
+        let seen = match st.compacted_through.as_deref() {
             Some(cutoff) => {
                 let heard: Vec<Value> = timeline
                     .iter()
@@ -834,7 +835,7 @@ impl Engine {
         e.title = issue.title.clone();
         e.github_state = Some(github_state(issue, st.pr.as_ref(), false));
         e.replace_seen(diff.seen);
-        e.compacted = false;
+        e.compacted_through = None;
         e.active = true;
         e.cleanup_pending = false;
         // A release the agent asked for before the item came back is off:
@@ -1186,10 +1187,11 @@ impl Engine {
 }
 
 /// When a timeline event happened, as GitHub stamps each kind: most carry
-/// `created_at`, a review `submitted_at`, a commit its author's date.
+/// `created_at`, a review `submitted_at`, a commit its committer's date
+/// (when it reached the branch; the author's can be much older).
 fn event_time(ev: &Value) -> Option<&str> {
     crate::github::value_str(ev, &["created_at"])
         .or_else(|| crate::github::value_str(ev, &["submitted_at"]))
-        .or_else(|| crate::github::value_str(ev, &["author", "date"]))
         .or_else(|| crate::github::value_str(ev, &["committer", "date"]))
+        .or_else(|| crate::github::value_str(ev, &["author", "date"]))
 }

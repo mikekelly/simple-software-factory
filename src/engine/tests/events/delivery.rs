@@ -177,8 +177,9 @@ async fn a_compacted_item_assigned_again_hears_only_what_is_new() {
     st.triggers = vec!["assigned".into()];
     st.active = false;
     st.seen.clear();
-    st.compacted = true;
-    st.retired_at = Some("2026-02-01T00:00:00Z".into());
+    st.compacted_through = Some("2026-01-01T00:00:00Z".into());
+    // A release moves `retired_at` on after the fact; it is not the cutoff.
+    st.retired_at = Some("2026-04-01T00:00:00Z".into());
     e.reactivate(&r, "o", "r", &issue, st).await.unwrap();
     let prompts = d.prompts();
     assert_eq!(prompts.len(), 1, "{prompts:?}");
@@ -193,7 +194,7 @@ async fn a_compacted_item_assigned_again_hears_only_what_is_new() {
         prompts[0]
     );
     let after = e.entry(&r, 5);
-    assert!(!after.compacted && after.seen.contains_key("commented:2"));
+    assert!(after.compacted_through.is_none() && after.seen.contains_key("commented:2"));
 }
 
 /// Onboarding's first prompt is the same catch-up: an item whose history

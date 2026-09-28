@@ -24,6 +24,12 @@ pub struct State {
     /// [`STATE_VERSION`].
     #[serde(default, skip_serializing)]
     pub version: u32,
+    /// `state.json.bak` has been refreshed since [`State::new_pass`]: it
+    /// is taken on the first save of each daemon pass (and of each
+    /// process), so it holds the state as the previous pass left it rather
+    /// than one item behind the current file.
+    #[serde(skip)]
+    backed_up: std::cell::Cell<bool>,
     /// Login of the bot account the daemon last authenticated as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_login: Option<String>,
@@ -314,13 +320,16 @@ pub struct IssueState {
     /// `updated_at` alone (a reaction).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timeline_etags: Vec<String>,
-    /// `seen`, `timeline_etags` and `origins` were dropped once the item
-    /// was closed, retired and released ([`IssueState::compactable`]). If
-    /// it comes back, `seen` is rebuilt from the events up to `retired_at`
+    /// Set when `seen`, `timeline_etags` and `origins` were dropped once
+    /// the item was closed, retired and released
+    /// ([`IssueState::compactable`]): the newest timestamp `seen` held,
+    /// that is the last event the session is known to have heard. If the
+    /// item comes back, `seen` is rebuilt from the events up to it
     /// (`Engine::reactivate`) rather than diffed against nothing, which
-    /// would hand the agent the item's whole history as news.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub compacted: bool,
+    /// would hand the agent the item's whole history as news. Not
+    /// `retired_at`: a release moves that on after the fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacted_through: Option<String>,
     /// The initial prompt has been delivered.
     #[serde(default)]
     pub seeded: bool,
@@ -454,8 +463,8 @@ impl IssueState {
     /// released, and nothing is subscribed to it, waiting on it or blocked
     /// on it. Only a reopen or a new assignment visits it again, and that
     /// goes through `Engine::reactivate`, which rebuilds `seen` for a
-    /// compacted record. `retired_at` is required because it is the cutoff
-    /// that rebuild uses.
+    /// compacted record from [`IssueState::heard_through`], so a record
+    /// without one is kept whole.
     pub fn compactable(&self) -> bool {
         matches!(self.github_state.as_deref(), Some("closed" | "merged"))
             && self.seeded
@@ -470,6 +479,17 @@ impl IssueState {
             && self.subscribers.is_empty()
             && self.blocked.is_none()
             && self.handover.is_none()
+            && self.heard_through().is_some()
+    }
+
+    /// The newest timestamp among `seen`'s markers (a comment's
+    /// `updated_at`): the latest event the session is known to have heard.
+    pub fn heard_through(&self) -> Option<String> {
+        self.seen
+            .values()
+            .filter(|m| chrono::DateTime::parse_from_rfc3339(m).is_ok())
+            .max()
+            .cloned()
     }
 
     /// Whether this record answers to nothing: no session of its own, no
@@ -908,15 +928,15 @@ impl State {
             );
         }
         if st.version < STATE_VERSION {
-            // The first load by a newer ssf keeps the file as the older one
-            // wrote it: `.bak` is only one save old and soon in the new
-            // format, so this is the copy a rollback restores.
+            // A newer ssf keeps the file as the older one wrote it: `.bak`
+            // is soon in the new format, so this is the copy a rollback
+            // restores. Only an older ssf writes this version, so the file
+            // is always that ssf's latest word, and replaces an earlier
+            // copy from before a previous rollback.
             let backup = versioned_backup_path(path, st.version);
-            if !backup.exists() {
-                write_atomic(&backup, raw.as_bytes(), 0o600)
-                    .with_context(|| format!("backing up {}", path.display()))?;
-                info!(backup = %backup.display(), "kept the state file from before the upgrade");
-            }
+            write_atomic(&backup, raw.as_bytes(), 0o600)
+                .with_context(|| format!("backing up {}", path.display()))?;
+            info!(backup = %backup.display(), "kept the state file from before the upgrade");
         }
         st.drop_legacy_reviewers();
         st.drop_legacy_issue_bindings();
@@ -932,11 +952,11 @@ impl State {
     pub fn compact(&mut self) {
         for rs in self.repos.values_mut() {
             for st in rs.issues.values_mut() {
-                if !st.compacted && st.compactable() {
+                if st.compacted_through.is_none() && st.compactable() {
+                    st.compacted_through = st.heard_through();
                     st.seen.clear();
                     st.timeline_etags.clear();
                     st.origins.clear();
-                    st.compacted = true;
                 }
             }
         }
@@ -1137,16 +1157,24 @@ for ever after the item closed"
             version: STATE_VERSION,
             state: self,
         })?;
-        // The previous good save, for a save that turns out to be bad (a
-        // bug, a crash mid-way through a pass). Read whole and written
+        // The last pass's good state, for a pass that turns out to write a
+        // bad one (a bug, a crash mid-way). Read whole and written
         // atomically, so `.bak` is never half a file either.
-        match std::fs::read(path) {
-            Ok(previous) => write_atomic(&path.with_extension("json.bak"), &previous, 0o600)
-                .with_context(|| format!("backing up {}", path.display()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        if !self.backed_up.get() {
+            match std::fs::read(path) {
+                Ok(previous) => write_atomic(&path.with_extension("json.bak"), &previous, 0o600)
+                    .with_context(|| format!("backing up {}", path.display()))?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+            }
+            self.backed_up.set(true);
         }
         write_atomic(path, &body, 0o600)
+    }
+
+    /// A daemon pass starts: its first save refreshes `state.json.bak`.
+    pub fn new_pass(&self) {
+        self.backed_up.set(false);
     }
 
     pub fn repo_mut(&mut self, name: &str) -> &mut RepoState {
@@ -1653,19 +1681,27 @@ mod tests {
         assert!(!path.with_extension("json.bak").exists());
         st.last_error = Some("second".into());
         st.save_to(&path).unwrap();
+        st.new_pass();
+        st.last_error = Some("third".into());
+        st.save_to(&path).unwrap();
+        st.last_error = Some("fourth".into());
+        st.save_to(&path).unwrap();
         let saved: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["version"], STATE_VERSION);
-        assert_eq!(saved["last_error"], "second");
+        assert_eq!(saved["last_error"], "fourth");
         let bak: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(path.with_extension("json.bak")).unwrap(),
         )
         .unwrap();
-        assert_eq!(bak["last_error"], "first");
+        assert_eq!(
+            bak["last_error"], "second",
+            "the backup is the state as the previous pass left it"
+        );
     }
 
     #[test]
-    fn the_first_load_after_an_upgrade_keeps_the_old_file_once() {
+    fn loading_an_older_format_keeps_it_for_a_rollback() {
         let sandbox = crate::config::test_support::sandbox();
         let path = sandbox.state_dir().join("state.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1674,13 +1710,12 @@ mod tests {
         let backup = versioned_backup_path(&path, 0);
         State::load_from(&path).unwrap().save_to(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), old);
-        std::fs::write(&path, r#"{"last_error":"later","repos":{}}"#).unwrap();
+        // Rolled back, the older ssf ran on; upgraded again, its latest
+        // file is the one kept.
+        let later = r#"{"last_error":"later","repos":{}}"#;
+        std::fs::write(&path, later).unwrap();
         State::load_from(&path).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&backup).unwrap(),
-            old,
-            "an existing upgrade backup is never overwritten"
-        );
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), later);
     }
 
     #[test]
@@ -1691,7 +1726,11 @@ mod tests {
             github_state: Some("closed".into()),
             retired_at: Some("2026-01-01T00:00:00Z".into()),
             released_at: Some("2026-01-02T00:00:00Z".into()),
-            seen: BTreeMap::from([("commented:1".into(), "t".into())]),
+            seen: BTreeMap::from([
+                ("commented:1".into(), "2026-01-01T09:00:00Z".into()),
+                ("commented:2".into(), "2026-01-03T09:00:00Z".into()),
+                ("labeled:x".into(), String::new()),
+            ]),
             timeline_etags: vec!["e".into()],
             origins: BTreeMap::from([("commented:1".into(), "o/r#2".into())]),
             ..IssueState::default()
@@ -1735,6 +1774,11 @@ mod tests {
                 retired_at: None,
                 ..done.clone()
             },
+            IssueState {
+                number: 9,
+                seen: BTreeMap::from([("labeled:x".into(), String::new())]),
+                ..done.clone()
+            },
         ];
         for v in variants {
             rs.issues.insert(v.number, v);
@@ -1742,12 +1786,15 @@ mod tests {
         st.compact();
         let rs = &st.repos["o/r"];
         let one = &rs.issues[&1];
-        assert!(one.compacted);
+        assert_eq!(
+            one.compacted_through.as_deref(),
+            Some("2026-01-03T09:00:00Z")
+        );
         assert!(one.seen.is_empty() && one.timeline_etags.is_empty() && one.origins.is_empty());
-        for n in 2..=8 {
+        for n in 2..=9 {
             let kept = &rs.issues[&n];
             assert!(
-                !kept.compacted && !kept.seen.is_empty(),
+                kept.compacted_through.is_none() && !kept.seen.is_empty(),
                 "#{n} is not done with"
             );
             assert!(!kept.origins.is_empty() && !kept.timeline_etags.is_empty());

@@ -12,6 +12,7 @@ impl Engine {
             return;
         }
         self.state.last_poll_at = Some(now_iso());
+        self.state.new_pass();
         // Per-pass state only. `refetch` is deliberately not reset here: it
         // has to outlive the pass that armed it (issue #141).
         self.probes.clear();
@@ -99,6 +100,13 @@ impl Engine {
                 false
             }
         }
+    }
+
+    /// An item's record as it would be saved, to tell whether handling it
+    /// changed anything worth a write.
+    fn record_of(&self, repo: &RepoConfig, number: u64) -> Option<serde_json::Value> {
+        self.peek(repo, number)
+            .and_then(|s| serde_json::to_value(s).ok())
     }
 
     /// Save now, with a failure marked so the pass that asked stops
@@ -498,6 +506,7 @@ impl Engine {
                     }
                 },
             };
+            let before = self.record_of(repo, number);
             match self
                 .reconcile_issue(repo, owner, name, &issue, pr, triggers)
                 .await
@@ -516,8 +525,12 @@ impl Engine {
                 }
             }
             // Each delivery is on disk before the next one is made, so a
-            // crash or a failed save repeats at most this one.
-            self.persist()?;
+            // crash or a failed save repeats at most this one. A delivery
+            // always moves the item's record; a look that changed nothing
+            // costs no write.
+            if self.record_of(repo, number) != before {
+                self.persist()?;
+            }
         }
 
         let stale: Vec<u64> = self
@@ -540,6 +553,7 @@ impl Engine {
                 );
                 continue;
             }
+            let before = self.record_of(repo, number);
             match self.retire_issue(repo, owner, name, number).await {
                 Ok(()) => {}
                 Err(e) if is_held(&e) => self.note_mailbox_hold(repo, number, &e),
@@ -548,7 +562,9 @@ impl Engine {
                     warn!(repo = repo.name, issue = number, "retiring failed: {e:#}");
                 }
             }
-            self.persist()?;
+            if self.record_of(repo, number) != before {
+                self.persist()?;
+            }
         }
 
         self.forget_abandoned(repo, &present);

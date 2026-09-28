@@ -281,9 +281,13 @@ newer ssf wrote the file, rather than overwrite it. Two backups sit beside it
 in the state directory (`~/.local/state/ssf/`, inside the guest in VM mode):
 
 - `state.json.v{N}.bak` — the file exactly as an older ssf (format `N`) left
-  it, kept by the first newer ssf to load it and never overwritten. This is
+  it, refreshed whenever a newer ssf loads a format-`N` file (only an older
+  ssf writes one), so after a rollback and a later upgrade it holds the older
+  ssf's latest state. This is
   the one a rollback restores.
-- `state.json.bak` — the previous save, rewritten on every save. Use it when
+- `state.json.bak` — the state as the daemon's previous pass left it,
+  refreshed on the first save of each pass (and of each `ssf` command that
+  saves). Use it when
   the current file is damaged but the ssf version is not in question; after an
   upgrade it is already in the new format.
 
