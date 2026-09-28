@@ -353,9 +353,9 @@ installation needs none of this.
 
 **A VM started by ssf 0.19 or earlier runs inside its service.** Its
 Firecracker and gvproxy (or lima host agent) are in the `ssf@NAME` service's
-cgroup, so restarting that service reboots the guest. The Arch package's
-upgrade therefore leaves such a service running rather than restarting it,
-and says so. Restart it once when a guest reboot suits (`systemctl --user
+cgroup, so restarting that service reboots the guest. Package upgrades
+never restart services, so such a service keeps running until you restart
+it. Restart it once when a guest reboot suits (`systemctl --user
 restart ssf@NAME`); from then on the VM runs in scopes of its own and later
 upgrades restart only the supervisor.
 

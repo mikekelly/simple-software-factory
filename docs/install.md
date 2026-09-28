@@ -114,6 +114,10 @@ Either way the end state is: the resident agent and the person's laptop each hav
 
 ## 3. Install
 
+### Supported platforms
+
+Tier 1, tested by hand before each release: **Arch/Omarchy with Firecracker**, **macOS with Lima**, and the **Claude** and **Codex** harnesses. Everything else (`.deb` and `.rpm` distributions, standalone binaries, Incus, host mode, SSH targets, other harnesses) is best effort: each package format is installed in a container and its `ssf --version` and `ssf --help` checked before a release is published, but nothing is run there beyond that. This list documents what is tested; it enables or disables nothing.
+
 ### 3.1 Linux package
 
 Download the matching asset from [GitHub Releases](https://github.com/mikekelly/simple-software-factory/releases) yourself (`gh release download --repo mikekelly/simple-software-factory --pattern PATTERN`), print its absolute path, then give the person the install command for their family with that path filled in, and wait for them to confirm it ran:
@@ -540,7 +544,7 @@ Opening any issue in a watched repository then shows the overlay. Details in [da
 
 ## 11. Upgrading, stopping, uninstalling
 
-Upgrade by installing the next release's package the same way it was installed; the package restarts the active service, which in VM mode takes the guest down and up on the new binary and resumes the interrupted sessions. Standalone binaries are replaced in pairs with the daemon stopped. Configuration, state, keys and VM disks survive an upgrade. See [operate.md](operate.md) (`ssf skill operate`).
+Upgrade by installing the next release's package the same way it was installed. No package format restarts a running service: restart it yourself when it suits (`systemctl --user restart ssf.service` or `ssf@NAME.service` on Linux, `brew services restart ssf` on macOS). For a VM target that restarts only the supervisor, which reattaches to the running guest. Standalone binaries are replaced in pairs with the daemon stopped. Configuration, state, keys and VM disks survive an upgrade. See [operate.md](operate.md) (`ssf skill operate`).
 
 `ssf ui service disable` stops the service and keeps it stopped across logins; `ssf ui service enable` brings it back.
 
