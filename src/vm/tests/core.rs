@@ -946,3 +946,25 @@ fn guest_package_is_only_fetched_for_architectures_with_a_release_deb() {
     assert!(msg.contains("riscv64"), "{msg}");
     assert!(msg.contains("--deb"), "{msg}");
 }
+
+#[test]
+fn guest_adoption_keeps_the_host_dashboard() {
+    let existing: toml::Table = toml::from_str(
+        "[vm]\nenabled = true\n[dashboard]\nenabled = true\nbind = \"100.89.211.114\"\n[github]\nlogin = \"bot\"\n",
+    )
+    .unwrap();
+    let pruned = crate::vm::guest::host_config_after_adoption(&existing, &VmConfig::default())
+        .unwrap()
+        .expect("[github] is a factory section and goes");
+    assert!(pruned.contains_key("vm"));
+    assert!(!pruned.contains_key("github"));
+    assert_eq!(pruned["dashboard"]["bind"].as_str(), Some("100.89.211.114"));
+    // Only host sections: nothing to rewrite.
+    let host_only: toml::Table =
+        toml::from_str("[vm]\nenabled = true\n[dashboard]\nenabled = true\n").unwrap();
+    assert!(
+        crate::vm::guest::host_config_after_adoption(&host_only, &VmConfig::default())
+            .unwrap()
+            .is_none()
+    );
+}

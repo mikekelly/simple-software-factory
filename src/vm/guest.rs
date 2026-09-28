@@ -1,5 +1,32 @@
 use super::*;
 
+/// The host config sections that stay on a VM host once the guest owns the
+/// factory: the VM itself, and the web dashboard the host serves.
+const HOST_SECTIONS: &[&str] = &["vm", "dashboard"];
+
+/// What the host config becomes once the guest owns the factory: its
+/// factory sections go (they live in the guest now), and [vm] and
+/// [dashboard] stay. [dashboard] is the supervising host's listener, not a
+/// factory setting (see `guest_config`); dropping it turned the dashboard
+/// off at the next host command. `None` when there is nothing to remove.
+pub(in crate::vm) fn host_config_after_adoption(
+    existing: &toml::Table,
+    vm: &VmConfig,
+) -> Result<Option<toml::Table>> {
+    if existing
+        .keys()
+        .all(|key| HOST_SECTIONS.contains(&key.as_str()))
+    {
+        return Ok(None);
+    }
+    let mut table = toml::Table::new();
+    table.insert("vm".into(), toml::Value::try_from(vm)?);
+    if let Some(dashboard) = existing.get("dashboard") {
+        table.insert("dashboard".into(), dashboard.clone());
+    }
+    Ok(Some(table))
+}
+
 impl Vm {
     // ---- seed ----
 
@@ -866,9 +893,7 @@ fi
         }
         if path.exists() {
             let existing: toml::Table = toml::from_str(&std::fs::read_to_string(&path)?)?;
-            if existing.keys().any(|key| key != "vm") {
-                let mut table = toml::Table::new();
-                table.insert("vm".into(), toml::Value::try_from(&host.vm)?);
+            if let Some(table) = host_config_after_adoption(&existing, &host.vm)? {
                 crate::config::write_atomic(
                     &path,
                     toml::to_string_pretty(&table)?.as_bytes(),
