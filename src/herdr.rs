@@ -747,6 +747,11 @@ impl Herdr {
         .await?;
         let pid =
             pid.with_context(|| format!("starting {program:?} --session {SESSION} server"))?;
+        // The server stays this daemon's child: reap it when it exits
+        // (`herdr session stop ssf`, a crash) so none is left a zombie.
+        std::thread::spawn(move || unsafe {
+            libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), 0);
+        });
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             if matches!(self.session_listed().await, Ok(Some(true))) {
