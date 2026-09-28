@@ -1,4 +1,4 @@
-//! Optional navigation, inside Herdr, in ssf's herdr session (`crate::herdr::SESSION`).
+//! Optional navigation uses the Herdr server inherited by this terminal.
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::{process::Stdio, time::Duration};
@@ -35,13 +35,11 @@ fn matched_pane<'a>(response: &'a Value, session: &str, harness: &str) -> Result
 async fn command(args: &[&str]) -> Result<Value> {
     let output = tokio::time::timeout(
         Duration::from_secs(5),
-        tokio::process::Command::from(crate::herdr::command(crate::config::herdr_command_path(
-            &crate::config::HerdrConfig::default().command,
-        )))
-        .args(args)
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output(),
+        tokio::process::Command::new("herdr")
+            .args(args)
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
     )
     .await
     .context("Herdr navigation timed out")?

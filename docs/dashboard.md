@@ -108,7 +108,7 @@ such a host skips; see
 
 ### Herdr navigation
 
-Run the same command in any Herdr pane, tab or workspace. Selecting an agent
+On a host ssf's agents live in the herdr session `ssf`, so run the dashboard in a pane of that session (`herdr session attach ssf`); in the VM guest, any pane of its herdr. The dashboard can be in any tab or workspace there. Selecting an agent
 matches its SSF `agent_session_id` to Herdr's agent session and focuses that
 pane through `herdr agent focus`. The dashboard stays alive in its original
 pane; return with Herdr's normal navigation.
