@@ -359,6 +359,20 @@ and says so. Restart it once when a guest reboot suits (`systemctl --user
 restart ssf@NAME`); from then on the VM runs in scopes of its own and later
 upgrades restart only the supervisor.
 
+The separate lifetime needs a systemd user manager: ssf starts the VM's
+processes with `systemd-run --user --scope`. On Linux without one (no
+`systemd --user` session), and on macOS, where the service is a launchd
+agent, ssf falls back to starting them in a session of their own. That
+fallback is untested across a service restart (#603 tracks macOS), so there
+treat a service restart as one that may reboot the guest.
+
+**A guest package older than 0.19 is shadowed at boot.** Its boot script
+still copied the host's `ssf` over `/usr/local/bin/ssf` at every boot, so
+the guest ran the host's version whatever its package said. Each VM start
+now gives such a guest the current boot script and points
+`/usr/local/bin/ssf` back at the package (restarting only the guest daemon if
+it was wrong); `ssf vm upgrade` fixes it too.
+
 **One singleton service became one service per target.** The old
 installation-wide unit is `ssf.service` (or the Homebrew `ssf` service on
 macOS). ssf refuses to enable a target's service while it is enabled or

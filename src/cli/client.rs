@@ -350,9 +350,13 @@ pub(super) fn version_line(guest: &str) -> String {
     }
 }
 
-/// The ssf release the guest runs, from its `ssf-server --version`; None
-/// when it does not answer.
+/// The ssf release the guest runs: its installed package's version, else
+/// (a guest without the package) its `ssf-server --version`; None when it
+/// does not answer.
 pub(super) fn guest_version(vm: &factory_vm::Vm) -> Option<String> {
+    if let Ok(Some(version)) = vm.guest_package_version() {
+        return Some(version);
+    }
     vm.ssh_output(&["ssf-server", "--version"])
         .ok()
         .and_then(|out| parse_program_version(out.as_bytes()))
