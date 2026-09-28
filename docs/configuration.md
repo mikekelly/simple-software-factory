@@ -143,7 +143,7 @@ and a private `dev.ssf.server.NAME` launchd agent on macOS, each with its
 own journal or `~/Library/Logs/ssf/NAME.log`. `ssf setup` with no selector
 creates the conventional sole VM target `ssf-server`;
 `ssf --server NAME setup` prepares a selected local or VM target. Package
-upgrade restarts active instances, and package removal verifies, stops and
+upgrades never restart running instances (restart them yourself), and package removal verifies, stops and
 disables each one before removing the binaries, preserving factory data.
 
 ```toml

@@ -98,6 +98,11 @@ function payload() {
       released: entry.snapshot?.released ?? [],
       /// The daemon's cached doctor run (#513): its fail and warn entries.
       doctorWarnings: entry.snapshot?.doctor?.warnings ?? [],
+      /// When that doctor run was made, or null before the first.
+      doctorCheckedAt: entry.snapshot?.doctor?.checked_at ?? null,
+      /// The factory host's CPU, memory and disk use in percent (#632); null
+      /// from a factory too old to publish it.
+      host: entry.snapshot?.host ?? null,
     })),
   };
 }

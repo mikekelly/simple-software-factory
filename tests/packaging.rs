@@ -247,14 +247,9 @@ fn packages_leave_service_enablement_to_explicit_setup() {
         read("packaging/ssf.install"),
         read("packaging/release/ssf.install")
     );
+    // One upgrade policy across formats: no package restarts services.
     let upgrade = read("packaging/ssf.install");
-    // The restart reaches the supervisor only; one whose VM is still
-    // inside the service (an older ssf's) is not restarted.
-    assert!(upgrade.contains("cgroup.procs"));
-    assert!(upgrade.contains("\"limactl hostagent \"*|qemu-system-*"));
-    assert!(upgrade.contains("argv[]=/usr/bin/ssf run ;"));
-    assert!(upgrade.contains("argv[]=/usr/bin/ssf-server ;"));
-    assert!(upgrade.contains("daemon-reload"));
+    assert!(!upgrade.contains("try-restart"));
 }
 
 /// Every shipped unit that runs the daemon comes back from any exit.

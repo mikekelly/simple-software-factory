@@ -64,6 +64,7 @@
   const PING_MS = 20000;
   const RENDER_DEBOUNCE_MS = 200;
   const POPOVER_WIDTH = 320;
+  const HUD_WIDTH = 720;
 
   const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -107,6 +108,43 @@
   border: 1px solid var(--borderColor-default, #d1d9e0);
   background: var(--bgColor-default, #ffffff);
   box-shadow: 0 8px 24px rgba(31, 35, 40, 0.2); }
+/* The HUD (#632): wide enough for two columns, one when the window is not. */
+.ssf-popover.ssf-hud { width: min(${HUD_WIDTH}px, calc(100vw - 16px));
+  display: flex; flex-direction: column; gap: 8px; }
+.ssf-hud .ssf-card + .ssf-card { margin-top: 0; }
+.ssf-hud-glance { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 8px; }
+@media (max-width: 560px) { .ssf-hud-glance { grid-template-columns: minmax(0, 1fr); } }
+.ssf-gauges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.ssf-gauge-name { font-weight: 600; }
+.ssf-gauge { display: inline-flex; align-items: center; gap: 5px; }
+.ssf-gauge-label { color: var(--fgColor-muted, #59636e); }
+.ssf-gauge-value { font-weight: 600; min-width: 2.6em; text-align: right;
+  font-variant-numeric: tabular-nums; }
+.ssf-gauge-bar { width: 64px; height: 6px; border-radius: 3px; overflow: hidden;
+  background: var(--bgColor-neutral-muted, #818b981f); }
+.ssf-gauge-fill { display: block; height: 100%; background: var(--fgColor-success, #1a7f37); }
+.ssf-gauge[data-ssf-tone="amber"] .ssf-gauge-fill { background: #bf8700; }
+.ssf-gauge[data-ssf-tone="amber"] .ssf-gauge-value { color: var(--fgColor-attention, #9a6700); }
+.ssf-gauge[data-ssf-tone="red"] .ssf-gauge-fill { background: var(--fgColor-danger, #d1242f); }
+.ssf-gauge[data-ssf-tone="red"] .ssf-gauge-value { color: var(--fgColor-danger, #d1242f); }
+.ssf-gauge-doctor { margin-left: auto; padding: 0 6px; border: 0; background: none;
+  font: inherit; color: var(--fgColor-muted, #59636e); cursor: pointer; }
+.ssf-gauge-doctor[data-ssf-warned] { font-weight: 600; color: var(--fgColor-attention, #9a6700); }
+.ssf-hud [data-ssf-level="fail"] { color: var(--fgColor-danger, #d1242f); }
+.ssf-hud .ssf-also > .ssf-more { margin-left: 6px; }
+.ssf-doctor-row { display: flex; gap: 8px; align-items: baseline; }
+.ssf-doctor-level { flex: none; min-width: 3em; font-weight: 600; font-size: 11px; }
+.ssf-doctor-row[data-ssf-level="warn"] .ssf-doctor-level { color: var(--fgColor-attention, #9a6700); }
+.ssf-hud-new { align-self: flex-start; }
+.ssf-signins { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.ssf-signin { white-space: nowrap; }
+.ssf-signin[data-ssf-signed-in="false"] { color: var(--fgColor-danger, #d1242f); font-weight: 600; }
+.ssf-hud-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--borderColor-default, #d1d9e0); }
+.ssf-hud-tab { padding: 4px 10px; border: 0; border-bottom: 2px solid transparent;
+  background: none; font: inherit; color: var(--fgColor-muted, #59636e); cursor: pointer; }
+.ssf-hud-tab[aria-selected="true"] { font-weight: 600; color: var(--fgColor-default, #1f2328);
+  border-bottom-color: var(--underlineNav-borderColor-active, #fd8c73); }
 /* No overflow clip: the ••• menu opens past the card's edge. The band and the
    Details bar round their own corners instead. */
 .ssf-card { border-radius: 6px;
@@ -1494,13 +1532,19 @@
       );
     }
     if (factory.warning) lines.push(factory.warning);
-    // The daemon's cached doctor run (#513), one compact line with each
-    // message in its hover.
+    // The daemon's cached doctor run (#513): each failure on its own line,
+    // its message carrying the fix, and the warnings as one line pointing at
+    // the Doctor tab, which lists them all (#632).
     const doctor = factory.doctorWarnings ?? [];
-    if (doctor.length) {
+    for (const one of doctor.filter((check) => check.level === "fail")) {
+      lines.push({ text: `FAIL ${one.message}`, level: "fail" });
+    }
+    const warns = doctor.filter((check) => check.level !== "fail");
+    if (warns.length) {
       lines.push({
-        text: `${doctor.length} doctor warning${doctor.length === 1 ? "" : "s"}`,
-        title: doctor.map((one) => `${String(one.level).toUpperCase()} ${one.message}`).join("\n"),
+        text: `${warns.length} doctor warning${warns.length === 1 ? "" : "s"}; see the Doctor tab`,
+        title: warns.map((one) => `${String(one.level).toUpperCase()} ${one.message}`).join("\n"),
+        tab: "doctor",
       });
     }
     // The daemon's last error names the repository whose pass failed
@@ -1608,15 +1652,85 @@
     return (factory.scratch ?? []).filter((one) => repos.some((repo) => sameRepo(one?.repo, repo)));
   }
 
-  /// The popover's body, the HUD (#509): Warnings, Active sessions, Scratch,
-  /// Recently released and Harnesses, each a card in the sidebar card's shape
-  /// (#497), across every factory that watches the page's repositories. An
-  /// empty section is left out, but for Active sessions and Scratch, which say
-  /// so. `mine` is the GitHub user signed in on this page, from GitHub's own
-  /// `user-login` meta tag: it says whose session to make, and is not an
-  /// access control.
+  /// The HUD's detail tabs (#632), and the one last chosen in this browser.
+  const HUD_TABS = [
+    ["scratch", "Scratch"],
+    ["released", "Released"],
+    ["doctor", "Doctor"],
+    ["harnesses", "Harnesses"],
+  ];
+  const HUD_TAB_KEY = "ssf:hud-tab";
+  let hudTab = (() => {
+    try {
+      const saved = localStorage.getItem(HUD_TAB_KEY);
+      return HUD_TABS.some(([tab]) => tab === saved) ? saved : "scratch";
+    } catch {
+      return "scratch";
+    }
+  })();
+
+  function chooseHudTab(tab) {
+    hudTab = tab;
+    try {
+      localStorage.setItem(HUD_TAB_KEY, tab);
+    } catch {
+      // A page that refuses storage just forgets the choice.
+    }
+    renderPopover();
+  }
+
+  /// A gauge's tone: amber from 80%, red from 90%.
+  function gaugeTone(percent) {
+    if (typeof percent !== "number") return "none";
+    return percent >= 90 ? "red" : percent >= 80 ? "amber" : "ok";
+  }
+
+  /// One factory's gauge row: CPU, RAM and disk use of its host, and its
+  /// doctor count. A factory too old to report its host shows dashes.
+  function gaugeRow(factory, label) {
+    const row = named(element("div", "ssf-gauges"), `gauges:${factory.url}`);
+    if (label) row.append(element("span", "ssf-gauge-name", factory.label));
+    for (const [key, name] of [
+      ["cpu_percent", "CPU"],
+      ["mem_percent", "RAM"],
+      ["disk_percent", "Disk"],
+    ]) {
+      const value = factory.host?.[key];
+      const known = typeof value === "number";
+      const gauge = element("span", "ssf-gauge");
+      gauge.dataset.ssfTone = gaugeTone(value);
+      gauge.append(element("span", "ssf-gauge-label", name));
+      gauge.append(element("span", "ssf-gauge-value", known ? `${Math.round(value)}%` : "–"));
+      const bar = element("span", "ssf-gauge-bar");
+      const fill = element("span", "ssf-gauge-fill");
+      fill.style.width = `${known ? Math.max(0, Math.min(100, value)) : 0}%`;
+      bar.append(fill);
+      gauge.append(bar);
+      gauge.title = known ? `${name} ${value}% of the factory host` : `${name}: not reported`;
+      row.append(gauge);
+    }
+    const count = (factory.doctorWarnings ?? []).length;
+    const doctor = element(
+      "button",
+      "ssf-gauge-doctor",
+      count ? `⚠ ${count} doctor` : "doctor ok",
+    );
+    doctor.type = "button";
+    if (count) doctor.dataset.ssfWarned = "true";
+    doctor.onclick = () => chooseHudTab("doctor");
+    row.append(doctor);
+    return row;
+  }
+
+  /// The popover's body, the HUD (#509, laid out by #632): per factory a
+  /// gauge row, then Attention (only when something applies), Active sessions
+  /// beside Quick actions, and tabs for the detail -- Scratch, Released,
+  /// Doctor and Harnesses -- across every factory that watches the page's
+  /// repositories. `mine` is the GitHub user signed in on this page, from
+  /// GitHub's own `user-login` meta tag: it says whose session to make, and
+  /// is not an access control.
   function scratchCards(want) {
-    const section = element("div", "ssf-popover");
+    const section = element("div", "ssf-popover ssf-hud");
     const login = document.querySelector('meta[name="user-login"]')?.content?.trim() || null;
     const label = (snapshot?.factories?.length ?? 0) > 1;
     const on = (factory) => (label ? `on ${factory.label}` : null);
@@ -1625,7 +1739,10 @@
     const active = [];
     const released = [];
     const harnesses = [];
+    const signIn = [];
+    const doctor = [];
     for (const { factory, repos } of want.factories) {
+      section.append(gaugeRow(factory, label));
       for (const line of factoryWarnings(factory, repos)) {
         const row =
           typeof line === "string"
@@ -1634,8 +1751,34 @@
               ? hudRow(line.id, null, line.text)
               : element("div", "ssf-also", line.text);
         if (line.title) row.title = line.title;
+        if (line.level) row.dataset.ssfLevel = line.level;
+        if (line.tab) {
+          const go = element("button", "ssf-more", " Open");
+          go.type = "button";
+          go.onclick = () => chooseHudTab(line.tab);
+          row.append(go);
+        }
         if (label) row.append(element("span", "ssf-when", ` (${factory.label})`));
         warnings.push(row);
+      }
+      for (const check of factory.doctorWarnings ?? []) {
+        const row = element("div", "ssf-doctor-row");
+        row.dataset.ssfLevel = String(check.level);
+        row.append(
+          element("span", "ssf-doctor-level", String(check.level).toUpperCase()),
+          element("span", "ssf-message", String(check.message ?? "")),
+        );
+        if (label) row.append(element("span", "ssf-when", ` (${factory.label})`));
+        doctor.push(row);
+      }
+      if (factory.doctorCheckedAt) {
+        doctor.push(
+          element(
+            "div",
+            "ssf-when",
+            `Checked ${ago(factory.doctorCheckedAt) ?? factory.doctorCheckedAt}${label ? ` on ${factory.label}` : ""}`,
+          ),
+        );
       }
       for (const card of activeCards(factory, repos)) {
         const word = (PRESENTATION[String(card.agent_state ?? "").trim()] ?? PROBLEM).label;
@@ -1667,7 +1810,7 @@
         if (!one.released_at || globalThis.ssfWrites?.scratchPhase(one) !== "released") continue;
         const row = element("div", "ssf-also", String(one.id));
         row.append(
-          element("span", "ssf-sep", " \u00b7 "),
+          element("span", "ssf-sep", " · "),
           element("span", undefined, `scratch released ${ago(one.released_at) ?? ""}`.trim()),
         );
         released.push({ at: one.released_at, row });
@@ -1679,19 +1822,29 @@
       if (listed.error) {
         harnesses.push(element("div", "ssf-also", `Could not list harnesses: ${listed.error}`));
       } else if (!listed.agents) {
-        harnesses.push(element("div", "ssf-also", "loading\u2026"));
+        harnesses.push(element("div", "ssf-also", "loading…"));
       } else {
         const usage = usageOf(factory);
         for (const agent of listed.agents) {
-          const row = element("div", "ssf-also", `${agent.id} \u00b7 ${agent.name}`);
-          if (blocked.has(agent.id)) {
+          const out = blocked.has(agent.id);
+          const words = globalThis.ssfWrites?.usageWords(usage?.get(agent.id)) ?? [];
+          const chip = element(
+            "span",
+            "ssf-signin",
+            `${agent.id} ${out ? "✗" : "✓"}${words[0] ? ` ${words[0]}` : ""}`,
+          );
+          chip.dataset.ssfSignedIn = String(!out);
+          chip.title = `${agent.name}: ${out ? "not signed in" : "signed in"}${label ? ` (${factory.label})` : ""}`;
+          signIn.push(chip);
+          const row = element("div", "ssf-also", `${agent.id} · ${agent.name}`);
+          if (out) {
             row.append(
-              element("span", "ssf-sep", " \u00b7 "),
+              element("span", "ssf-sep", " · "),
               element("span", undefined, "not signed in"),
             );
           }
-          for (const word of globalThis.ssfWrites?.usageWords(usage?.get(agent.id)) ?? []) {
-            row.append(element("span", "ssf-sep", " \u00b7 "), element("span", undefined, word));
+          for (const word of words) {
+            row.append(element("span", "ssf-sep", " · "), element("span", undefined, word));
           }
           if (label) row.append(element("span", "ssf-when", ` (${factory.label})`));
           harnesses.push(row);
@@ -1699,41 +1852,106 @@
       }
     }
 
-    if (warnings.length) section.append(hudSection("warnings", "Warnings", warnings, "problem"));
-    section.append(
+    if (warnings.length) section.append(hudSection("warnings", "Attention", warnings, "problem"));
+
+    const glance = named(element("div", "ssf-hud-glance"), "hud:glance");
+    glance.append(
       hudSection(
         "active",
-        "Active sessions",
+        `Active sessions (${active.length})`,
         active.length ? active : [element("div", "ssf-also", "No item sessions running.")],
         active.length ? "working" : "no-agent",
       ),
     );
-    for (const { factory, repos } of want.factories) {
-      const sessions = scratchRows(factory, repos).map((one) => ({
-        ...one,
-        stateLabel: scratchState(factory, one),
-      }));
-      const panel = globalThis.ssfWrites?.renderScratch({
-        factories: [factory],
-        repos,
-        login,
-        sessions,
-      });
-      const count = `${sessions.length} scratch session${sessions.length === 1 ? "" : "s"}`;
-      const rows = panel
-        ? [named(panel, "writes")]
-        : [named(element("p", "ssf-hold", `${count}; writes are off for this factory.`), "off")];
-      const node = hudSection("scratch", "Scratch sessions", rows, "no-agent", on(factory));
-      // Kept under the factory's name, so the form a person is filling in
-      // stays theirs when the other sections change around it.
-      named(node, `card:${factory.url}`);
-      section.append(node);
+    const create = element("button", "ssf-topbar ssf-hud-new", "New scratch session");
+    create.type = "button";
+    create.onclick = () => {
+      chooseHudTab("scratch");
+      popover?.entry.shadow.querySelector(".ssf-writes-new")?.click();
+    };
+    const harnessLine = element("div", "ssf-signins");
+    harnessLine.append(element("span", "ssf-where", "Harnesses: "));
+    harnessLine.append(...(signIn.length ? signIn : [element("span", "ssf-when", "none listed")]));
+    glance.append(hudSection("quick", "Quick actions", [named(create, "new"), harnessLine]));
+    section.append(glance);
+
+    const tabs = named(element("div", "ssf-hud-tabs"), "hud:tabs");
+    tabs.setAttribute("role", "tablist");
+    for (const [tab, text] of HUD_TABS) {
+      const count =
+        tab === "released"
+          ? released.length
+          : tab === "doctor"
+            ? doctor.filter((node) => node.dataset.ssfLevel).length
+            : null;
+      const pick = named(
+        element("button", "ssf-hud-tab", count ? `${text} (${count})` : text),
+        `tab:${tab}`,
+      );
+      pick.type = "button";
+      pick.setAttribute("role", "tab");
+      pick.setAttribute("aria-selected", String(hudTab === tab));
+      pick.onclick = () => chooseHudTab(tab);
+      tabs.append(pick);
     }
-    if (released.length) {
+    section.append(tabs);
+
+    if (hudTab === "scratch") {
+      for (const { factory, repos } of want.factories) {
+        const sessions = scratchRows(factory, repos).map((one) => ({
+          ...one,
+          stateLabel: scratchState(factory, one),
+        }));
+        const panel = globalThis.ssfWrites?.renderScratch({
+          factories: [factory],
+          repos,
+          login,
+          sessions,
+        });
+        const count = `${sessions.length} scratch session${sessions.length === 1 ? "" : "s"}`;
+        const rows = panel
+          ? [named(panel, "writes")]
+          : [named(element("p", "ssf-hold", `${count}; writes are off for this factory.`), "off")];
+        const node = hudSection("scratch", "Scratch sessions", rows, "no-agent", on(factory));
+        // Kept under the factory's name, so the form a person is filling in
+        // stays theirs when the other sections change around it.
+        named(node, `card:${factory.url}`);
+        section.append(node);
+      }
+    } else if (hudTab === "released") {
       released.sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
-      section.append(hudSection("released", "Recently released", released.map((one) => one.row)));
+      section.append(
+        hudSection(
+          "released",
+          "Recently released",
+          released.length
+            ? released.map((one) => one.row)
+            : [element("div", "ssf-also", "Nothing released recently.")],
+        ),
+      );
+    } else if (hudTab === "doctor") {
+      const found = doctor.some((n) => n.dataset.ssfLevel);
+      section.append(
+        hudSection(
+          "doctor",
+          "Doctor",
+          doctor.length
+            ? found
+              ? doctor
+              : [element("div", "ssf-also", "No failures or warnings."), ...doctor]
+            : [element("div", "ssf-also", "The factory has not run doctor yet.")],
+          found ? "waiting" : "no-agent",
+        ),
+      );
+    } else {
+      section.append(
+        hudSection(
+          "harnesses",
+          "Harnesses",
+          harnesses.length ? harnesses : [element("div", "ssf-also", "No harnesses listed.")],
+        ),
+      );
     }
-    if (harnesses.length) section.append(hudSection("harnesses", "Harnesses", harnesses));
     return section;
   }
 

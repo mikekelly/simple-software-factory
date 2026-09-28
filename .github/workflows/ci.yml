@@ -25,6 +25,10 @@ jobs:
       - name: Vendored JavaScript matches vendor-js.lock
         run: scripts/fetch-vendored-js.sh --check
 
+  # The Homebrew formula builds from source on the user's Mac, so this is
+  # the only place a macOS break shows up before a release.
+  # Allowed to fail until the existing macOS test failures are fixed; #633
+  # removes continue-on-error as part of its acceptance.
   macos:
     runs-on: macos-latest
     steps:
