@@ -147,6 +147,7 @@ fn re_created_says_why_and_how_the_conversation_went() {
     let ev = Event::Attached(Attach::ReCreated {
         launch: launch(Some("bot/issue-12-fix")),
         reason: "workspace gone",
+        note: None,
         conversation: Conversation::of(false),
     });
     let text = comment(&o(), "issue", &ev);

@@ -405,3 +405,88 @@ async fn a_release_is_off_once_the_item_is_live_again() {
     assert_eq!(st.release_refusals, 1);
     assert!(st.worktree_id.is_some());
 }
+
+/// The cycle a forced release or purge starts, against real git: the
+/// workspace goes with its branch ahead of origin, and re-creating it the
+/// way `rehydrate` does keeps the unpushed commit instead of resetting the
+/// branch to origin. A branch that is only behind is fast-forwarded, and
+/// one that has diverged is kept and said to be.
+#[tokio::test]
+async fn re_creating_a_workspace_never_moves_its_branch_backwards() {
+    use crate::driver::{add_local_worktree, existing_branch_ref_at, remove_local_worktree};
+    use crate::release::testkit::{scratch, sh};
+
+    let s = scratch("recreate-ahead").await;
+    let name = "issue-9-fix";
+    let branch = "bot/issue-9-fix";
+    let commit = |w: String, file: &'static str| async move {
+        std::fs::write(std::path::Path::new(&w).join(file), file).unwrap();
+        sh(&w, &["add", "."]).await;
+        sh(&w, &["commit", "-q", "-m", file]).await;
+        sh(&w, &["rev-parse", "HEAD"]).await
+    };
+    // Re-create as `rehydrate` does: from the old branch, then onto it.
+    let recreate = || async {
+        let base = existing_branch_ref_at(&s.work, branch).await.unwrap();
+        assert_eq!(base.as_deref(), Some(branch));
+        let (w, _) = add_local_worktree(&s.work, name, base.as_deref())
+            .await
+            .unwrap();
+        let note = checkout_branch(&w, branch).await.unwrap();
+        let head = sh(&w, &["rev-parse", "HEAD"]).await;
+        (w, note, head)
+    };
+
+    // Pushed once, then one commit only this workspace has.
+    let (w, _) = add_local_worktree(&s.work, name, None).await.unwrap();
+    commit(w.clone(), "pushed.txt").await;
+    sh(&w, &["push", "-q", "-u", "origin", branch]).await;
+    let unpushed = commit(w.clone(), "unpushed.txt").await;
+    remove_local_worktree(&s.work, &w).await.unwrap();
+
+    let (w, note, head) = recreate().await;
+    assert_eq!(head, unpushed, "the unpushed commit survives");
+    let note = note.expect("an ahead branch is reported");
+    assert!(
+        note.contains("1 commit(s) ahead of origin/bot/issue-9-fix"),
+        "{note}"
+    );
+    // Even a base other than the branch does not reset it.
+    remove_local_worktree(&s.work, &w).await.unwrap();
+    let (w, _) = add_local_worktree(&s.work, name, Some("main"))
+        .await
+        .unwrap();
+    assert_eq!(sh(&w, &["rev-parse", "HEAD"]).await, unpushed);
+
+    // Origin moves on too: diverged, still kept.
+    let other = s.dir.join("other");
+    let other_s = other.to_string_lossy().to_string();
+    let origin = s.dir.join("origin.git").to_string_lossy().to_string();
+    sh(
+        s.dir.to_str().unwrap(),
+        &["clone", "-q", "-b", branch, &origin, &other_s],
+    )
+    .await;
+    commit(other_s.clone(), "theirs.txt").await;
+    sh(&other_s, &["push", "-q", "origin", branch]).await;
+    remove_local_worktree(&s.work, &w).await.unwrap();
+    let (w, note, head) = recreate().await;
+    assert_eq!(head, unpushed);
+    let note = note.expect("a diverged branch is reported");
+    assert!(note.contains("diverged"), "{note}");
+
+    // Reconciled and pushed, then origin gets ahead: fast-forwarded.
+    sh(
+        &w,
+        &["pull", "-q", "--no-rebase", "--no-edit", "origin", branch],
+    )
+    .await;
+    sh(&w, &["push", "-q", "origin", branch]).await;
+    sh(&other_s, &["pull", "-q", "origin", branch]).await;
+    let newer = commit(other_s.clone(), "newer.txt").await;
+    sh(&other_s, &["push", "-q", "origin", branch]).await;
+    remove_local_worktree(&s.work, &w).await.unwrap();
+    let (_, note, head) = recreate().await;
+    assert_eq!(head, newer, "a branch behind origin catches up");
+    assert!(note.is_none(), "{note:?}");
+}

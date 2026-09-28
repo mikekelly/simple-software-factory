@@ -607,36 +607,50 @@ fn shell_quote(value: &str) -> String {
 
 /// Run git in `path`, returning stdout.
 /// Switch a fresh worktree onto `branch`, tracking `origin/branch` when it
-/// exists, so the agent's pushes land where the pull request lives.
-async fn checkout_branch(path: &str, branch: &str) -> Result<()> {
+/// exists, so the agent's pushes land where the pull request lives. A local
+/// branch is only ever fast-forwarded: one that is ahead of, or has diverged
+/// from, `origin/branch` is kept as it is, and the note returned says so.
+async fn checkout_branch(path: &str, branch: &str) -> Result<Option<String>> {
     let _ = git(path, &["fetch", "origin", branch]).await;
-    let remote = git(
-        path,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/origin/{branch}"),
-        ],
-    )
-    .await
-    .is_ok();
-    if remote {
-        git(
-            path,
-            &[
-                "checkout",
-                "-B",
-                branch,
-                "--track",
-                &format!("origin/{branch}"),
-            ],
-        )
-        .await?;
-    } else {
-        git(path, &["checkout", branch]).await?;
+    let remote = format!("origin/{branch}");
+    let has_remote = has_ref(path, &format!("refs/remotes/{remote}")).await;
+    if !has_ref(path, &format!("refs/heads/{branch}")).await {
+        if has_remote {
+            git(path, &["checkout", "-b", branch, "--track", &remote]).await?;
+        } else {
+            git(path, &["checkout", branch]).await?;
+        }
+        return Ok(None);
     }
-    Ok(())
+    git(path, &["checkout", branch]).await?;
+    if !has_remote {
+        return Ok(None);
+    }
+    let _ = git(path, &["branch", "--set-upstream-to", &remote, branch]).await;
+    let range = format!("{branch}...{remote}");
+    let counts = git(path, &["rev-list", "--left-right", "--count", &range]).await?;
+    let mut n = counts.split_whitespace();
+    let (ahead, behind) = (n.next().unwrap_or("0"), n.next().unwrap_or("0"));
+    if ahead == "0" {
+        if behind != "0" {
+            git(path, &["merge", "--ff-only", "--quiet", &remote]).await?;
+        }
+        return Ok(None);
+    }
+    let how = if behind == "0" {
+        format!("is {ahead} commit(s) ahead of {remote}")
+    } else {
+        format!("has diverged from {remote} ({ahead} ahead, {behind} behind)")
+    };
+    Ok(Some(format!(
+        "The local branch {branch} {how}, so it was kept as it is rather than reset to it; push or reconcile it."
+    )))
+}
+
+async fn has_ref(path: &str, full: &str) -> bool {
+    git(path, &["rev-parse", "--verify", "--quiet", full])
+        .await
+        .is_ok()
 }
 
 /// `open`, `closed` or `merged`, as `ssf status` reports it.

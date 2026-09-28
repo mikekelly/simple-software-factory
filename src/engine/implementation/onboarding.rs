@@ -678,7 +678,12 @@ impl Engine {
         let mut created = created;
         if let Some(branch) = checkout {
             match checkout_branch(&created.path, &branch).await {
-                Ok(()) => created.branch = Some(format!("refs/heads/{branch}")),
+                Ok(kept) => {
+                    if let Some(note) = kept {
+                        warn!(repo = repo.name, issue = number, "{note}");
+                    }
+                    created.branch = Some(format!("refs/heads/{branch}"));
+                }
                 Err(e) => warn!(
                     repo = repo.name,
                     issue = number,

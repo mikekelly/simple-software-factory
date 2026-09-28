@@ -67,10 +67,12 @@ pub enum Attach {
     HandedOver { launch: Launch, from: String },
     /// The workspace had to be re-created and the harness started in it
     /// again; `reason` is the word for why (`workspace gone`, `driver
-    /// switch`).
+    /// switch`); `note` says the old branch was kept rather than moved to
+    /// origin, when it was.
     ReCreated {
         launch: Launch,
         reason: &'static str,
+        note: Option<String>,
         conversation: Conversation,
     },
 }
@@ -224,10 +226,14 @@ impl Event {
             Self::Attached(Attach::ReCreated {
                 launch,
                 reason,
+                note,
                 conversation,
             }) => {
                 let mut lines = launch.lines();
                 lines.push(("re-created", reason.to_string()));
+                if let Some(note) = note {
+                    lines.push(("branch kept", note.clone()));
+                }
                 lines.push(("conversation", conversation.as_str().into()));
                 (format!("attaching agent to {item_kind} again"), lines)
             }

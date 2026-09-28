@@ -201,7 +201,7 @@ The events, and nothing else:
 
 | Event | When | Lines |
 |-------|------|-------|
-| `attached` | a session is started for the item: on onboarding (`🤖 ssf attaching agent to issue`), or again once its workspace had to be re-created or was kept (`🤖 ssf attaching agent to issue again`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `branch`; `handed off from: owner/repo#M` for a delegated item; `handed over from: <harness>` after a handover; on a re-creation `re-created: workspace gone` and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept` and `conversation: resumed`, `fresh` or `kept` |
+| `attached` | a session is started for the item: on onboarding (`🤖 ssf attaching agent to issue`), or again once its workspace had to be re-created or was kept (`🤖 ssf attaching agent to issue again`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `branch`; `handed off from: owner/repo#M` for a delegated item; `handed over from: <harness>` after a handover; on a re-creation `re-created: workspace gone`, `branch kept: …` when the local branch was ahead of or diverged from origin, and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept` and `conversation: resumed`, `fresh` or `kept` |
 | `attached` | a pull request bound to another item's session rather than given one of its own | `session: owner/repo#M`, `shares: workspace of #M` |
 | `resumed` | the harness was started again in its existing workspace: the startup pass after a daemon or machine restart, or a terminal found gone at delivery time | `harness`, `conversation: resumed` or `fresh`, `after: restart` or `after: lost terminal` |
 | `blocked` | deliveries are held because the harness is at its sign-in prompt, its first-run setup is incomplete, or it could not be started at all | `harness`; `reason: not signed in` with `fix:` the command that signs it in, `reason: setup incomplete`, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
@@ -565,10 +565,13 @@ ssf purge --older-than 7
   "retired, workspace released" or "retired, release given up, workspace kept" for
   closed items, so a person can see what is lying around.
 - **Coming back.** A released or purged workspace is re-created from its branch on
-  origin on the item's next event (reopening, re-assignment, a comment on a bound pull
+  the item's next event (reopening, re-assignment, a comment on a bound pull
   request), on the stack the item carries: its [per-item
   overrides](harnesses.md#per-item-overrides), or the repository's own settings where
-  there are none. The conversation resumes where the harness keeps one.
+  there are none. The conversation resumes where the harness keeps one. The local
+  branch is only ever fast-forwarded to `origin/<branch>`: one that is ahead of it, or
+  has diverged from it (say after `--force` removed a workspace with unpushed commits),
+  is kept as it is, and the `attached` post and the session's message say so.
 
 ## Scratch sessions
 
