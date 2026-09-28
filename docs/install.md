@@ -541,9 +541,19 @@ If yes, the listener belongs to the machine running `ssf-server` (the host in VM
 ```sh
 ssf config set dashboard.enabled true
 ssf config set dashboard.bind "$(tailscale ip -4)"   # tailnet; skip for loopback
-systemctl --user restart ssf.service   # ssf@NAME.service for a named target
-journalctl --user -u ssf.service | grep 'Server web dashboard'
+systemctl --user list-units 'ssf*.service'           # the unit ssf setup made, e.g. ssf@ssf-server.service
+systemctl --user restart UNIT
+journalctl --user -u UNIT | grep 'Server web dashboard'
 ```
+
+Ask one more yes/no question: "Do you want to watch and type into an agent's terminal from the dashboard or the extension?" Both default to off; if yes, before the restart above:
+
+```sh
+ssf config set daemon.item_pane_input true      # the factory's config (the guest in VM mode); repo.item_pane_input per repository
+ssf config set dashboard.terminal_input true    # this page's own terminal; the extension needs only the line above
+```
+
+Without `item_pane_input`, neither offers **Show agent TUI**, and people speak to an agent by commenting on the item.
 
 On macOS, restart with `launchctl kickstart -k gui/$(id -u)/dev.ssf.server.NAME` and find the URL with `grep 'Server web dashboard' ~/Library/Logs/ssf/NAME.log` ([operate.md](operate.md) names the agent and log).
 
