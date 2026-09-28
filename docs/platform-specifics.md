@@ -204,26 +204,27 @@ machine's architecture:
 | Fedora | `qemu-system-x86` or `qemu-system-aarch64` |
 
 `ssf vm build` checks for them and names what is missing. If the machine
-cannot run a VM at all, use host mode or a rented host instead.
+cannot run a VM at all, use host mode or a dedicated server instead.
 
-## Rented hosts
+## Dedicated servers
 
-Applies when the factory should run on a machine the person rents rather
-than on their own computer: a bot account's dedicated server, or a VPS from
-Hetzner, Linode, OVH or similar.
+Applies when the factory runs on a server or VPS dedicated to it, running
+nothing else: a bot account's dedicated server, or a VPS from Hetzner,
+Linode, OVH or similar. This is the recommended path for such a server
+([install.md](install.md#a-server)); a server that also runs a resident
+agent or other services gets a guest instead. It is also the fallback on a
+shared server that can run no guest.
 
-This section is the host-mode fallback; prefer a guest on the server
-where possible ([install.md](install.md#a-server-guest-first)). The host
-runs the factory in host mode with the standalone binaries; the
-person operates it from their own machine as a client over SSH. Nothing
-here needs KVM, Docker or a desktop session, though it does need a Unix
-account the agents will run as: in host mode agents can reach that user's
-files and credentials, so give the factory its own account. The target
-state: the server is reachable over SSH, the factory account can become root
-without a password so the agents manage their own environment (the server is
-the isolation boundary, so this is safe there), and the server is saved in
-the person's local herdr so they, and agents on their machine, can oversee
-the sessions.
+The server runs the factory in host mode; the person operates it from
+their own machine as a client over SSH. Nothing here needs KVM, Docker or a
+desktop session, though it does need a Unix account the agents will run as:
+in host mode agents can reach that user's files and credentials, so give the
+factory its own account. The target state: the server is reachable over
+SSH, the factory account can become root without a password so the agents
+manage their own environment (the server is the isolation boundary, so this
+is safe there), the factory runs as a service that survives logout and
+reboot, and the server is saved in the person's local herdr so they, and
+agents on their machine, can oversee the sessions.
 
 1. Check the host's real capabilities rather than the product description:
    architecture, RAM, free disk, whether `/dev/kvm` is usable, and whether
@@ -239,16 +240,20 @@ the sessions.
    images.
 4. Install herdr, and the harness CLIs the repositories will use, as the
    same Unix user that will run the factory.
-5. Put `ssf` and `ssf-server` **from the same release** into
-   `~/.local/bin` on that account, keep the two together, and persist that
-   directory on `PATH`. The download commands are in `ssf skill setup`
-   (docs/install.md).
-6. Leave the server catalog on the host empty, so the client there and a
-   foreground `ssf-server` share one configuration and state. Do not set
-   `SSF_SERVER` on the host.
-7. Sign the bot in (`ssf auth login`), watch a repository
-   (`ssf repo add owner/repo --harness ID`), then run herdr and
-   `ssf-server` under whatever keeps processes alive on that host.
+5. Install ssf **as a distribution package where one fits** (x86_64 Arch,
+   Debian/Ubuntu or Fedora/RHEL; install.md section 3.1): it brings `gh`
+   and the `ssf@.service` unit. Enable linger for the factory account
+   (`sudo loginctl enable-linger ssf`), then as that account run
+   `ssf server add local --local` and `ssf setup` (install.md section 4);
+   the service then survives logout and starts at boot.
+6. Otherwise (aarch64, or no package fits), put `ssf` and `ssf-server`
+   **from the same release** into `~/.local/bin` on that account, keep the
+   two together, and persist that directory on `PATH` (install.md section
+   3.3). Leave the server catalog empty, so the client and a foreground
+   `ssf-server` share one configuration and state, do not set `SSF_SERVER`,
+   and run `ssf-server` under whatever keeps processes alive on that host.
+7. Sign the bot in (`ssf auth login`) and watch a repository
+   (`ssf repo add owner/repo --harness ID`).
 8. From the person's own machine, reach it as a client:
    `ssf --server user@host status`, or give it a catalog name with
    `ssf server add NAME --ssh user@host`. SSH starts the same command

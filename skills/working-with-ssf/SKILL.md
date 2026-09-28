@@ -21,8 +21,9 @@ locally, in a VM, or over SSH. Linux and macOS are supported.
    (raw:
    `https://raw.githubusercontent.com/mikekelly/simple-software-factory/master/docs/install.md`).
    It opens with a resource check that decides, with the person, between a
-   local VM, a guest on a server (with laptop and resident-agent access),
-   host mode and a rented host, then runs to the first issue. Once
+   local VM, host mode on a server dedicated to the factory, a guest on a
+   server shared with a resident agent (with laptop and resident-agent
+   access) and host mode on this machine, then runs to the first issue. Once
    `ssf` is installed, continue from `ssf skill setup`, which is the same
    document at the installed version.
 3. If you're an ssf agent session that ssf itself started on an issue (`SSF_SESSION` will be set)
@@ -36,7 +37,7 @@ locally, in a VM, or over SSH. Linux and macOS are supported.
 | a factory repaired | `ssf skill troubleshoot` |
 | an `SSF.md` written or reviewed (a conversation about how their factory should work, not a template fill) | `ssf skill ssf-md`, `ssf skill audit` |
 | an assistant that drives the factory for them | `ssf skill liaison` |
-| their distro, macOS, a rented host, a harness's quirks, an old install | `ssf skill specifics` |
+| their distro, macOS, a dedicated server, a harness's quirks, an old install | `ssf skill specifics` |
 
 Before any change: `ssf server list`, then `ssf --server NAME doctor` and
 `ssf --server NAME status` for the target you are about to touch. Ask the

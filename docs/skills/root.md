@@ -54,7 +54,7 @@ Read `ssf skill agent` once; the short form:
 | `repo` | `docs/repositories.md` | adding and configuring a repository, `SSF.md`, first issue |
 | `operate` | `docs/operate.md` | targets, inspection, service, upgrade, stopping |
 | `troubleshoot` | `docs/troubleshooting.md` | symptom, check, remedy |
-| `specifics` | `docs/platform-specifics.md` | distro, macOS, rented hosts, Tailscale, harness notes, older installs |
+| `specifics` | `docs/platform-specifics.md` | distro, macOS, dedicated servers, Tailscale, harness notes, older installs |
 | `agent` | `docs/agent-guidance.md` | rules for an agent acting for a person |
 | `ssf-md` | `docs/ssf-md.md` | writing a repository's `SSF.md` |
 | `liaison` | `docs/liaison.md` | an assistant that acts for a person |
