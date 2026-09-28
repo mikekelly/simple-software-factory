@@ -2105,3 +2105,71 @@ fn herdr_config_turns_agent_restore_off() {
     assert!(server_command().contains(&format!("HERDR_CONFIG_PATH={}", path.display())));
     assert!(server_command().ends_with("herdr --session ssf server"));
 }
+
+/// ssf starts its session's server with its own config, and on Linux
+/// moves it into a user scope of its own (#602).
+#[test]
+fn server_start_uses_ssf_config_and_own_scope() {
+    let config = Path::new("/sandbox/ssf/herdr.toml");
+    let cmd = server_start("/opt/bin/herdr", config);
+    assert_eq!(cmd.get_program(), "/opt/bin/herdr");
+    let args: Vec<_> = cmd.get_args().collect();
+    assert_eq!(args, ["--session", "ssf", "server"]);
+    let config_env = cmd
+        .get_envs()
+        .find(|(k, _)| *k == "HERDR_CONFIG_PATH")
+        .and_then(|(_, v)| v);
+    assert_eq!(config_env, Some(config.as_os_str()));
+
+    let scoped = crate::vm::in_own_scope(&cmd, SERVER_SCOPE);
+    assert_eq!(scoped.get_program(), "systemd-run");
+    let args: Vec<_> = scoped
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        [
+            "--user",
+            "--scope",
+            "--quiet",
+            "--collect",
+            "--unit=ssf-herdr",
+            "--",
+            "/opt/bin/herdr",
+            "--session",
+            "ssf",
+            "server"
+        ]
+    );
+    assert!(
+        scoped
+            .get_envs()
+            .any(|(k, v)| k == "HERDR_CONFIG_PATH" && v == Some(config.as_os_str()))
+    );
+}
+
+#[test]
+fn session_running_reads_herdr_session_list() {
+    let list = serde_json::json!({"sessions": [
+        {"default": true, "name": "default", "running": true},
+        {"default": false, "name": "ssf", "running": false},
+    ]});
+    assert_eq!(session_running(&list, "ssf"), Some(false));
+    assert_eq!(session_running(&list, "default"), Some(true));
+    // Never made: not running.
+    assert_eq!(session_running(&list, "other"), Some(false));
+    // Not a listing herdr 0.9 prints: unknown.
+    assert_eq!(session_running(&serde_json::json!({}), "ssf"), None);
+}
+
+/// Start only on a host, and only when herdr says the session is down:
+/// never on an unreadable listing, which could hide a running server.
+#[test]
+fn should_start_only_when_herdr_says_it_is_down() {
+    assert!(should_start(false, &Ok(Some(false))));
+    assert!(!should_start(false, &Ok(Some(true))));
+    assert!(!should_start(false, &Ok(None)));
+    assert!(!should_start(false, &Err(anyhow!("no herdr"))));
+    assert!(!should_start(true, &Ok(Some(false))));
+}

@@ -452,6 +452,16 @@ impl Driver {
         }
     }
 
+    /// Start the driver's server if ssf owns it and it is down; true when
+    /// it did (#602).
+    pub async fn ensure_server(&self) -> Result<bool> {
+        match self {
+            Driver::Herdr(d) => Ok(d.ensure_session().await? == crate::herdr::Ensured::Started),
+            #[cfg(test)]
+            Driver::Stub(_) => Ok(false),
+        }
+    }
+
     /// Native delivery mailbox for a harness, when this driver can use one.
     pub fn delivery_channel(
         &self,

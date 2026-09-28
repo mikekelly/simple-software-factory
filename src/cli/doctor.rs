@@ -175,7 +175,11 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
             if !factory_vm::in_guest() {
                 record(
                     Level::Note,
-                    format!("herdr session start: `{}`", crate::herdr::server_command()),
+                    format!(
+                        "herdr session `{s}`: the daemon starts it as `{}`. herdr cannot report a running server's config, so if it was started another way (e.g. `herdr session attach {s}` while it was down, which uses herdr's own config), run `herdr session stop {s}` and let ssf restart it",
+                        crate::herdr::server_command(),
+                        s = crate::herdr::SESSION
+                    ),
                 );
             }
         }

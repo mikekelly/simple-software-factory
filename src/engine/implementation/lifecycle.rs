@@ -271,7 +271,17 @@ impl Engine {
         let mut errors = Vec::new();
         let mut any_up = false;
         for d in self.drivers.iter() {
-            match d.status().await {
+            let mut status = d.status().await;
+            if status.is_err() {
+                // ssf's own herdr session may simply not be running: start
+                // it rather than wait for someone to (#602).
+                match d.ensure_server().await {
+                    Ok(true) => status = d.status().await,
+                    Ok(false) => {}
+                    Err(e) => warn!("{}: could not start its server: {e:#}", d.label()),
+                }
+            }
+            match status {
                 Ok(()) => any_up = true,
                 Err(e) => {
                     down.push(d.kind());

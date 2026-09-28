@@ -411,7 +411,7 @@ pub(in crate::vm) fn end_process(pid: u32, program: &str) {
 /// stopping or restarting the service this process belongs to (the
 /// `ssf@NAME` supervisor) leaves it running. A scope that could not be made
 /// falls back to the plain start, with a warning.
-pub(in crate::vm) fn spawn_detached(
+pub(crate) fn spawn_detached(
     cmd: &mut Command,
     log: Option<&Path>,
     scope: Option<&str>,
@@ -502,7 +502,7 @@ pub(in crate::vm) fn scopes_available() -> bool {
 /// program, arguments, environment and directory, moved into
 /// `<unit>.scope` of the user manager before it starts. The scope ends
 /// when its last process does.
-pub(in crate::vm) fn in_own_scope(cmd: &Command, unit: &str) -> Command {
+pub(crate) fn in_own_scope(cmd: &Command, unit: &str) -> Command {
     let mut scoped = Command::new("systemd-run");
     scoped
         .stdin(Stdio::null())
