@@ -247,9 +247,101 @@ fn packages_leave_service_enablement_to_explicit_setup() {
         read("packaging/ssf.install"),
         read("packaging/release/ssf.install")
     );
-    // One upgrade policy across formats: no package restarts services.
-    let upgrade = read("packaging/ssf.install");
-    assert!(!upgrade.contains("try-restart"));
+    // One upgrade policy across formats: every format with a hook restarts
+    // the running services through the same helper (#638).
+    assert!(read("packaging/ssf.install").contains("/usr/lib/ssf/package-post-upgrade"));
+    assert!(read(PKGBUILD).contains("\"$pkgdir/usr/lib/ssf/package-post-upgrade\""));
+    assert!(post.contains("/usr/lib/ssf/package-post-upgrade"));
+    assert!(read("packaging/linux/posttrans.sh").contains("/usr/lib/ssf/package-post-upgrade"));
+    let nfpm = read(NFPM);
+    assert!(nfpm.contains("dst: /usr/lib/ssf/package-post-upgrade"));
+    assert!(nfpm.contains("posttrans: packaging/linux/posttrans.sh"));
+    assert!(read("packaging/homebrew/ssf.rb").contains("brew services restart ssf"));
+}
+
+/// Runs the upgrade helper against a fake user manager with `ssf.service`
+/// and `ssf@vm.service` active, `ssf.service`'s cgroup holding `inside` (a
+/// process's argv, NUL-separated) and returns the systemctl calls and the
+/// helper's stderr.
+#[cfg(target_os = "linux")]
+fn run_post_upgrade(name: &str, inside: &str) -> (String, String) {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("ssf-post-upgrade-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let cg = root.join("cgroup");
+    std::fs::create_dir_all(cg.join("ssf.service")).unwrap();
+    std::fs::create_dir_all(cg.join("ssf@vm.service")).unwrap();
+    std::fs::write(cg.join("ssf.service/cgroup.procs"), "10\n11\n").unwrap();
+    std::fs::write(cg.join("ssf@vm.service/cgroup.procs"), "20\n").unwrap();
+    let proc = root.join("proc");
+    for (pid, argv) in [
+        ("10", "/usr/bin/ssf-server\0"),
+        ("11", inside),
+        ("20", "/usr/bin/ssf-server\0--target\0vm\0"),
+    ] {
+        std::fs::create_dir_all(proc.join(pid)).unwrap();
+        std::fs::write(proc.join(pid).join("cmdline"), argv).unwrap();
+    }
+    std::fs::write(bin.join("loginctl"), "#!/bin/sh\necho '1000 alice'\n").unwrap();
+    std::fs::write(
+        bin.join("systemctl"),
+        "#!/bin/sh\ncase \"$*\" in *is-system-running*) echo running;; *list-unit-files*) echo 'ssf@vm.service enabled';; *list-units*) ;; *is-active*) exit 0;; *FragmentPath*ssf@*) echo /usr/lib/systemd/user/ssf@.service;; *FragmentPath*) echo /usr/lib/systemd/user/ssf.service;; *ExecStart*ssf@vm*) echo '{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server --target vm ; }';; *ExecStart*) echo '{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server ; }';; *ControlGroup*ssf@vm*) echo /ssf@vm.service;; *ControlGroup*) echo /ssf.service;; *) echo \"$*\" >>\"$SSF_HOOK_LOG\";; esac\n",
+    )
+    .unwrap();
+    for name in ["loginctl", "systemctl"] {
+        std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let log = root.join("calls");
+    let out = Command::new("sh")
+        .arg(repo().join("packaging/package-post-upgrade.sh"))
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("SSF_HOOK_LOG", &log)
+        .env("SSF_CGROUP_ROOT", &cg)
+        .env("SSF_PROC_ROOT", &proc)
+        .env("SSF_GUEST_SEED", root.join("no-guest"))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    std::fs::remove_dir_all(root).unwrap();
+    (calls, String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+/// An upgrade restarts every running package-owned service (#638).
+#[cfg(target_os = "linux")]
+#[test]
+fn upgrade_restarts_running_services() {
+    let (calls, _) = run_post_upgrade("restart", "/usr/bin/ssf-server\0");
+    assert!(calls.contains("daemon-reload"), "{calls}");
+    assert!(calls.contains("try-restart ssf.service"), "{calls}");
+    assert!(calls.contains("try-restart ssf@vm.service"), "{calls}");
+}
+
+/// A service holding its VM or herdr inside its own cgroup (started before
+/// #600/#602) is left running: a restart would stop the guest or agents.
+#[cfg(target_os = "linux")]
+#[test]
+fn upgrade_skips_a_service_holding_its_vm_or_herdr() {
+    for (name, argv) in [
+        ("vm", "/opt/ssf/firecracker\0--api-sock\0x\0"),
+        ("herdr", "/usr/bin/herdr\0--session\0ssf\0server\0"),
+    ] {
+        let (calls, err) = run_post_upgrade(name, argv);
+        assert!(
+            !calls.contains("try-restart ssf.service"),
+            "{name}: {calls}"
+        );
+        assert!(
+            calls.contains("try-restart ssf@vm.service"),
+            "{name}: {calls}"
+        );
+        assert!(
+            err.contains("ssf.service for alice was not restarted"),
+            "{name}: {err}"
+        );
+    }
 }
 
 /// Every shipped unit that runs the daemon comes back from any exit.

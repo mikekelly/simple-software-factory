@@ -65,6 +65,9 @@ overrides:
 contents:
   # Directories, so the rpm owns and removes them (dpkg does so on its own;
   # nfpm's rpm packager only owns what is listed).
+  - dst: /usr/lib/ssf
+    type: dir
+    packager: rpm
   - dst: /usr/share/ssf
     type: dir
     packager: rpm
@@ -103,6 +106,10 @@ contents:
   - src: target/${TARGET}/release/ssf-server
     dst: /usr/bin/ssf-server
     expand: true
+    file_info:
+      mode: 0755
+  - src: packaging/package-post-upgrade.sh
+    dst: /usr/lib/ssf/package-post-upgrade
     file_info:
       mode: 0755
   - src: bin/ssf-ui
@@ -176,3 +183,8 @@ scripts:
   postinstall: packaging/linux/postinstall.sh
   preremove: packaging/linux/preremove.sh
   postremove: packaging/linux/postremove.sh
+# The rpm restarts services once the whole transaction is done (#638); the
+# deb does so from postinstall.sh.
+rpm:
+  scripts:
+    posttrans: packaging/linux/posttrans.sh

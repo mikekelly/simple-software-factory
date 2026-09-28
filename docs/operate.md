@@ -236,14 +236,15 @@ Upgrade both sides to the same release:
 
 1. Upgrade the package on the machine that runs the client (the package
    manager on Linux, `brew upgrade ssf` on macOS, or replacing the
-   standalone binaries). Ask before running `sudo`. No package format
-   (Arch, `.deb`, `.rpm`, Homebrew) restarts running services on upgrade:
-   the old daemon keeps running until you restart it with
-   `systemctl --user restart ssf.service` (or `ssf@NAME.service`) on Linux
-   or `brew services restart ssf` on macOS. A VM target's service only
-   supervises the VM, which keeps running and is reattached to, so sessions
-   are not interrupted (a service started by ssf 0.19 or earlier still holds
-   its VM, and restarting it reboots the guest once).
+   standalone binaries). Ask before running `sudo`. The Arch, `.deb` and
+   `.rpm` packages restart each logged-in user's running `ssf.service` and
+   `ssf@NAME.service` on the new version; Homebrew cannot, so run
+   `brew services restart ssf`. An upgrade never stops or restarts a VM or
+   an agent: VMs and host mode's herdr run in scopes of their own, and the
+   new daemon reattaches to them. A service started by ssf 0.19 or earlier
+   still holds its VM (or herdr) inside it, so the upgrade leaves it running
+   with a message; restart it yourself when rebooting the guest once suits
+   (`systemctl --user restart ssf.service` or `ssf@NAME.service`).
 2. For an SSH target, upgrade the remote machine the same way.
 3. For a VM target, upgrading the host leaves the guest's version alone
    until you choose: `ssf --server NAME vm upgrade` installs the client's
