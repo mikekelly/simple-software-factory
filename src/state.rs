@@ -267,6 +267,12 @@ pub struct IssueState {
     /// When the harness was last launched, to find its session file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launched_at: Option<String>,
+    /// The harness, model and effort the session was last launched or
+    /// resumed with (#658). A live session keeps these across a daemon
+    /// restart whatever the repository is configured with since; the next
+    /// launch, resume or relaunch replaces them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched_stack: Option<Overrides>,
     /// No longer set: an older daemon marked a workspace to be removed on
     /// close with it (see `release_pending` for how a workspace goes now).
     /// A stale `true` is cleared on the next pass.

@@ -410,7 +410,7 @@ which harness is running in its workspaces"
             Some(&eff.stack()),
             tokens,
         );
-        self.entry(repo, number).launched_at = Some(now_iso());
+        self.record_launch(repo, number, &eff);
         let handle = match self
             .driver(repo)
             .start(&wt, &cmd, &title, &eff.harness, &text)

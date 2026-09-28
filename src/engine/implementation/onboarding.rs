@@ -250,6 +250,7 @@ impl Engine {
                     .save()
                     .context("recording the first prompt before delivery")?;
                 let eff = self.effective(repo, issue.number);
+                self.record_launch(repo, issue.number, &eff);
                 let title = format!("{} · #{}", eff.harness, issue.number);
                 let tokens = self.cfg.auto_compaction_tokens_for(&eff);
                 let cmd = self.launch_command(

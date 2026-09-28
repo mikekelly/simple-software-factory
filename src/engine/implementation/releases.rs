@@ -187,7 +187,14 @@ impl Engine {
         // What the session is started with, decided here: the story below
         // is told to the harness this launches, and the relaunch, the title
         // and the resume all use it.
-        let eff = self.effective(repo, target);
+        // A live session is on what it was launched with, whatever the
+        // repository says now (#658); only a harness started here takes
+        // the current config.
+        let eff = if live {
+            self.live_config(repo, target)
+        } else {
+            self.effective(repo, target)
+        };
         let mut story = None;
         // A handover whose new session never came up left its summary on
         // the item: the harness started here is the one that takes it on.
@@ -285,8 +292,8 @@ impl Engine {
             }
         };
         if d.relaunched {
+            self.record_launch(repo, target, &eff);
             let e = self.entry(repo, target);
-            e.launched_at = Some(now_iso());
             if !d.resumed {
                 e.agent_session_id = None;
                 // A resumed conversation is not shown the relaunch text,

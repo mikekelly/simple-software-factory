@@ -415,6 +415,41 @@ async fn guidance_follows_the_harness_on_the_pane() {
     );
 }
 
+/// A live session keeps the stack it was launched with across a daemon
+/// restart, whatever the repository was switched to since: its record
+/// says so, and a pane from before that record is read off the driver
+/// (#658). Without it, the delivery goes to the new harness's bridge and
+/// stalls, or refuses to start a second agent beside the live one.
+#[tokio::test]
+async fn a_live_session_keeps_its_launched_harness_after_a_config_edit() {
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = RepoConfig {
+        harness: "omp".into(),
+        ..repo()
+    };
+    e.cfg.repos = vec![r.clone()];
+    e.entry(&r, 5).launched_stack = Some(Overrides {
+        harness: "codex".into(),
+        model: Some("gpt-5.6-sol".into()),
+        effort: Some("high".into()),
+    });
+    d.runs("w5", "codex");
+    e.refresh_workspaces(&r).await;
+    e.deliver_to(&r, 5, "[ssf] hello", None).await.unwrap();
+    let current = e.current_stack(&r, 5);
+    assert_eq!(current.harness, "codex");
+    assert_eq!(current.model.as_deref(), Some("gpt-5.6-sol"));
+    assert!(!current.unknown_stack);
+    // A session from before the record: the pane's harness still wins.
+    e.entry(&r, 5).launched_stack = None;
+    e.deliver_to(&r, 5, "[ssf] again", None).await.unwrap();
+    assert_eq!(
+        d.with(|s| s.delivered_harnesses.clone()),
+        vec!["codex".to_string(), "codex".to_string()]
+    );
+}
+
 #[tokio::test]
 async fn a_handover_replaces_the_session_in_the_same_workspace() {
     let _sandbox = crate::config::test_support::sandbox();

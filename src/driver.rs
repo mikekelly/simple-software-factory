@@ -973,6 +973,8 @@ pub enum StubResume {
 pub struct StubState {
     /// What the next resume does.
     pub resume: StubResume,
+    /// The harness each delivery was addressed to (`Relaunch::harness`).
+    pub delivered_harnesses: Vec<String>,
     pub worktrees: std::collections::BTreeSet<String>,
     /// worktree id -> handle of its live agent.
     pub live: std::collections::BTreeMap<String, String>,
@@ -1271,6 +1273,7 @@ impl StubDriver {
 
     fn deliver(&self, worktree_id: &str, relaunch: &Relaunch<'_>, text: &str) -> Result<Delivery> {
         self.with(|s| {
+            s.delivered_harnesses.push(relaunch.harness.to_string());
             if let Some(why) = s.deliver_error.take() {
                 bail!("{why}");
             }
