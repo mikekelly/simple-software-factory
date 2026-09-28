@@ -1515,6 +1515,7 @@ mod tests {
             id: 0,
             kind: String::new(),
             email: None,
+            scopes: None,
         });
         assert_eq!(
             scan(&by_bot, &[], "bot")

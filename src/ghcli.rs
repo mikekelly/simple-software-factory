@@ -8,10 +8,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Scopes the bot token needs: issues/PRs/pushes, Projects boards, plus key
-/// enrollment.
+/// Scopes the bot token needs: issues/PRs/pushes, pushes touching
+/// `.github/workflows/`, Projects boards, plus key enrollment.
 pub const REQUIRED_SCOPES: &[&str] = &[
     "repo",
+    "workflow",
     "project",
     "admin:public_key",
     "admin:ssh_signing_key",

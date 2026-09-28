@@ -103,6 +103,24 @@ pub struct User {
     pub kind: String,
     #[serde(default)]
     pub email: Option<String>,
+    /// The token's classic OAuth scopes, from `X-OAuth-Scopes`; `None` when
+    /// GitHub sends no such header (fine-grained and app tokens).
+    #[serde(skip)]
+    pub scopes: Option<Vec<String>>,
+}
+
+impl User {
+    /// Required scopes the token lacks; empty when its scopes are unknown.
+    pub fn missing_scopes(&self) -> Vec<&'static str> {
+        let Some(have) = &self.scopes else {
+            return Vec::new();
+        };
+        crate::ghcli::REQUIRED_SCOPES
+            .iter()
+            .copied()
+            .filter(|s| !have.iter().any(|h| h == s))
+            .collect()
+    }
 }
 
 /// Stable identity plus the mutable canonical name and clone URLs of a
@@ -523,7 +541,19 @@ impl GitHub {
             .await
             .context("GET /user")?;
         let resp = self.check(resp, "fetching bot identity").await?;
-        resp.json::<User>().await.context("decoding /user")
+        let scopes = resp
+            .headers()
+            .get("x-oauth-scopes")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            });
+        let mut me = resp.json::<User>().await.context("decoding /user")?;
+        me.scopes = scopes;
+        Ok(me)
     }
 
     /// Pending repository invitations for the authenticated user, across all
@@ -1357,5 +1387,34 @@ mod tests {
         let none = PrInfo::from_value(&json!({"head": {"ref": "b"}, "base": {"ref": "main"}}));
         assert!(none.requested_reviewers.is_empty());
         assert!(!none.requests_review_from("bot"));
+    }
+}
+
+#[cfg(test)]
+mod user_scope_tests {
+    use super::User;
+
+    fn user(scopes: Option<&[&str]>) -> User {
+        User {
+            login: "bot".into(),
+            id: 0,
+            kind: String::new(),
+            email: None,
+            scopes: scopes.map(|s| s.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    #[test]
+    fn missing_scopes_names_workflow_and_ignores_unknown_scopes() {
+        let old = user(Some(&[
+            "repo",
+            "project",
+            "admin:public_key",
+            "admin:ssh_signing_key",
+        ]));
+        assert_eq!(old.missing_scopes(), vec!["workflow"]);
+        let full = user(Some(crate::ghcli::REQUIRED_SCOPES));
+        assert!(full.missing_scopes().is_empty());
+        assert!(user(None).missing_scopes().is_empty());
     }
 }

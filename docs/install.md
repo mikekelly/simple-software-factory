@@ -401,7 +401,7 @@ ssf auth status
 
 `--web` runs gh's device flow: the terminal prints a one-time code and `https://github.com/login/device`, which the person opens in the window where the bot is signed in. Over SSH, or where no browser should open, prefix `BROWSER=true`. Start it only when the person is ready to approve, finish it before section 8's harness sign-in, and tell them the code lasts about 15 minutes. `--user <bot>` checks the approved account is the intended one. In VM mode the credential is written inside the guest. Where OAuth apps are forbidden, use a classic personal access token instead: `printf '%s' "$TOKEN" | ssf auth login --token`. A fine-grained token reads as missing every scope.
 
-Scopes: `repo`, `project` (boards), `admin:public_key` and `admin:ssh_signing_key` (key enrollment). `--no-keys` skips the key and needs only `repo`, at the cost of unsigned commits.
+Scopes: `repo`, `workflow` (pushes that touch `.github/workflows/`), `project` (boards), `admin:public_key` and `admin:ssh_signing_key` (key enrollment); a pasted classic token needs the same. `--no-keys` skips the key and needs only `repo` and `workflow`, at the cost of unsigned commits. `ssf doctor` and `ssf auth status` name any scope the token lacks; `ssf auth login` again adds it.
 
 Login records `github.login` and `github.email`, and enrolls a dedicated ed25519 key on the bot account as both an SSH key and a signing key. `ssf auth logout` revokes those keys and forgets the bot.
 
