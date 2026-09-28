@@ -6,17 +6,40 @@
 [![Linux and macOS](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-informational)](docs/install.md)
 
 **Run a team of coding agents from your GitHub issues.** Assign an issue to
-your bot and a dedicated agent picks it up in its own terminal and its own
-worktree, plans the work with you on the issue, delivers it as pull
-requests, and coordinates with the other agents by commenting on their
-issues. GitHub is the interface; your terminal is the back door.
+your bot and an agent takes it on in its own terminal and its own worktree:
+it plans the work with you on the issue, delivers it as pull requests, and
+coordinates with the other agents by commenting on their issues. GitHub is
+the interface; your terminal is the back door.
 
-- **Multiplayer by default.** Your whole team, and every agent, in the same
-  issue threads, with rich Markdown, @mentions and notifications.
-- **Watchable and steerable.** Every agent is a real terminal session you
-  can shell into, read, and take over like any coding session of your own.
+- **Multiplayer, for people and agents alike.** The factory is one more
+  GitHub user on your project. Your whole team and every agent collaborate
+  in the same issue threads, with Markdown, @mentions, reviews and
+  notifications, in the tool everyone already uses.
+- **Agents own issues and talk on GitHub.** One long-lived session per
+  issue. Sessions that depend on each other comment on each other's issues,
+  and that is the only channel between them, so the record is complete.
+- **You decide how much they ask you.** An `SSF.md` in your repository
+  tells sessions how to own work, when to bring you a decision and when to
+  just ship: from "sign off every plan" to fully autonomous.
+- **Any harness, any model, mixed as you like.** Built on
+  [herdr](https://herdr.dev/), so one factory runs Claude Code, Codex,
+  Gemini, Copilot, Grok, OpenCode, Pi, Oh My Pi and Crush side by side.
+  Pick the stack per issue, hand an item from one harness to another, or
+  have a Codex session ask a Claude Code session for a review.
+- **Agents can run the factory too.** The `ssf` CLI is available to every
+  session and to whatever assistant you already talk to. A project-manager
+  session can start, follow and hand over the issues under it. Install ssf
+  on your Grok Bot's or Muse's computer and that assistant becomes your
+  liaison: it manages the factory and oversees progress on your projects.
+- **Watchable and steerable.** Every agent is a real terminal session: shell
+  in, read it, type to it, or take over. `ssf dashboard` shows every active
+  agent live, in the terminal or a browser, and the Chrome extension puts
+  each agent's live status in the GitHub issue or pull request page itself.
 - **Self-hosted.** A microVM on your machine or a server you rent; the
   agents you already pay for; nothing in anyone else's cloud.
+- **Sandboxed by default.** The factory runs in an isolated virtual machine
+  with no access to the host it runs on. Agents have full control of their
+  environment, with `sudo`, and none of your machine.
 
 ## Why
 
@@ -27,26 +50,20 @@ promise to fix that put the agents in their cloud and the conversation in
 their product, where nobody else on your team can see it.
 
 Your team already has a place where work is described, discussed, reviewed
-and merged, and it is already multiplayer: GitHub. ssf puts the agents
-there. The issue is the unit of work, the assignment is the trigger, the
-comment thread is the conversation, the pull request is the deliverable and
-the board is the status. A person is pulled in only where a person is
-needed: to say what to build, to make the calls the agents cannot, and to
-merge. Everything else, plan, decisions, review and result, is on the
-record where you would have looked anyway.
-
-And because every agent is an ordinary terminal session in a git worktree,
-the escape hatch is always open. Shell into the factory, open the agent's
-terminal, read what it is doing, type to it, or finish the job yourself.
+and merged: GitHub. ssf puts the agents there. The issue is the unit of
+work, the assignment is the trigger, the comment thread is the
+conversation, the pull request is the deliverable and the board is the
+status. A person is pulled in only where a person is needed: to say what to
+build, to make the calls the agents cannot, and to merge. Everything else,
+plan, decisions, review and result, is on the record where you would have
+looked anyway.
 
 ## Key concepts
 
 | Concept | What it means in ssf |
 |---|---|
-| **GitHub is the GUI** | People and agents collaborate in issue and pull request comments: rich content, user tagging, notifications, reviews. No second interface to learn. |
 | **The issue is the unit of work** | Every task is an issue. Assign it to the bot and it is being worked; close it and the work is wrapped up. Boards say where it stands. |
 | **One long-lived agent per issue** | Each issue gets its own agent session in a terminal, from assignment until close, and every comment, review, label and push on the issue is delivered into it. |
-| **Agents talk on GitHub** | Sessions that depend on each other comment on each other's issues. That is the only channel between them, so the record is complete. |
 | **One worktree per agent** | Each session works in its own git worktree on its own branch, so parallel sessions on one repository never collide. |
 | **Terminals you can enter** | Sessions run in [herdr](https://herdr.dev/), a terminal multiplexer. Attach to see what an agent is doing, steer it, or take over. |
 | **Your repository sets the rules** | An `SSF.md` at the root tells sessions how to own work, communicate, review and hand off. Build and test policy stays in `AGENTS.md`. |
