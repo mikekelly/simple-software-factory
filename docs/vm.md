@@ -422,7 +422,7 @@ belong to the Incus daemon. The service (`ssf-server`) starts the VM if it is
 not up, or reattaches to the one that is running (starting a new gvproxy
 beside a Firecracker VM whose gvproxy is gone), and watches it: a VM that
 exits is started again by the service's restart. Stopping or restarting the
-service (`systemctl --user stop|restart ssf@NAME`, a package upgrade)
+service (`systemctl --user stop|restart ssf@NAME`)
 ends only the supervisor and leaves the guest and its sessions running.
 Only explicit actions stop the guest: `ssf vm stop`, `ssf vm restart`, and
 `ssf ui service disable`, which stops the service and then the VM. While the
