@@ -2,28 +2,32 @@ use super::*;
 
 #[test]
 fn a_handed_over_session_is_told_where_it_came_from() {
-    let story = "# The item\n\n## How to work on this\n";
+    let story = "[ssf] The lead.\n\n<ssf-instructions>\nx\n</ssf-instructions>\n";
     let p = handover_prompt("Claude Code", "issue", Some("  Branch pushed.  "), story);
+    // One `[ssf]` lead line, then the summary as the first section.
     assert_eq!(
         p,
-        "You took over this issue from a session on Claude Code that handed it over; its \
+        "[ssf] The lead.\n\n<handover-summary>\n\
+You took over this issue from a session on Claude Code that handed it over; its \
 summary follows, then the issue as ssf tells it to a new session.\n\n\
-## Summary from the outgoing session\n\n\
-Branch pushed.\n\n\
-# The item\n\n## How to work on this\n"
+Branch pushed.\n\
+</handover-summary>\n\n\
+<ssf-instructions>\nx\n</ssf-instructions>\n"
     );
     let p = handover_prompt("Pi", "pull request", None, story);
     assert!(
         p.starts_with(
-            "You took over this pull request from a session on Pi that handed it over. It \
-left no summary; read the pull request below.\n\n"
+            "[ssf] The lead.\n\n<handover-summary>\nYou took over this pull request from a session \
+on Pi that handed it over. It left no summary; read the pull request below.\n\
+</handover-summary>\n\n"
         ),
         "{p}"
     );
-    assert!(p.ends_with(story), "{p}");
+    assert_eq!(p.matches("[ssf]").count(), 1, "{p}");
     assert_eq!(
         handover_refused_prompt("Pi", "the item is no longer active"),
-        "[ssf] Handover to Pi refused: the item is no longer active. Carry on."
+        "[ssf] Handover to Pi refused: the item is no longer active.\n\n\
+<ssf-instructions>\nCarry on.\n</ssf-instructions>"
     );
 }
 
@@ -114,7 +118,6 @@ fn followup_says_a_bound_pull_request_is_yours_when_assigned() {
     assert!(assigned.assigns("bot"));
     assert!(!assigned.assigns("alice"));
     let status = Rendered {
-        actor: None,
         at: None,
         key: "project_v2_item_status_changed:10".into(),
         text: "- [t] @bot project v2 item status changed".into(),
@@ -125,17 +128,19 @@ fn followup_says_a_bound_pull_request_is_yours_when_assigned() {
     let f = followup_prompt(&filed, &[assigned.clone(), status.clone()], &ctx);
     assert_eq!(
         f,
-        "[ssf] New activity on #83 \"VM: omp does not run\":\n\n\
+        "[ssf] New activity on #83 \"VM: omp does not run\"\n\n\
 <new-activity>\n\
-<github-event kind=\"assigned\" actor=\"@bot\" at=\"2026-01-05T15:04:00Z\">\n\
+<event>\n\
 - 2026-01-05 15:04Z @bot assigned @bot\n\
-</github-event>\n\
-<github-event kind=\"project_v2_item_status_changed\">\n\
+</event>\n\
+<event>\n\
 - [t] @bot project v2 item status changed\n\
-</github-event>\n\
+</event>\n\
 </new-activity>\n\n\
+<ssf-instructions>\n\
 #83 is now assigned to @bot. You filed it, so it is yours: work on it in this workspace; \
-nobody else is spawned for it.",
+nobody else is spawned for it.\n\
+</ssf-instructions>",
         "{f}"
     );
     // Ordinary activity on the same item carries no such line, nor
@@ -170,12 +175,11 @@ nobody else is spawned for it.",
     let f = followup_prompt(&filed, std::slice::from_ref(&assigned), &own);
     assert_eq!(
         f,
-        "[ssf] New activity on #83:\n\n<new-activity>\n<github-event kind=\"assigned\" actor=\"@bot\" at=\"2026-01-05T15:04:00Z\">\n- 2026-01-05 15:04Z @bot assigned @bot\n</github-event>\n</new-activity>\n"
+        "[ssf] New activity on #83\n\n<new-activity>\n<event>\n- 2026-01-05 15:04Z @bot assigned @bot\n</event>\n</new-activity>"
     );
     // A label on a filed issue is activity like any other: no label
     // asks anything of ssf since #115.
     let labelled = Rendered {
-        actor: None,
         at: None,
         key: "labeled:12".into(),
         text: "- [t] @alice added label \"review\"".into(),
@@ -186,7 +190,7 @@ nobody else is spawned for it.",
     let f = followup_prompt(&filed, &[labelled], &ctx);
     assert_eq!(
         f,
-        "[ssf] New activity on #83 \"VM: omp does not run\":\n\n<new-activity>\n<github-event kind=\"labeled\">\n- [t] @alice added label \"review\"\n</github-event>\n</new-activity>\n"
+        "[ssf] New activity on #83 \"VM: omp does not run\"\n\n<new-activity>\n<event>\n- [t] @alice added label \"review\"\n</event>\n</new-activity>"
     );
 }
 
@@ -223,7 +227,6 @@ fn fyi_prompts() {
         pushes_as: None,
     };
     let ev = Rendered {
-        actor: None,
         at: None,
         key: "k".into(),
         text: "- [t] @alice commented (u):\n  > hi".into(),
@@ -241,17 +244,19 @@ fn fyi_prompts() {
     );
     // The item is named once, in the header; the owner is not.
     assert!(p.starts_with(
-        "[ssf] FYI: new activity on issue #5 \"Thing\" (https://gh/5):\n\n<new-activity>\n<github-event kind=\"k\">\n- [t] @alice"
+        "[ssf] FYI: new activity on issue #5 \"Thing\" (https://gh/5)\n\n<new-activity>\n<event>\n- [t] @alice"
     ));
     assert!(!p.contains("owned by"));
     // One line of boilerplate after the activity, no more.
-    assert!(p.ends_with("  > hi\n</github-event>\n</new-activity>\n\nFor information only; `ssf unsub 5` stops these messages."));
+    assert!(p.ends_with("  > hi\n</event>\n</new-activity>\n\n<ssf-instructions>\nFor information only; `ssf unsub 5` stops these messages.\n</ssf-instructions>"));
     assert!(!p.contains("again unless"));
     let p = fyi_prompt(&issue, &[], &ctx, None, false, Fyi::Closed);
     assert_eq!(
         p,
         "[ssf] FYI: issue #5 \"Thing\" (https://gh/5) has been closed (completed).\n\n\
-For information only; you will not hear about it again unless it comes back."
+<ssf-instructions>\n\
+For information only; you will not hear about it again unless it comes back.\n\
+</ssf-instructions>"
     );
     let p = fyi_prompt(&issue, &[], &ctx, Some("o/r#5"), true, Fyi::Closed);
     assert!(p.contains("(https://gh/5) has been merged."));
@@ -304,7 +309,6 @@ fn owned_items_get_tracking_and_closing_notes() {
         pushes_as: None,
     };
     let ev = Rendered {
-        actor: None,
         at: None,
         key: "k".into(),
         text: "- [t] @alice requested a review from @bot".into(),
@@ -316,12 +320,12 @@ fn owned_items_get_tracking_and_closing_notes() {
     // A review asked on an owned pull request is the session's own to
     // deal with, like any other trigger: no reviewer session exists.
     assert!(p.starts_with(
-            "[ssf] Now tracking pull request #4 \"Fix it\" (https://gh/4) for this session, because this session opened it. It reached ssf because it requested a review from @bot; that is for you to act on.\n\nHistory so far (before this message):\n\n<history>\n<github-event kind=\"k\">\n- [t] @alice requested a review from @bot\n</github-event>\n</history>\n"
+            "[ssf] Now tracking pull request #4 \"Fix it\" (https://gh/4) for this session, because this session opened it. It reached ssf because it requested a review from @bot; that is for you to act on.\n\n<history>\n<event>\n- [t] @alice requested a review from @bot\n</event>\n</history>\n\n<ssf-instructions>\n"
         ), "{p}");
     assert!(!p.contains("reviewer session"));
     assert!(!p.contains("SSF_ISSUE"));
     assert!(p.ends_with(
-        "\nAnswer on it with `gh pr comment 4 --repo o/r`; pushes to `bot/fix` update it."
+        "\nAnswer on it with `gh pr comment 4 --repo o/r`; pushes to `bot/fix` update it.\n</ssf-instructions>"
     ));
     assert!(!p.contains("## How to work on this"));
     // Other human triggers on the owned PR still are.
@@ -346,12 +350,12 @@ fn owned_items_get_tracking_and_closing_notes() {
     let c = closed_prompt(&pr_issue, &[], &ctx);
     assert_eq!(
         c,
-        "[ssf] #4 \"Fix it\" has been closed (completed).\n\nNo further updates for it; your own item, #3, is unaffected."
+        "[ssf] #4 \"Fix it\" has been closed (completed).\n\n<ssf-instructions>\nNo further updates for it; your own item, #3, is unaffected.\n</ssf-instructions>"
     );
     let u = unassigned_prompt(&pr_issue, &[], &ctx);
     assert_eq!(
         u,
-        "[ssf] The review request for @bot on #4 \"Fix it\" has been fulfilled or withdrawn.\n\nNo further updates for it unless it is brought back in; your own item, #3, is unaffected."
+        "[ssf] The review request for @bot on #4 \"Fix it\" has been fulfilled or withdrawn.\n\n<ssf-instructions>\nNo further updates for it unless it is brought back in; your own item, #3, is unaffected.\n</ssf-instructions>"
     );
     let own = PromptContext {
         owner: None,
@@ -360,10 +364,10 @@ fn owned_items_get_tracking_and_closing_notes() {
     let c = closed_prompt(&pr_issue, &[], &own);
     assert_eq!(
         c,
-        "[ssf] #4 has been closed (completed).\n\nStop working on it: commit anything worth keeping, push, and leave a short final comment on it; then, only if everything is on origin, `ssf release` gives this workspace back (it refuses if anything would be lost; a kept workspace is fine). No further updates for it."
+        "[ssf] #4 has been closed (completed).\n\n<ssf-instructions>\nStop working on it: commit anything worth keeping, push, and leave a short final comment on it; then, only if everything is on origin, `ssf release` gives this workspace back (it refuses if anything would be lost; a kept workspace is fine). No further updates for it.\n</ssf-instructions>"
     );
     let u = unassigned_prompt(&pr_issue, &[], &own);
-    assert!(u.starts_with("[ssf] The review request for @bot on #4 has been fulfilled or withdrawn.\n\nStop working on it:"));
+    assert!(u.starts_with("[ssf] The review request for @bot on #4 has been fulfilled or withdrawn.\n\n<ssf-instructions>\nStop working on it:"));
     let assigned_ctx = PromptContext {
         triggers: &assigned,
         ..own.clone()
@@ -381,7 +385,7 @@ fn owned_items_get_tracking_and_closing_notes() {
     let u = unassigned_prompt(&pr_issue, &[], &mentioned_ctx);
     assert!(
             u.starts_with(
-                "[ssf] The mention of bot that started this session on #4 is gone.\n\nStop working on it:"
+                "[ssf] The mention of bot that started this session on #4 is gone.\n\n<ssf-instructions>\nStop working on it:"
             ),
             "{u}"
         );
@@ -389,12 +393,12 @@ fn owned_items_get_tracking_and_closing_notes() {
     let r = reassigned_prompt(&pr_issue, &[], &assigned_ctx);
     assert_eq!(
         r,
-        "[ssf] #4 has been assigned to @bot again. Activity since then:\n\n(no new activity)\n\nResume work on it."
+        "[ssf] #4 has been assigned to @bot again.\n\n<new-activity>\n(no new activity)\n</new-activity>\n\n<ssf-instructions>\nResume work on it.\n</ssf-instructions>"
     );
     let f = followup_prompt(&pr_issue, &[], &own);
-    assert!(f.starts_with("[ssf] New activity on #4:"), "{f}");
+    assert!(f == "[ssf] New activity on #4", "{f}");
     let f = followup_prompt(&pr_issue, &[], &ctx);
-    assert!(f.starts_with("[ssf] New activity on #4 \"Fix it\":"), "{f}");
+    assert!(f == "[ssf] New activity on #4 \"Fix it\"", "{f}");
 
     // The message a delegating parent gets.
     let last = FinalComment {
@@ -408,7 +412,7 @@ fn owned_items_get_tracking_and_closing_notes() {
             "[ssf] #4 \"Fix it\" (https://gh/4), the pull request this session handed off, has been merged."
         ));
     assert!(m.contains(
-        "Final comment by @bot (from the agent on o/r#4) (https://gh/4#c1):\n  > Done, see PR #5."
+        "<event>\nFinal comment by @bot (from the agent on o/r#4) (https://gh/4#c1):\n  > Done, see PR #5.\n</event>"
     ));
     let m = delegated_closed_prompt(&pr_issue, false, None, &ctx);
     assert!(m.contains("has been closed (completed)."));
@@ -439,4 +443,24 @@ fn interrupted_prompt_names_the_session_and_where_it_is() {
     });
     assert!(r.contains("session for #25 \"Fix\" (https://gh/25)."));
     assert!(!r.contains("on branch"));
+}
+
+/// #631: the note about a re-created workspace is a section of the message
+/// it rides on, after that message's one `[ssf]` lead line.
+#[test]
+fn a_workspace_note_is_a_section_after_the_lead_line() {
+    let text =
+        "[ssf] New activity on #5\n\n<new-activity>\n<event>\n- x\n</event>\n</new-activity>";
+    let p = with_workspace_note(text, "The local branch b is 1 commit(s) ahead of origin/b.");
+    assert_eq!(
+        p,
+        "[ssf] New activity on #5\n\n<workspace-note>\nThe local branch b is 1 commit(s) ahead \
+of origin/b.\n</workspace-note>\n\n<new-activity>\n<event>\n- x\n</event>\n</new-activity>"
+    );
+    assert_eq!(p.matches("[ssf]").count(), 1);
+    let p = with_workspace_note("[ssf] Handover to Pi refused: gone.", "n");
+    assert_eq!(
+        p,
+        "[ssf] Handover to Pi refused: gone.\n\n<workspace-note>\nn\n</workspace-note>"
+    );
 }

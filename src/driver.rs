@@ -171,8 +171,9 @@ const SETUP_TAIL_LINES: usize = 32;
 /// a pasted prompt, the item's description, activity delivered from the
 /// item, where a person may well have quoted the phrase -- is relayed
 /// under that marker, and an echo carries `[ssf]` from its first line
-/// through the bullet, quote and tag lines (`- `, `> `, `<github-event>`)
-/// that follow it. Every
+/// through the bullet, quote and tag lines (`- `, `> `, `<event>`) that
+/// follow it and every line inside ssf's section tags
+/// (`<ssf-instructions>`, `<description>`, ...). Every
 /// string ssf itself writes into a terminal or that agents read stays
 /// free of these phrases (`prompt::login_back_prompt`, the `blocked` and
 /// `unblocked` event posts, `BlockedView::describe`, `SessionBlocked`),
@@ -218,6 +219,9 @@ fn dialog_candidates(screen: &str, limit: usize) -> Vec<&str> {
     let tail: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
     let start = tail.len().saturating_sub(limit);
     let mut in_echo = false;
+    // How many of ssf's section tags the echo has open: every line inside
+    // one (`<ssf-instructions>` prose, a description, an event) is ssf's.
+    let mut open = 0usize;
     // Read echo boundaries before trimming the window: a long echoed
     // wizard can put its [ssf] marker above the login tail.
     tail.iter()
@@ -227,12 +231,21 @@ fn dialog_candidates(screen: &str, limit: usize) -> Vec<&str> {
             let l = raw.trim();
             if l.contains("[ssf]") {
                 in_echo = true;
+                open = 0;
                 return false;
             }
             let quoted = l.starts_with("> ") && raw.len() > l.len();
-            // ssf's tags around relayed events (`<history>`,
-            // `<github-event ...>`, `</github-event>`) carry the echo on.
-            let continues = l.starts_with('-') || l.starts_with('>') || l.starts_with('<');
+            if in_echo {
+                match section_tag(l) {
+                    Some(Tag::Open) => open += 1,
+                    Some(Tag::Close) => open = open.saturating_sub(1),
+                    Some(Tag::Whole) | None => {}
+                }
+            }
+            // Bullet, quote and tag lines carry the echo on, and so does
+            // any line inside one of ssf's sections.
+            let continues =
+                open > 0 || l.starts_with('-') || l.starts_with('>') || l.starts_with('<');
             if quoted || (in_echo && continues) {
                 return false;
             }
@@ -241,6 +254,54 @@ fn dialog_candidates(screen: &str, limit: usize) -> Vec<&str> {
         })
         .map(|(_, raw)| raw.trim())
         .collect()
+}
+
+/// The section tags ssf frames its messages with (`prompt::section`).
+const SSF_TAGS: &[&str] = &[
+    "ssf-instructions",
+    "global-guidance",
+    "global-harness-guidance",
+    "repository-guidance",
+    "harness-guidance",
+    "handover-summary",
+    "workspace-note",
+    "issue",
+    "pull-request",
+    "project-boards",
+    "description",
+    "history",
+    "new-activity",
+    "event",
+    "omitted",
+];
+
+enum Tag {
+    /// `<tag>` or `<tag file="..">` on a line of its own.
+    Open,
+    /// `</tag>` on a line of its own.
+    Close,
+    /// A section opened and closed on one line (`<omitted>..</omitted>`).
+    Whole,
+}
+
+/// Whether `line` (trimmed) opens or closes one of ssf's sections.
+fn section_tag(line: &str) -> Option<Tag> {
+    let name_of = |rest: &str| {
+        let end = rest.find(['>', ' ']).unwrap_or(rest.len());
+        SSF_TAGS.contains(&&rest[..end]).then_some(())
+    };
+    if let Some(rest) = line.strip_prefix("</") {
+        return name_of(rest).map(|_| Tag::Close);
+    }
+    let rest = line.strip_prefix('<')?;
+    name_of(rest)?;
+    if line.contains("</") {
+        Some(Tag::Whole)
+    } else if line.ends_with('>') {
+        Some(Tag::Open)
+    } else {
+        None
+    }
 }
 
 /// Would `text`, shown at the bottom of any harness's screen, pass for

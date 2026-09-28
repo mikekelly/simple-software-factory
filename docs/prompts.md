@@ -6,32 +6,37 @@ The prompts ssf writes: the first message an agent gets, the catch-up story and 
 
 ssf's own prompting is the bare functional minimum: what ssf owns, plus every
 affordance a session needs for coherent work, since reading the guide is not
-guaranteed. The initial prompt opens with `[ssf]`, like later event deliveries,
-and with "How to work on this":
+guaranteed. Every message ssf delivers into an agent is one lead line starting
+`[ssf]`, then plain tags on lines of their own that mark its sections, with
+nothing loose between them. The initial prompt opens with its lead line and
+`<ssf-instructions>`:
 
 ```
 [ssf] Simple Software Factory (ssf) spawned you as a coding agent for the GitHub account @bot, through the herdr multiplexer, into a worktree of this repository, because #16 was assigned to @bot.
 
-## How to work on this
-
+<ssf-instructions>
 You are a remote colleague working this issue to delivery: clarify on it until the outcome is unambiguous, deliver (a pull request, a review, an answer), and let the people on it decide and review on GitHub. New activity on it arrives here as messages prefixed `[ssf]`; act on them. This terminal is unmanned: what a person, or another session, should see goes on the issue as a GitHub comment. Say there what you are about to do, and when you need a decision or have delivered.
 
 - Posts are read on GitHub: write GitHub Flavored Markdown, link the exact lines you mean (pinned to a commit), and use tables, Mermaid diagrams, task lists, `<details>` for long output, and screenshots or wireframes where they make a decision easier. Collaborators are remote: a live demo needs an address they can reach.
 - `gh` and `git push` already act as @bot; your posts are marked as this session's. Act only as @bot; never use another account, token or key you find on this machine.
 - `--assignee bot` on a `gh` create gives the new item a session of its own; `ssf sub` follows another item; `ssf handover` passes this one to another harness; `ssf release` retires this workspace; `ssf doctor` checks the machine. `ssf guide` is the reference behind all of this.
+</ssf-instructions>
 ```
 
-After that block come ssf's own guidance additions, the operator's
-instructions and the global, repository and harness guidance files (below),
-and then the item, under its own `[ssf]` header: title with URL, project
-boards, description, and what has most recently happened on it. The item's own
+The operator's and the repository's configured instructions end the
+`<ssf-instructions>` section. Each guidance file follows in a section of its
+own, named after the file so its headings cannot mix with ssf's:
+`<global-guidance file="~/.ssf/SSF.md">`, `<global-harness-guidance
+file="~/.ssf/SSF.<harness>.md">`, `<repository-guidance file="SSF.md">` and
+`<harness-guidance file="SSF.<harness>.md">`. Then comes the item, in
+`<issue>` or `<pull-request>`: its header lines (title with URL, who opened it
+and when, labels or branches), `<project-boards>` and `<description>`; and then
+`<history>`, what has most recently happened on it. The item's own
 words, the description and every comment body, are relayed under an indented
 `> ` marker: the marker says whose words these are and keeps a line of them (a
 sign-in phrase someone quoted, say) from being read as ssf's own, both here and
 on a harness screen. A session therefore reads what it is being asked to do
-before the material that applies to it, and the `[ssf]` marker on the item's
-header keeps the item's Markdown from colliding with harness composer
-shortcuts.
+before the material that applies to it.
 
 ## The lines that vary
 
@@ -53,10 +58,9 @@ factory inside a [microVM](vm.md) adds one saying the agent has root there
 through `sudo`.
 
 An item that was [handed over](sessions.md#handover) starts its new session with
-the same story, prefaced by what the outgoing session left: a line naming the
-harness it came from, then the summary verbatim under a `## Summary from the
-outgoing session` heading, or, after `--no-summary`, a line saying it left none
-and to read the issue below. The story's reason then reads "because the agent
+the same story, with a `<handover-summary>` section right after its lead line:
+a line naming the harness it came from, then the summary verbatim, or, after
+`--no-summary`, a line saying it left none and to read the issue below. The story's reason then reads "because the agent
 session on <harness> working on it handed #N over to you".
 
 ## What SSF.md must not repeat
@@ -79,10 +83,14 @@ repeated on every message.
 
 ## The messages an agent receives
 
-Every later message starts with `[ssf]` too: item activity, lifecycle changes,
+Every later message has the same shape: item activity, lifecycle changes,
 tracking and FYI notices, refusals and restart notices. `ssf guide` lists them
-for the agent, and follow-up messages carry the activity and at most one line
-after it. Every message names its item once: `#N "title"` with the URL on first
+for the agent. A follow-up is its lead line (`[ssf] New activity on #N`),
+`<new-activity>`, and at most a short `<ssf-instructions>` after it; notices are
+their lead line and `<ssf-instructions>`; tracking and FYI messages carry
+`<history>` or `<new-activity>` and then `<ssf-instructions>`. When ssf had to
+re-create the session's workspace, a `<workspace-note>` section follows the
+lead line of whatever message it delivers next. Every message names its item once: `#N "title"` with the URL on first
 mention, `#N` alone in later messages about the session's own item;
 cross-repository references are `owner/repo#N`, which GitHub links. Timestamps
 are `2026-09-04 17:40Z`, or `17:40Z` when the date is today's.
@@ -92,8 +100,7 @@ item, the first session, a restart whose harness cannot resume its
 conversation, a handover, a reassignment, is given the item's story before the
 message that prompted it. That story is the one view in which the bot's earlier
 posts are replayed, so the new session can read what was already said and
-promised. It arrives under `## History (before this session started)`, with a
-lead line saying that everything in it predates this session, that the bot's
+promised. It arrives in `<history>`, opening with lines saying that everything in it predates this session, that the bot's
 posts there were earlier sessions' (context, not commitments), and to act on the
 latest request; when the item was closed and reopened, or handed over, a line says
 so and to check the previous session's branch and pull request before starting
@@ -101,9 +108,10 @@ over. Live follow-up messages leave the bot's own posts out.
 
 Relayed events are delimited so ssf's words and the item's cannot blur: the
 story's events are wrapped in `<history>`...`</history>`, a later message's in
-`<new-activity>`...`</new-activity>`, and each event in
-`<github-event kind="commented" actor="@ann" at="2026-09-04T17:40:00Z">`...`</github-event>`.
-ssf's own lines keep their plain `[ssf]` prefix outside the tags.
+`<new-activity>`...`</new-activity>`, and each event in a plain
+`<event>`...`</event>`; its first line already says what happened, who did it
+and when, so the tag carries no attributes. Tags carry an attribute only to
+name what their content does not, the file a guidance section comes from.
 
 A busy item holds more than a session should be handed before it has done any
 work, and most of it does not bear on what brought the session up, so the story
@@ -113,7 +121,7 @@ and `daemon.first_prompt_max_chars` (per-repository overrides of the same names;
 `0` is no limit). Both are spent newest first, so the event that started the
 session is always included, an update aggregated out of many comment bodies may
 pass the character budget on its own. What was left out is said in ssf's own
-words, above the events and outside the quoted item, with how many events and
+words, in an `<omitted>` line inside `<history>` above the events, with how many events and
 how to read the rest (`gh issue view N --comments`, or the timeline API); those
 events are never delivered later. A description passes no such cap: GitHub
 refuses a body past 65,536 characters, so it cannot pass a session's window on

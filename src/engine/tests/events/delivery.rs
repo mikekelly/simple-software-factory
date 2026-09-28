@@ -146,7 +146,7 @@ async fn an_item_assigned_again_is_told_its_own_posts() {
         prompts[0]
     );
     assert!(
-        prompts[0].contains("## History (before this session started)"),
+        prompts[0].contains("\n<history>\n"),
         "and the item's own story with it: {}",
         prompts[0]
     );
@@ -244,8 +244,17 @@ async fn a_handover_without_a_summary_says_so() {
     e.run_handovers(&repo()).await;
     let log = d.log();
     assert!(
-        log[1].starts_with("start:w5:You took over this issue from a session on Claude"),
+        log[1].starts_with("start:w5:[ssf] Simple Software Factory"),
         "{log:?}"
+    );
+    let prompts = d.prompts();
+    assert!(
+        prompts[0].contains(
+            "<handover-summary>\nYou took over this issue from a session on Claude Code that \
+handed it over. It left no summary"
+        ),
+        "{}",
+        prompts[0]
     );
     assert_eq!(
         e.entry(&repo(), 5).overrides,
@@ -607,7 +616,7 @@ async fn a_handover_the_pass_cannot_carry_out_is_refused_on_the_item() {
     assert_eq!(log.len(), 1, "{log:?}");
     assert_eq!(
         log[0],
-        "deliver:w5:[ssf] Handover to Pi refused: the item is no longer active. "
+        "deliver:w5:[ssf] Handover to Pi refused: the item is no longer active."
     );
     let posts = stub.post_bodies();
     assert_eq!(posts.len(), 1, "{posts:?}");
@@ -651,5 +660,8 @@ async fn a_pending_handover_survives_a_restart() {
     );
     let log = d.log();
     assert_eq!(log[0], "stop:t5", "{log:?}");
-    assert!(log[1].starts_with("start:w5:You took over"), "{log:?}");
+    assert!(
+        log[1].starts_with("start:w5:[ssf] Simple Software Factory"),
+        "{log:?}"
+    );
 }

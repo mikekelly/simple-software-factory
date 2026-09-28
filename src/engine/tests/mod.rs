@@ -775,7 +775,7 @@ fn untagged_listed(n: u64, state: &str) -> Value {
 // ---- sessions blocked on a login ------------------------------------
 
 const LOGIN_SCREEN: &[&str] = &[
-    "❯ [ssf] New activity on #5:",
+    "❯ [ssf] New activity on #5",
     "",
     "  Login expired · Please run /login",
     "",

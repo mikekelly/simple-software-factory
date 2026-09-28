@@ -7,10 +7,12 @@ fn cfg() -> DaemonConfig {
 
 /// A first prompt split where the item's own part begins: what ssf tells
 /// the agent (its prompt and the guidance that follows it), then the
-/// header and the item's content.
+/// item's own section, from its opening tag.
 fn split_item(prompt: &str) -> (&str, &str) {
     let at = prompt
-        .find("[ssf] GitHub ")
+        .find("\n<issue>\n")
+        .or_else(|| prompt.find("\n<pull-request>\n"))
+        .map(|at| at + 1)
         .unwrap_or_else(|| panic!("no item header in:\n{prompt}"));
     prompt.split_at(at)
 }

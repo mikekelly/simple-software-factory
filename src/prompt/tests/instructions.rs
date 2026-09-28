@@ -101,7 +101,7 @@ fn initial_prompt_mentions_bot_and_issue() {
         "a leading # is a prompt action in OMP: {p}"
     );
     assert!(item.starts_with(
-            "[ssf] GitHub issue #3: Add thing\nhttps://gh/3\n\nOpened by @carol on 2026-01-01 00:00Z. Labels: feature.\n"
+            "<issue>\nGitHub issue #3: Add thing\nhttps://gh/3\n\nOpened by @carol on 2026-01-01 00:00Z. Labels: feature.\n"
         ), "{p}");
     // The item is named once: the header has the URL, the reason has `#3`.
     assert_eq!(p.matches("https://gh/3").count(), 1);
@@ -112,7 +112,7 @@ fn initial_prompt_mentions_bot_and_issue() {
             "[ssf] Simple Software Factory (ssf) spawned you as a coding agent for the GitHub \
 account @bot, through the herdr multiplexer, into a worktree of this repository, because #3 was \
 assigned to @bot.\n\n\
-## How to work on this\n\n\
+<ssf-instructions>\n\
 You are a remote colleague working this issue to delivery: clarify on it until the outcome is \
 unambiguous, deliver (a pull request, a review, an answer), and let the people on it decide and \
 review on GitHub. New activity on it arrives here as messages prefixed `[ssf]`; act on them. \
@@ -131,8 +131,8 @@ workspace; `ssf doctor` checks the machine. `ssf guide` is the reference behind 
         ),
         "{p}"
     );
-    assert!(item.contains("## Description\n\n  > Please add"), "{p}");
-    assert!(!how.contains("## Description"), "{p}");
+    assert!(item.contains("<description>\n  > Please add"), "{p}");
+    assert!(!how.contains("<description>"), "{p}");
     // Branches and worktrees are the agent's own business, the byline's
     // mechanics are the guide's, and the PR conventions (reference the
     // issue, do not close it, do not merge) are the repository's.
@@ -182,7 +182,11 @@ workspace; `ssf doctor` checks the machine. `ssf guide` is the reference behind 
     assert!(!p.contains("handed off to you"));
     // The repository's own instructions close the guidance, before the
     // item begins.
-    assert!(how.trim_end().ends_with("Run the tests."), "{p}");
+    assert!(
+        how.trim_end()
+            .ends_with("Run the tests.\n</ssf-instructions>"),
+        "{p}"
+    );
 
     let ctx = PromptContext {
         global_prompt: Some(ProjectPrompt {
@@ -203,9 +207,11 @@ workspace; `ssf doctor` checks the machine. `ssf guide` is the reference behind 
     };
     let p = initial_prompt(&issue, &[], &ctx);
     assert!(p.contains(
-        "## Global SSF agent guidance (`~/.ssf/SSF.md`)\n\nThis machine is private.\n\n\
-## Global harness guidance (`~/.ssf/SSF.claude.md`)\n\nUse the machine Claude account.\n\n\
-Run the tests.\n\n## SSF agent guidance (`SSF.md`)\n\nCards go to Review"
+        "Run the tests.\n</ssf-instructions>\n\n\
+<global-guidance file=\"~/.ssf/SSF.md\">\nThis machine is private.\n</global-guidance>\n\n\
+<global-harness-guidance file=\"~/.ssf/SSF.claude.md\">\nUse the machine Claude account.\n\
+</global-harness-guidance>\n\n\
+<repository-guidance file=\"SSF.md\">\nCards go to Review"
     ));
     assert!(!p.contains("They say"));
     let ctx = PromptContext {
@@ -216,7 +222,7 @@ Run the tests.\n\n## SSF agent guidance (`SSF.md`)\n\nCards go to Review"
         ..ctx
     };
     let p = initial_prompt(&issue, &[], &ctx);
-    assert!(p.contains("Cards go to Review when a PR is open.\n\n## Harness guidance (`SSF.codex.md`)\n\nUse native subagents."));
+    assert!(p.contains("Cards go to Review when a PR is open.\n</repository-guidance>\n\n<harness-guidance file=\"SSF.codex.md\">\nUse native subagents.\n</harness-guidance>"));
     let harness_only = PromptContext {
         project_prompt: None,
         ..ctx.clone()
@@ -292,7 +298,6 @@ fn the_prompt_states_the_rules_before_the_item() {
         pushes_as: None,
     };
     let ev = Rendered {
-        actor: None,
         at: None,
         key: "k".into(),
         text: "- [t] @alice commented (https://gh/7#c1):\n  > go".into(),
@@ -307,13 +312,13 @@ fn the_prompt_states_the_rules_before_the_item() {
     };
     let order = [
         "[ssf] Simple Software Factory",
-        "## How to work on this",
-        "## SSF agent guidance (`SSF.md`)",
-        "## Harness guidance (`SSF.claude.md`)",
-        "[ssf] GitHub issue #7",
-        "## Project boards",
-        "## Description",
-        "## History (before this session started)",
+        "<ssf-instructions>",
+        "<repository-guidance file=\"SSF.md\">",
+        "<harness-guidance file=\"SSF.claude.md\">",
+        "<issue>\nGitHub issue #7",
+        "<project-boards>",
+        "<description>",
+        "<history>",
     ];
     let mut last = 0;
     for (i, needle) in order.iter().enumerate() {
@@ -327,11 +332,7 @@ fn the_prompt_states_the_rules_before_the_item() {
     // Only the item's own part is after the guidance; the guidance names
     // no item content.
     let (how, item) = split_item(&p);
-    for item_part in [
-        "## Description",
-        "## History (before this session started)",
-        "## Project boards",
-    ] {
+    for item_part in ["<description>", "<history>", "<project-boards>"] {
         assert!(!how.contains(item_part), "{p}");
         assert!(item.contains(item_part), "{p}");
     }
@@ -385,8 +386,9 @@ fn a_sign_in_phrase_in_the_description_is_not_a_login_prompt() {
     // the marker; nothing is dropped.
     assert!(
         p.contains(
-            "\n\n## Description\n\n  > The pane kept saying:\n  > \n  > Login expired · Please \
-run /login\n  > \n  > so I gave up.\n\n## History (before this session started)\n\n(no activity yet)\n"
+            "\n\n<description>\n  > The pane kept saying:\n  > \n  > Login expired · Please \
+run /login\n  > \n  > so I gave up.\n</description>\n</issue>\n\n<history>\n(no activity yet)\n\
+</history>\n"
         ),
         "{p}"
     );
@@ -450,7 +452,6 @@ fn initial_prompt_is_the_bare_minimum() {
         pushes_as: None,
     };
     let ev = Rendered {
-        actor: None,
         at: None,
         key: "k".into(),
         text: "- [2026-09-04T20:45:16Z] @OverlayBot assigned @OverlayBot".into(),
@@ -465,11 +466,11 @@ fn initial_prompt_is_the_bare_minimum() {
         p.chars().count()
     );
     // The board rule sits with the boards, not among the instructions.
-    let boards = &p[p.find("## Project boards").unwrap()..p.find("## Description").unwrap()];
+    let boards = &p[p.find("<project-boards>").unwrap()..p.find("<description>").unwrap()];
     assert!(boards.contains("Keep the card's Status accurate; which column fits is your call."));
     let (how, _) = split_item(&p);
     assert!(
-        how.contains("## How to work on this"),
+        how.contains("<ssf-instructions>"),
         "the instructions are the prompt's opening: {p}"
     );
     assert!(!how.contains("card"));
@@ -730,25 +731,20 @@ fn initial_prompt_lists_project_boards_without_prescribing_columns() {
         pushes_as: None,
     };
     let p = initial_prompt(&issue, &[], &ctx);
-    assert!(p.contains("## Project boards\n\n- Roadmap (https://gh/p/1): Status is \"Todo\". Options: \"Todo\", \"In Progress\".\n"));
+    assert!(p.contains("<project-boards>\n- Roadmap (https://gh/p/1): Status is \"Todo\". Options: \"Todo\", \"In Progress\".\n"));
     assert!(p.contains(
             "`gh project item-edit --project-id PVT_1 --id PVTI_1 --field-id PVTSSF_1 --single-select-option-id <option id>`, where \"Todo\" = a1, \"In Progress\" = b2."
         ));
     assert!(p.contains(
         "- Bare (https://gh/p/2): this board has no Status field.\n\nKeep the card's Status \
-accurate; which column fits is your call.\n\n## Description"
+accurate; which column fits is your call.\n</project-boards>\n\n<description>"
     ));
     assert!(!p.contains("never moves cards"));
     // The item's own part, in the order a message reads it: header and
     // boards, then the description and the activity.
     let (how, item) = split_item(&p);
-    assert!(item.find("## Project boards").unwrap() < item.find("## Description").unwrap());
-    assert!(
-        item.find("## Description").unwrap()
-            < item
-                .find("## History (before this session started)")
-                .unwrap()
-    );
+    assert!(item.find("<project-boards>").unwrap() < item.find("<description>").unwrap());
+    assert!(item.find("<description>").unwrap() < item.find("<history>").unwrap());
     // No column is prescribed for any situation: the option names appear
     // only in the board listing, never in the instructions.
     assert!(!how.contains("card"));
@@ -759,7 +755,7 @@ accurate; which column fits is your call.\n\n## Description"
         ..ctx
     };
     let p = initial_prompt(&issue, &[], &none);
-    assert!(!p.contains("Project boards"));
+    assert!(!p.contains("project-boards"));
     assert!(!p.contains("gh project item-edit"));
 }
 

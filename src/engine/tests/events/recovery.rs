@@ -446,7 +446,7 @@ async fn a_handover_replaces_the_session_in_the_same_workspace() {
     let log = d.log();
     assert_eq!(log[0], "stop:t5", "{log:?}");
     assert!(
-        log[1].starts_with("start:w5:You took over this issue from a session on Claude"),
+        log[1].starts_with("start:w5:[ssf] Simple Software Factory"),
         "{log:?}"
     );
     assert_eq!(log.len(), 2, "{log:?}");

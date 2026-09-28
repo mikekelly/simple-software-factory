@@ -289,11 +289,9 @@ fn short_ref(issue: &Issue, ctx: &PromptContext) -> String {
     }
 }
 
-/// The header of a first message: the `[ssf]` event marker, the item named
-/// once with its URL, and the facts that the rest of the message does not
-/// repeat. The marker opens the item's own part of the message, after the
-/// prompt and guidance ssf puts in front of it; it is also what keeps the
-/// item's Markdown out of the harness's composer actions.
+/// The header of a first message's `<issue>` or `<pull-request>` section:
+/// the item named once with its URL, and the facts that the rest of the
+/// message does not repeat.
 fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
     let labels: Vec<&str> = issue.labels.iter().map(|l| l.name.as_str()).collect();
     // The header keeps the full date: it is the anchor for the day-less
@@ -309,7 +307,7 @@ fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
         .unwrap_or_default();
     let mut s = match ctx.pr {
         Some(pr) => format!(
-            "[ssf] GitHub pull request #{}: {}\n{}\n\nBranch `{}` into `{}`{}{}. Opened by @{}{session} on {opened}.",
+            "GitHub pull request #{}: {}\n{}\n\nBranch `{}` into `{}`{}{}. Opened by @{}{session} on {opened}.",
             issue.number,
             issue.title,
             issue.html_url,
@@ -324,7 +322,7 @@ fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
             issue.author(),
         ),
         None => format!(
-            "[ssf] GitHub issue #{}: {}\n{}\n\nOpened by @{}{session} on {opened}.",
+            "GitHub issue #{}: {}\n{}\n\nOpened by @{}{session} on {opened}.",
             issue.number,
             issue.title,
             issue.html_url,
@@ -344,7 +342,7 @@ fn project_boards(ctx: &PromptContext) -> String {
     if ctx.projects.is_empty() {
         return String::new();
     }
-    let mut s = String::from("\n\n## Project boards\n\n");
+    let mut s = String::new();
     for card in ctx.projects {
         s.push_str(&format!("- {} ({}): ", card.title, card.url));
         match (&card.status, &card.status_field_id) {
@@ -379,8 +377,8 @@ fn project_boards(ctx: &PromptContext) -> String {
         }
         s.push('\n');
     }
-    s.push_str("\nKeep the card's Status accurate; which column fits is your call.\n");
-    s.trim_end().to_string()
+    s.push_str("\nKeep the card's Status accurate; which column fits is your call.");
+    format!("\n\n{}", section("project-boards", &s))
 }
 
 /// The tag around a first message's replay of the item's timeline.
@@ -388,41 +386,68 @@ const HISTORY: &str = "history";
 /// The tag around the events a later message delivers.
 const NEW_ACTIVITY: &str = "new-activity";
 
-/// An attribute value as a tag carries it: only characters that cannot
-/// end the value or the tag.
-fn attr(v: &str) -> String {
-    v.chars()
-        .filter(|c| !matches!(c, '"' | '<' | '>' | '&') && !c.is_control())
-        .collect()
+/// `body` as a section of a message: `<tag>` and `</tag>` on lines of their
+/// own around it. Every part of a message after its `[ssf]` lead line is
+/// one of these, so where each part starts and ends cannot blur.
+fn section(tag: &str, body: &str) -> String {
+    format!("<{tag}>\n{}\n</{tag}>", body.trim_end())
 }
+
+/// `body` as a section named after the file it comes from: the only
+/// attribute a section carries, since the file is not in its content.
+fn file_section(tag: &str, file: &str, body: &str) -> String {
+    let file: String = file
+        .chars()
+        .filter(|c| !matches!(c, '"' | '<' | '>' | '&') && !c.is_control())
+        .collect();
+    format!("<{tag} file=\"{file}\">\n{}\n</{tag}>", body.trim_end())
+}
+
+/// ssf's own words to the agent, as the section that follows a lead line.
+fn instructions_section(body: &str) -> String {
+    section(SSF_INSTRUCTIONS, body)
+}
+
+/// The tag around what ssf tells the agent to do.
+const SSF_INSTRUCTIONS: &str = "ssf-instructions";
 
 /// One relayed GitHub event, delimited so that where ssf's words end and
-/// the item's begin cannot blur: `<github-event kind=".." actor="@.."
-/// at="..">`, the rendered lines, `</github-event>`.
+/// the item's begin cannot blur: `<event>`, the rendered lines, which
+/// already name the kind, actor and time, `</event>`.
 fn event_block(e: &Rendered) -> String {
-    let mut open = String::from("<github-event");
-    let kind = e.key.split(':').next().unwrap_or("");
-    if !kind.is_empty() {
-        open.push_str(&format!(" kind=\"{}\"", attr(kind)));
-    }
-    if let Some(actor) = e.actor.as_deref().filter(|a| !a.is_empty()) {
-        open.push_str(&format!(" actor=\"@{}\"", attr(actor)));
-    }
-    if let Some(at) = e.at.as_deref().filter(|a| !a.is_empty()) {
-        open.push_str(&format!(" at=\"{}\"", attr(at)));
-    }
-    format!("{open}>\n{}\n</github-event>", e.text)
+    section("event", &e.text)
 }
 
-/// `events` as a `<tag>` block of `event_block`s, ending with a newline.
-fn wrapped(tag: &str, events: &[Rendered]) -> String {
-    let mut s = format!("<{tag}>\n");
+/// `events` as a `<tag>` block of `event_block`s, `lead` (ssf's words about
+/// them, if any) first. No events reads `empty`.
+fn events_section(tag: &str, lead: &str, events: &[Rendered], empty: &str) -> String {
+    let mut s = lead.to_string();
+    if events.is_empty() {
+        s.push_str(empty);
+        s.push('\n');
+    }
     for e in events {
         s.push_str(&event_block(e));
         s.push('\n');
     }
-    s.push_str(&format!("</{tag}>\n"));
-    s
+    section(tag, &s)
+}
+
+/// `text` (a message: its `[ssf]` lead line, then its sections) with
+/// `extra` as the first section after the lead line, so the message keeps
+/// its one `[ssf]` marker.
+fn with_section_after_lead(text: &str, extra: &str) -> String {
+    match text.split_once('\n') {
+        Some((lead, rest)) => format!("{lead}\n\n{extra}\n\n{}", rest.trim_start_matches('\n')),
+        None => format!("{text}\n\n{extra}"),
+    }
+}
+
+/// A delivery with the note ssf adds when it re-created the session's
+/// workspace (a branch kept ahead of origin, say): a `<workspace-note>`
+/// section after the message's lead line.
+pub fn with_workspace_note(text: &str, note: &str) -> String {
+    with_section_after_lead(text, &section("workspace-note", note))
 }
 
 /// What a first message says above the replayed history: that all of it
@@ -463,18 +488,18 @@ for its branch and pull request before starting over.\n"
     s
 }
 
-/// A message: `head`, then the events under a blank line (when there are
-/// any), then `tail` under another; no stray blank lines when a part is
-/// empty.
+/// A message: `head` (its `[ssf]` lead line), then the events in a
+/// `<new-activity>` section (when there are any), then `tail` in an
+/// `<ssf-instructions>` section (when there is one).
 fn assemble(head: &str, events: &[Rendered], tail: &str) -> String {
     let mut s = head.to_string();
     if !events.is_empty() {
         s.push_str("\n\n");
-        s.push_str(&wrapped(NEW_ACTIVITY, events));
+        s.push_str(&events_section(NEW_ACTIVITY, "", events, ""));
     }
     if !tail.is_empty() {
-        s.push_str(if events.is_empty() { "\n\n" } else { "\n" });
-        s.push_str(tail);
+        s.push_str("\n\n");
+        s.push_str(&instructions_section(tail));
     }
     s
 }
@@ -486,15 +511,11 @@ fn assemble(head: &str, events: &[Rendered], tail: &str) -> String {
 /// it applies to.
 pub fn initial_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let mut s = instructions(issue, ctx);
-    // `instructions` ends with one newline; this makes the blank line
-    // before the item.
-    s.push('\n');
-    s.push_str(&issue_header(issue, ctx));
-    s.push_str(&project_boards(ctx));
-    s.push_str("\n\n## Description\n\n");
+    let mut item = issue_header(issue, ctx);
+    item.push_str(&project_boards(ctx));
     let body = origin::strip(issue.body.as_deref().unwrap_or(""));
     let body = body.trim();
-    s.push_str(&if body.is_empty() {
+    let description = if body.is_empty() {
         "(no description)".to_string()
     } else {
         // The description is the item author's text, quoted the way a
@@ -503,26 +524,26 @@ pub fn initial_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
         // ends with the item, so the description sits where a harness
         // draws its own dialog (#372).
         quote_lines(body)
-    });
-    s.push_str("\n\n## History (before this session started)\n\n");
+    };
+    item.push_str("\n\n");
+    item.push_str(&section("description", &description));
+    let tag = if ctx.pr.is_some() {
+        "pull-request"
+    } else {
+        "issue"
+    };
+    s.push_str("\n\n");
+    s.push_str(&section(tag, &item));
     let (shown, omitted) = first_prompt_events(events, ctx);
     // The handover and reopen callouts hold even with no events shown.
-    let lead = history_lead(issue, events, ctx, !shown.is_empty());
-    if shown.is_empty() {
-        if !lead.is_empty() {
-            s.push_str(&lead);
-            s.push('\n');
-        }
-        s.push_str("(no activity yet)\n");
-        return s;
-    }
-    s.push_str(&lead);
+    let mut lead = history_lead(issue, events, ctx, !shown.is_empty());
     if let Some(note) = omitted_notice(issue, ctx, shown.len(), omitted) {
-        s.push_str(&note);
-        s.push('\n');
+        lead.push_str(&note);
+        lead.push('\n');
     }
+    s.push_str("\n\n");
+    s.push_str(&events_section(HISTORY, &lead, shown, "(no activity yet)"));
     s.push('\n');
-    s.push_str(&wrapped(HISTORY, shown));
     s
 }
 
@@ -592,17 +613,18 @@ fn omitted_notice(
         format!("The {shown} newest follow below.")
     };
     Some(format!(
-        "ssf note: this {kind} carries more history than this first message: {left} {follow} Read \
+        "<omitted>This {kind} carries more history than this first message: {left} {follow} Read \
 the rest from the {kind} itself when the work needs it -- `gh {view} view {n} --comments` for the \
 comments, `gh api repos/{repo}/issues/{n}/timeline` for every event -- rather than reading all of \
-it, which can fill this session's context."
+it, which can fill this session's context.</omitted>"
     ))
 }
 
-/// ssf's own prompt: what ssf is, how it spawned this session and the rules
-/// ssf owns, then the guidance the operator and the repository add to it.
-/// Its last line is a newline, so callers can append a part after a blank
-/// line.
+/// ssf's own prompt: the lead line saying what ssf is and how it spawned
+/// this session, the rules ssf owns (with the operator's and the
+/// repository's configured instructions) in `<ssf-instructions>`, then
+/// each guidance file in a section of its own. It ends with a closing
+/// tag and no newline.
 fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     let n = issue.number;
     let repo = &ctx.repo.name;
@@ -627,7 +649,7 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     let mut s = format!(
         "[ssf] Simple Software Factory (ssf) spawned you as a coding agent for the GitHub \
 account @{bot}, through {multiplexer}, into a worktree of this repository, because {}.\n\n\
-## How to work on this\n\n\
+<ssf-instructions>\n\
 You are a remote colleague working this {kind} to delivery: clarify on it until the outcome is \
 unambiguous, deliver (a pull request, a review, an answer), and let the people on it decide and \
 review on GitHub. New activity on it arrives here as messages prefixed `[ssf]`; act on them. \
@@ -674,50 +696,40 @@ comment is all it gets, so sum up the outcome.\n"
     s
 }
 
-/// The operator's and the repository's own instructions, after ssf's.
+/// The operator's and the repository's configured instructions, which end
+/// the `<ssf-instructions>` section, then each guidance file in a section
+/// of its own named after the file, so a file's own headings cannot mix
+/// with ssf's.
 fn extras(ctx: &PromptContext) -> String {
     let mut s = String::new();
-    if let Some(extra) = ctx.daemon.instructions.as_deref() {
+    for extra in [
+        ctx.daemon.instructions.as_deref(),
+        ctx.repo.instructions.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
         s.push('\n');
         s.push_str(extra.trim());
         s.push('\n');
     }
-    if let Some(pp) = ctx.global_prompt.as_ref() {
-        s.push_str(&format!(
-            "\n## Global SSF agent guidance (`{}`)\n\n",
-            pp.source
-        ));
-        s.push_str(&pp.text);
-        s.push('\n');
-    }
-    if let Some(pp) = ctx.global_harness_prompt.as_ref() {
-        s.push_str(&format!(
-            "\n## Global harness guidance (`{}`)\n\n",
-            pp.source
-        ));
-        s.push_str(&pp.text);
-        s.push('\n');
-    }
-    if let Some(extra) = ctx.repo.instructions.as_deref() {
-        s.push('\n');
-        s.push_str(extra.trim());
-        s.push('\n');
-    }
-    if let Some(pp) = ctx.project_prompt.as_ref() {
-        s.push_str(&format!("\n## SSF agent guidance (`{}`)\n\n", pp.source));
-        s.push_str(&pp.text);
-        s.push('\n');
-    }
-    if let Some(pp) = ctx.harness_prompt.as_ref() {
-        s.push_str(&format!("\n## Harness guidance (`{}`)\n\n", pp.source));
-        s.push_str(&pp.text);
-        s.push('\n');
+    s.push_str(&format!("</{SSF_INSTRUCTIONS}>"));
+    for (tag, pp) in [
+        ("global-guidance", &ctx.global_prompt),
+        ("global-harness-guidance", &ctx.global_harness_prompt),
+        ("repository-guidance", &ctx.project_prompt),
+        ("harness-guidance", &ctx.harness_prompt),
+    ] {
+        if let Some(pp) = pp {
+            s.push_str("\n\n");
+            s.push_str(&file_section(tag, &pp.source, &pp.text));
+        }
     }
     s
 }
 
 pub fn followup_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
-    let head = format!("[ssf] New activity on {}:", short_ref(issue, ctx));
+    let head = format!("[ssf] New activity on {}", short_ref(issue, ctx));
     let tail = owned_tail(issue, events, ctx).unwrap_or_default();
     assemble(&head, events, &tail)
 }
@@ -761,31 +773,30 @@ pub fn tracked_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
             ctx.because_of(&human)
         ));
     }
-    s.push_str("\n\nHistory so far (before this message):\n\n");
     let (shown, omitted) = first_prompt_events(events, ctx);
+    let mut lead = String::new();
     if let Some(note) = omitted_notice(issue, ctx, shown.len(), omitted) {
-        s.push_str(&note);
-        s.push('\n');
+        lead.push_str(&note);
+        lead.push('\n');
     }
-    if shown.is_empty() {
-        s.push_str("(no activity yet)\n");
-    } else {
-        s.push_str(&wrapped(HISTORY, shown));
-    }
-    match ctx.pr {
-        Some(pr) if pr.same_repo(&ctx.repo.name) => s.push_str(&format!(
-            "\nAnswer on it with `gh pr comment {} --repo {}`; pushes to `{}` update it.",
+    s.push_str("\n\n");
+    s.push_str(&events_section(HISTORY, &lead, shown, "(no activity yet)"));
+    let answer = match ctx.pr {
+        Some(pr) if pr.same_repo(&ctx.repo.name) => format!(
+            "Answer on it with `gh pr comment {} --repo {}`; pushes to `{}` update it.",
             issue.number, ctx.repo.name, pr.head_ref
-        )),
-        Some(_) => s.push_str(&format!(
-            "\nIt comes from a fork; answer on it with `gh pr comment {} --repo {}`.",
+        ),
+        Some(_) => format!(
+            "It comes from a fork; answer on it with `gh pr comment {} --repo {}`.",
             issue.number, ctx.repo.name
-        )),
-        None => s.push_str(&format!(
-            "\nAnswer on it with `gh issue comment {} --repo {}`.",
+        ),
+        None => format!(
+            "Answer on it with `gh issue comment {} --repo {}`.",
             issue.number, ctx.repo.name
-        )),
-    }
+        ),
+    };
+    s.push_str("\n\n");
+    s.push_str(&instructions_section(&answer));
     s
 }
 
@@ -818,7 +829,8 @@ pub fn release_refused_prompt(
 ) -> String {
     let mut s = format!(
         "[ssf] Release of this workspace refused ({attempt} of {max}): when the daemon came to \
-remove it, the checks found work that is not on origin for {repo}#{number}:\n\n"
+remove it, the checks found work that is not on origin for {repo}#{number}:\n\n\
+<{SSF_INSTRUCTIONS}>\n"
     );
     for p in problems {
         s.push_str(&format!("- {p}\n"));
@@ -835,6 +847,7 @@ or `ssf release --force` from a shell). Stop here.",
 or leave the workspace as it is; a kept workspace is fine.",
         );
     }
+    s.push_str(&format!("\n</{SSF_INSTRUCTIONS}>"));
     s
 }
 
@@ -842,22 +855,24 @@ or leave the workspace as it is; a kept workspace is fine.",
 /// the current base. This is advisory: the daemon never changes the
 /// worktree, index or branch for the agent.
 pub fn conflict_prompt(base_ref: &str, base_sha: &str, files: &[String]) -> String {
-    let mut s =
-        format!("[ssf] Your branch conflicts with {base_ref} at base commit `{base_sha}`.\n\n");
+    let mut body = String::new();
     if files.is_empty() {
-        s.push_str("Git reported a merge conflict, but did not name the affected files.\n\n");
+        body.push_str("Git reported a merge conflict, but did not name the affected files.\n\n");
     } else {
-        s.push_str("Conflicting files:\n");
+        body.push_str("Conflicting files:\n");
         for file in files {
-            s.push_str(&format!("- `{file}`\n"));
+            body.push_str(&format!("- `{file}`\n"));
         }
-        s.push('\n');
+        body.push('\n');
     }
-    s.push_str(
+    body.push_str(
         "If your final round has started, rebase your branch onto the base, resolve the conflict, ",
     );
-    s.push_str("and re-run the round. If the round has not started, do nothing now; resolve the conflict before starting it.");
-    s
+    body.push_str("and re-run the round. If the round has not started, do nothing now; resolve the conflict before starting it.");
+    format!(
+        "[ssf] Your branch conflicts with {base_ref} at base commit `{base_sha}`.\n\n{}",
+        instructions_section(&body)
+    )
 }
 
 /// A comment on an item, as shown to the session that handed the item off.
@@ -895,15 +910,23 @@ pub fn delegated_closed_prompt(
                 Some(o) => format!("@{} (from the agent on {o})", c.author),
                 None => format!("@{}", c.author),
             };
-            s.push_str(&format!(
-                "Final comment by {from} ({}):\n{}\n",
-                c.url,
-                quote(&c.body, ctx.daemon.max_body_chars)
+            s.push_str(&section(
+                "event",
+                &format!(
+                    "Final comment by {from} ({}):\n{}",
+                    c.url,
+                    quote(&c.body, ctx.daemon.max_body_chars)
+                ),
+            ));
+            s.push_str("\n\n");
+            s.push_str(&instructions_section(
+                "This is the only message you will get about it.",
             ));
         }
-        None => s.push_str("It has no comments.\n"),
+        None => s.push_str(&instructions_section(
+            "It has no comments.\n\nThis is the only message you will get about it.",
+        )),
     }
-    s.push_str("\nThis is the only message you will get about it.");
     s
 }
 
@@ -933,7 +956,7 @@ pub fn fyi_prompt(
 ) -> String {
     let item = format!("{} {}", ctx.kind(), full_ref(issue));
     let head = match what {
-        Fyi::Activity => format!("[ssf] FYI: new activity on {item}:"),
+        Fyi::Activity => format!("[ssf] FYI: new activity on {item}"),
         Fyi::Closed => format!(
             "[ssf] FYI: {item} has been {}.",
             if merged {
@@ -995,13 +1018,13 @@ interrupted: its terminal was gone, so it has been started again.\n\n",
         .map(|b| format!(" on branch `{b}`"))
         .unwrap_or_default();
     let path = it.path.map(|p| format!(" in `{p}`")).unwrap_or_default();
-    s.push_str(&format!(
+    s.push_str(&instructions_section(&format!(
         "This is the session for {item}{branch}{path}.\n\nWork out where you got to (`git \
 status`, `git log`, your last comments on the item) and carry on from there. Anything that \
 happened on the item while you were away arrives as further `[ssf]` messages. If you were \
 part-way through something and cannot tell what is left, say so on the item: that the session \
 was interrupted and what remains."
-    ));
+    )));
     s
 }
 
@@ -1025,10 +1048,10 @@ pub fn login_back_prompt(it: &LoginBack) -> String {
     let what = format!("the session for {item}");
     format!(
         "[ssf] Your {} sign-in lapsed at {} and is back: this terminal was started again with \
-your conversation resumed. This is {what}.\n\nNothing you sent while it was lapsed reached \
+your conversation resumed. This is {what}.\n\n<{SSF_INSTRUCTIONS}>\nNothing you sent while it was lapsed reached \
 anyone, and no `[ssf]` message reached you; what happened on the item meanwhile follows as \
 further `[ssf]` messages. Work out where you got to (`git status`, `git log`, your last \
-comments) and carry on.",
+comments) and carry on.\n</{SSF_INSTRUCTIONS}>",
         it.harness, it.since
     )
 }
@@ -1042,53 +1065,60 @@ pub fn start_again_prompt(it: &LoginBack) -> String {
     let item = format!("#{} \"{}\" ({})", it.number, it.title, it.url);
     format!(
         "[ssf] Your {} terminal could not be started at {} and has been started again. This is \
-the session for {item}.\n\nNothing reached you while it was down; what happened on the item \
+the session for {item}.\n\n<{SSF_INSTRUCTIONS}>\nNothing reached you while it was down; what happened on the item \
 meanwhile follows as further `[ssf]` messages. Work out where the work got to (`git status`, \
-`git log`, the comments on the item) and carry on.",
+`git log`, the comments on the item) and carry on.\n</{SSF_INSTRUCTIONS}>",
         it.harness, it.since
     )
 }
 
-/// What a session started by a handover (`ssf handover`) is told ahead of
-/// the item's own story: what happened, and the outgoing agent's summary
-/// when it left one. `from` is the display name of the harness the
-/// outgoing session ran, `kind` the item's word (`issue`, `pull
+/// What a session started by a handover (`ssf handover`) is told on top of
+/// the item's own story: the outgoing agent's summary, in a
+/// `<handover-summary>` section. `from` is the display name of the harness
+/// the outgoing session ran, `kind` the item's word (`issue`, `pull
 /// request`). The summary is the outgoing agent's own text and is passed
 /// through unchanged. Kept apart from the story because the item holds on
 /// to it until a session has read it: a start that fails is tried again
 /// later, and the words the outgoing agent left go with that attempt.
 pub fn handover_note(from: &str, kind: &str, summary: Option<&str>) -> String {
-    match summary {
+    let body = match summary {
         Some(text) => format!(
             "You took over this {kind} from a session on {from} that handed it over; its summary \
-follows, then the {kind} as ssf tells it to a new session.\n\n\
-## Summary from the outgoing session\n\n{}",
+follows, then the {kind} as ssf tells it to a new session.\n\n{}",
             text.trim()
         ),
         None => format!(
             "You took over this {kind} from a session on {from} that handed it over. It left no \
 summary; read the {kind} below."
         ),
-    }
+    };
+    section("handover-summary", &body)
 }
 
-/// The first message of a session started by a handover: the note above,
-/// then the item's story exactly as a new session gets it.
+/// The first message of a session started by a handover: the item's story
+/// exactly as a new session gets it, with the note above as the first
+/// section after its `[ssf]` lead line.
 pub fn handover_prompt(from: &str, kind: &str, summary: Option<&str>, story: &str) -> String {
-    format!("{}\n\n{story}", handover_note(from, kind, summary))
+    with_section_after_lead(story, &handover_note(from, kind, summary))
 }
 
 /// The one message the outgoing agent gets when a handover it asked for
 /// cannot be carried out: it is still the session on the item.
 pub fn handover_refused_prompt(harness: &str, reason: &str) -> String {
-    format!("[ssf] Handover to {harness} refused: {reason}. Carry on.")
+    format!(
+        "[ssf] Handover to {harness} refused: {reason}.\n\n{}",
+        instructions_section("Carry on.")
+    )
 }
 
 /// The one message the agent gets when a handover on its item is called
 /// off (`ssf handover --cancel`): it was told to stop working, and this
 /// is what takes that back.
 pub fn handover_cancelled_prompt(harness: &str) -> String {
-    format!("[ssf] The handover to {harness} was cancelled: this session keeps the item. Carry on.")
+    format!(
+        "[ssf] The handover to {harness} was cancelled: this session keeps the item.\n\n{}",
+        instructions_section("Carry on.")
+    )
 }
 
 pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
@@ -1123,18 +1153,13 @@ brought back in."
 }
 
 pub fn reassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
-    let mut s = format!(
-        "[ssf] {} has been assigned to @{} again. Activity since then:\n\n",
+    format!(
+        "[ssf] {} has been assigned to @{} again.\n\n{}\n\n{}",
         short_ref(issue, ctx),
-        ctx.bot_login
-    );
-    if events.is_empty() {
-        s.push_str("(no new activity)\n");
-    } else {
-        s.push_str(&wrapped(NEW_ACTIVITY, events));
-    }
-    s.push_str("\nResume work on it.");
-    s
+        ctx.bot_login,
+        events_section(NEW_ACTIVITY, "", events, "(no new activity)"),
+        instructions_section("Resume work on it.")
+    )
 }
 
 /// Short, filesystem-safe name for the worktree.

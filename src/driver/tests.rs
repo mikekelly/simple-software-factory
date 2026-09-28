@@ -198,7 +198,7 @@ contents comes with higher risk of prompt injection.\n› 1. Yes, continue\n  2.
 fn login_prompts_of_each_harness_are_recognised() {
     // Claude Code answering a prompt after its token was revoked
     // (seen live on 2026-09-06, issue #81), and its login screen.
-    let expired = "❯ [ssf] New activity on #81:\n\n  Login expired · Please run /login\n\n\
+    let expired = "❯ [ssf] New activity on #81\n\n  Login expired · Please run /login\n\n\
 ❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle)";
     assert_eq!(
         login_dialog("claude", expired).as_deref(),
@@ -286,26 +286,46 @@ fn login_prompts_of_each_harness_are_recognised() {
     assert_eq!(login_dialog("claude", quoted), None);
     // But the harness's own answer right after the echo still does.
     assert!(login_dialog("claude", expired).is_some());
-    let after_echo = "❯ [ssf] New activity on #5:\n- 15:20Z @mike commented:\n  > hi\n\nLogin expired · Please run /login\n❯ ";
+    let after_echo = "❯ [ssf] New activity on #5\n- 15:20Z @mike commented:\n  > hi\n\nLogin expired · Please run /login\n❯ ";
     assert!(login_dialog("claude", after_echo).is_some());
     // The first prompt ends with the item, so its comments are what sits
     // at the bottom of the pane: a phrase quoted in one is ssf's
     // rendering of someone else's words (#355), not a sign-in prompt.
-    let first_prompt = "❯ [ssf] GitHub issue #5: Fix it\nhttps://gh/5\n\n\
+    let first_prompt = "❯ [ssf] Simple Software Factory (ssf) spawned you.\n\n\
+<ssf-instructions>\nYou are a remote colleague.\n</ssf-instructions>\n\n\
+<issue>\nGitHub issue #5: Fix it\nhttps://gh/5\n\n\
 Opened by @mike on 2026-09-17 08:00Z. Labels: daemon.\n\n\
-## Description\n\n  > Retry the sign-in when the token lapses.\n\n\
-## History (before this session started)\n\n- 09:20Z @mike commented (https://gh/c1):\n  > the daemon does not retry: Login expired · Please run /login\n\n❯ ";
+<description>\n  > Retry the sign-in when the token lapses.\n</description>\n</issue>\n\n\
+<history>\n<event>\n- 09:20Z @mike commented (https://gh/c1):\n  > the daemon does not retry: \
+Login expired · Please run /login\n</event>\n</history>\n\n❯ ";
     assert_eq!(login_dialog("claude", first_prompt), None);
     // The tags ssf wraps relayed events in (#588) carry the echo on, so
     // a flush bullet line under them is still ssf's relaying...
-    let tagged = "❯ [ssf] New activity on #5:\n\n<new-activity>\n\
-<github-event kind=\"renamed\" actor=\"@mike\">\n\
+    let tagged = "❯ [ssf] New activity on #5\n\n<new-activity>\n<event>\n\
 - 15:20Z @mike renamed the issue from \"a\" to \"Login expired · Please run /login\"\n\
-</github-event>\n</new-activity>\n❯ ";
+</event>\n</new-activity>\n❯ ";
     assert_eq!(login_dialog("claude", tagged), None);
     // ...and the harness's own answer after the closing tag still counts.
     let after_tags = format!("{tagged}\nLogin expired · Please run /login\n❯ ");
     assert!(login_dialog("claude", &after_tags).is_some());
+    // #631: every line inside one of ssf's section tags is ssf's, prose
+    // included -- a handover summary is the outgoing agent's words,
+    // unquoted -- and a harness line after the last closing tag counts.
+    let sectioned = "❯ [ssf] Simple Software Factory (ssf) spawned you.\n\n\
+<handover-summary>\nThe pane kept saying Login expired · Please run /login, so I stopped.\n\
+</handover-summary>\n\n<ssf-instructions>\nCarry on.\n\
+Login expired · Please run /login\n</ssf-instructions>\n\n\
+<repository-guidance file=\"SSF.md\">\n# Guidance\nLogin expired · Please run /login\n\
+</repository-guidance>\n\n<history>\n\
+<omitted>This issue carries more history.</omitted>\n\
+Login expired · Please run /login\n</history>\n❯ ";
+    assert_eq!(login_dialog("claude", sectioned), None);
+    let after_sections = format!("{sectioned}\nLogin expired · Please run /login\n❯ ");
+    assert!(login_dialog("claude", &after_sections).is_some());
+    // A tag of someone else's (not one of ssf's section names) opens
+    // nothing: the line after it is read.
+    let foreign = "❯ [ssf] New activity on #5\n<details>\nLogin expired · Please run /login\n❯ ";
+    assert!(login_dialog("claude", foreign).is_some());
     // A dialog drawn flush or in a box is still read, wherever it is.
     let after_first_prompt = format!("{first_prompt}Login expired · Please run /login");
     assert!(login_dialog("claude", &after_first_prompt).is_some());
