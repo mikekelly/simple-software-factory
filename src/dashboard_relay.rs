@@ -103,10 +103,32 @@ where
     Ok(())
 }
 
+/// How long the guest waits before trying the vsock listener again.
+const GUEST_RETRY: Duration = Duration::from_secs(30);
+
+/// [`serve_guest`], tried again while the guest has a vsock device: a
+/// Firecracker guest whose vsock was not ready at startup still serves the
+/// host once it is. Without the device (a lima or Incus guest, reached
+/// another way) it says nothing and returns.
+pub(crate) async fn serve_guest_retrying(target: SocketAddr) {
+    loop {
+        let Err(e) = serve_guest(target).await;
+        if !Path::new("/dev/vsock").exists() {
+            tracing::debug!("no vsock dashboard relay: {e:#}");
+            return;
+        }
+        tracing::warn!(
+            "vsock dashboard relay: {e:#}; trying again in {}s",
+            GUEST_RETRY.as_secs()
+        );
+        tokio::time::sleep(GUEST_RETRY).await;
+    }
+}
+
 /// The guest's end: accept on vsock [`VSOCK_PORT`] and relay to `target`.
 /// Returns only when the vsock listener cannot be made (no vsock device:
 /// a lima or Incus guest), which is not an error for the daemon.
-pub(crate) async fn serve_guest(target: SocketAddr) -> Result<()> {
+pub(crate) async fn serve_guest(target: SocketAddr) -> Result<std::convert::Infallible> {
     let listener = vsock::Listener::bind(VSOCK_PORT)?;
     tracing::info!("relaying vsock port {VSOCK_PORT} to the web dashboard at {target}");
     let mut tasks = JoinSet::new();
@@ -274,8 +296,10 @@ mod tests {
         let mut buf = Vec::new();
         let read = tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut buf))
             .await
-            .unwrap();
-        assert!(read.is_ok_and(|n| n == 0) || buf.is_empty());
+            .expect("the relay closes the connection rather than hang");
+        // Closed with nothing sent: a clean EOF, or a reset.
+        assert!(buf.is_empty(), "{buf:?}");
+        assert!(read.map_or(true, |n| n == 0));
         // No socket at all (the VM stopped): closed too, and the listener
         // keeps serving for when it is back.
         let address = host_relay(dir.as_path().join("missing.sock")).await;

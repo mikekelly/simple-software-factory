@@ -82,12 +82,8 @@ where
         return daemon.await;
     };
     let relay = async move {
-        if let Some(target) = relay
-            && let Err(e) = crate::dashboard_relay::serve_guest(target).await
-        {
-            // No vsock device: a lima or Incus guest, which is reached
-            // another way.
-            tracing::debug!("no vsock dashboard relay: {e:#}");
+        if let Some(target) = relay {
+            crate::dashboard_relay::serve_guest_retrying(target).await;
         }
         std::future::pending::<Result<()>>().await
     };
