@@ -58,6 +58,10 @@ class Ssf < Formula
         brew services start ssf
       The log is #{var}/log/ssf.log.
 
+      After `brew upgrade ssf`, restart the service to run the new version:
+        brew services restart ssf
+      The VM and its agent sessions keep running; the new service reattaches.
+
       To run the factory on this machine instead of in a VM (driver = "herdr"
       with [vm] enabled = false), or to attach to a session with `herdr
       --remote`, install herdr on the host:

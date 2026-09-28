@@ -2,8 +2,8 @@ post_install() {
   echo "==> ssf installed. Run 'ssf setup' as the user who will run the factory."
 }
 post_upgrade() {
-  # No package format restarts running services on upgrade (docs/operate.md).
-  echo "==> ssf upgraded. Restart running services to use it: systemctl --user restart ssf.service (or ssf@NAME.service)."
+  # Restart running services on the new version; never a VM or agent (docs/operate.md).
+  /usr/lib/ssf/package-post-upgrade
 }
 post_remove() {
   echo "==> ssf removed; user configuration, state, projects and VM data were preserved."

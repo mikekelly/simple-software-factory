@@ -9,5 +9,10 @@ if [ -f /usr/local/lib/ssf/seed-common.sh ]; then
     ln -sfn /usr/bin/ssf-server /usr/local/bin/ssf-server
     exit 0
 fi
+# deb: `configure <old-version>` is an upgrade; restart running services on
+# the new version (#638). The rpm does this in %posttrans (posttrans.sh).
+if [ "${1:-}" = configure ] && [ -n "${2:-}" ]; then
+    /usr/lib/ssf/package-post-upgrade
+fi
 echo "==> ssf installed or upgraded. Run 'ssf setup' as the user who will run the factory."
 exit 0

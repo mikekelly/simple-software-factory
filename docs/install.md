@@ -544,7 +544,7 @@ Opening any issue in a watched repository then shows the overlay. Details in [da
 
 ## 11. Upgrading, stopping, uninstalling
 
-Upgrade by installing the next release's package the same way it was installed. No package format restarts a running service: restart it yourself when it suits (`systemctl --user restart ssf.service` or `ssf@NAME.service` on Linux, `brew services restart ssf` on macOS). For a VM target that restarts only the supervisor, which reattaches to the running guest. Standalone binaries are replaced in pairs with the daemon stopped. Configuration, state, keys and VM disks survive an upgrade. See [operate.md](operate.md) (`ssf skill operate`).
+Upgrade by installing the next release's package the same way it was installed. The Arch, `.deb` and `.rpm` packages restart running services (`ssf.service`, `ssf@NAME.service`) on the new version; on macOS run `brew services restart ssf`. Upgrades never stop or restart a VM or agent sessions: the new service reattaches to the running guest and herdr session, and the guest keeps its own version until `ssf vm upgrade`. A service started by ssf 0.19 or earlier, which still holds its VM, is left running with a message. Standalone binaries are replaced in pairs with the daemon stopped. Configuration, state, keys and VM disks survive an upgrade. See [operate.md](operate.md) (`ssf skill operate`).
 
 `ssf ui service disable` stops the service and keeps it stopped across logins; `ssf ui service enable` brings it back.
 
