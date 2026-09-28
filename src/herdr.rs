@@ -40,7 +40,7 @@ pub const SESSION: &str = "ssf";
 /// The session ssf's herdr commands go to, and how a person reaches it here.
 pub fn session_summary() -> String {
     if crate::vm::in_guest() {
-        "herdr's default session in the VM (attach: `ssf vm attach`)".to_string()
+        "herdr's default session in the VM".to_string()
     } else {
         format!("herdr session `{SESSION}` (attach: `herdr session attach {SESSION}`)")
     }

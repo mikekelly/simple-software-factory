@@ -1389,7 +1389,7 @@ async fn auth_does_not_rewrite_the_live_daemon_snapshot() {
         errors: Vec::new(),
     };
     assert!(status.to_json()["bot_login"].is_null());
-    assert!(status::render_status(&status).contains("bot:     (not signed in)"));
+    assert!(status::render_status(&status, true).contains("bot:     (not signed in)"));
 
     let state = state::State::load().unwrap();
     let session = &state.repos["acme/widgets"].issues[&183];

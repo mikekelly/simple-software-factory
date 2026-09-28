@@ -1,6 +1,6 @@
 use super::prelude::*;
 
-pub(super) async fn status(json: bool, watch: bool) -> Result<()> {
+pub(super) async fn status(json: bool, watch: bool, all: bool) -> Result<()> {
     let identity = server_catalog::selected_target_identity()?;
     let qualify = |mut value: serde_json::Value| {
         if let Some(identity) = &identity {
@@ -24,7 +24,7 @@ pub(super) async fn status(json: bool, watch: bool) -> Result<()> {
                 serde_json::to_string_pretty(&qualify(snap.to_json()))?
             );
         } else {
-            print!("{}", status::render_status(&snap));
+            print!("{}", status::render_status(&snap, all));
         }
         Ok(())
     }

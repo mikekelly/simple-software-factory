@@ -115,7 +115,7 @@ ssf doctor                                # what is missing, and which checkouts
 
 One line each:
 
-- `ssf status` tracked items and their workspaces; `--json`, `--watch`.
+- `ssf status` tracked items and their workspaces; `--json`, `--watch`. Retired sessions whose workspace was released are counted, not listed; `-a`/`--all` lists them (the JSON always has them).
 - `ssf dashboard` the live terminal view, across one or every target.
 - `ssf peers` the sessions on a repository: item, GitHub state, agent
   state, branch, last message.

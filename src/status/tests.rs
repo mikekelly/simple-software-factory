@@ -208,7 +208,7 @@ fn bot_identity_uses_config_before_start_and_cache_with_a_token() {
     };
     assert_eq!(snap.bot_login(), Some("configured-bot"));
     assert_eq!(snap.to_json()["bot_login"], "configured-bot");
-    assert!(render_status(&snap).contains("bot:     configured-bot"));
+    assert!(render_status(&snap, true).contains("bot:     configured-bot"));
 
     // A token-only setup has no configured login; retain the daemon's
     // actual identity while its credential remains available.
@@ -313,7 +313,7 @@ fn a_blocked_session_is_flagged_everywhere() {
     assert_eq!(v["blocked_sessions"], json!(["acme/widgets#1"]));
     assert_eq!(v["sessions"][0]["blocked"]["harness"], "claude");
     assert!(v["sessions"][1]["blocked"].is_null());
-    let text = render_status(&snap);
+    let text = render_status(&snap, true);
     assert!(
         text.contains("BLOCKED: acme/widgets#1: Claude Code at its sign-in prompt"),
         "{text}"
@@ -420,7 +420,7 @@ fn a_handed_over_session_shows_its_own_harness_and_a_pending_handover() {
     assert!(v["sessions"][1]["overrides"]["harness"] == "pi");
     assert_eq!(v["sessions"][2]["handover"]["harness"], "codex");
     assert!(v["sessions"][2]["overrides"].is_null());
-    let text = render_status(&snap);
+    let text = render_status(&snap, true);
     assert!(
         text.contains("handed over: harness=pi model=openai/gpt-6 effort=high"),
         "{text}"
@@ -484,7 +484,7 @@ fn an_assigned_session_shows_the_stack_it_was_given() {
         down: Vec::new(),
         errors: Vec::new(),
     };
-    let text = render_status(&snap);
+    let text = render_status(&snap, true);
     assert!(
         text.contains("assigned: harness=pi model=openai/gpt-6 effort=high"),
         "{text}"
@@ -544,7 +544,7 @@ fn a_session_left_on_an_older_harness_reports_both_stacks() {
     assert_eq!(v["sessions"][0]["harness"], "codex");
     assert_eq!(v["sessions"][0]["next_launch"]["harness"], "claude");
     assert_eq!(v["sessions"][0]["model"], serde_json::Value::Null);
-    let text = render_status(&snap);
+    let text = render_status(&snap, true);
     assert!(
         text.contains(
             "harness codex → claude next launch (model deepseek/deepseek-flash, effort high)"
@@ -665,4 +665,32 @@ fn doctor_summary_keeps_only_failures_and_warnings() {
             ],
         })
     );
+}
+
+/// Released sessions are history: `ssf status` counts them and `--all`
+/// lists them.
+#[test]
+fn status_hides_released_sessions_unless_all() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let mut gone = item(2, None);
+    gone.active = false;
+    gone.retired_at = Some("2026-09-01T00:00:00Z".into());
+    gone.released_at = Some("2026-09-02T00:00:00Z".into());
+    let snap = Snapshot {
+        cfg: cfg(),
+        state: state_with(vec![item(1, Some("r1::/w/one")), gone]),
+        workspaces: Vec::new(),
+        down: Vec::new(),
+        errors: Vec::new(),
+    };
+    let text = render_status(&snap, false);
+    assert!(text.contains("Item 1"), "{text}");
+    assert!(!text.contains("Item 2"), "{text}");
+    assert!(
+        text.contains("(1 released session hidden; `ssf status --all` lists them)"),
+        "{text}"
+    );
+    let text = render_status(&snap, true);
+    assert!(text.contains("Item 2"), "{text}");
+    assert!(!text.contains("hidden"), "{text}");
 }
