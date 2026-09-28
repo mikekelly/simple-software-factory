@@ -162,9 +162,13 @@ Persist that `PATH` line for future shells. Supply the prerequisites yourself wi
 Run the two processes under the same Unix user, HOME and PATH, each in its own persistent terminal or under the host's process supervisor:
 
 ```sh
-herdr server        # terminal one
-ssf-server          # terminal two
+HERDR_CONFIG_PATH=~/.config/ssf/herdr.toml herdr --session ssf server   # terminal one
+ssf-server                                                           # terminal two
 ```
+
+ssf runs its agents in its own herdr session, `ssf`, with a herdr config it writes
+(`ssf doctor` writes it and prints the command above with its path; see
+[drivers.md](drivers.md#host-or-guest)). Attach to it with `herdr session attach ssf`.
 
 With no service unit, `ssf status` and `ssf doctor` report the daemon itself
 (`ssf.sock`) and name the unit's absence as detail, and the dashboards draw no
@@ -233,7 +237,14 @@ Re-running `ssf vm build` after a failure is safe; it keeps an existing image un
 
 Agents run as this Unix user and can reach this user's files and credentials, and the default launch commands bypass the harness's permission prompts because the terminals are unattended. Say this plainly to the person before choosing it.
 
-herdr provides the workspaces and terminals. Start `herdr server` for headless operation, or leave an interactive `herdr` running. ssf clones under `herdr.projects_dir` (`~/ssf/projects`) and makes a worktree per item beside the clone.
+herdr provides the workspaces and terminals. ssf runs its agents in a herdr session of its own named `ssf`, never the person's own herdr session, with a herdr config ssf writes that turns herdr's own agent restore off. Run `ssf doctor` once (it writes that config), then start the session headless and keep it running (a persistent terminal, or the host's process supervisor):
+
+```sh
+HERDR_CONFIG_PATH=~/.config/ssf/herdr.toml herdr --session ssf server
+herdr session attach ssf       # watch and type in the agents' panes
+```
+
+`ssf status` and `ssf doctor` name the session and print both commands. An install from before #602 whose agents ran in the person's default herdr session: see [drivers.md](drivers.md#moving-an-existing-host-install-to-the-ssf-session). ssf clones under `herdr.projects_dir` (`~/ssf/projects`) and makes a worktree per item beside the clone.
 
 ```sh
 ssf doctor
@@ -257,11 +268,13 @@ ssh ssf-default true
 Then save the machine in the person's herdr. Run it yourself with input closed first: closed input can never answer yes to replacing the remote server.
 
 ```sh
-herdr machine add ssf-default --label factory </dev/null   # or user@host
+herdr machine add ssf-default --label factory </dev/null
+# a rented host runs ssf in host mode, whose agents live in the herdr session `ssf`:
+# herdr machine add user@host --label factory --remote-session ssf </dev/null
 herdr machine list
 ```
 
-Expect `Remote server is ready.` If it stops at a prompt instead (a version mismatch, or an offer to install or update the remote herdr), hand the same command, without `</dev/null`, to the person to run interactively, answering No to replacing a running server unless they ask: its panes are live sessions. `herdr --remote ssf-default` then attaches. Details and the limits of what a local herdr command reaches are in [liaison.md](liaison.md#inspect-the-factorys-herdr-server).
+Expect `Remote server is ready.` If it stops at a prompt instead (a version mismatch, or an offer to install or update the remote herdr), hand the same command, without `</dev/null`, to the person to run interactively, answering No to replacing a running server unless they ask: its panes are live sessions. `herdr --remote ssf-default` then attaches (for a rented host, `herdr --remote user@host --session ssf`). Details and the limits of what a local herdr command reaches are in [liaison.md](liaison.md#inspect-the-factorys-herdr-server).
 
 Root: agents in a VM or on a rented server should be able to `sudo` without a password, so they can install what their work needs without stopping. The guest's `ssf` user already has it. On a rented host the person grants it to the factory account; give them the exact commands ([Rented hosts](platform-specifics.md#rented-hosts)). Never grant it on the person's own machine in host mode: there, the agents are already running as the person.
 

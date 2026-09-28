@@ -135,24 +135,15 @@ pub(crate) async fn control(session: &str, size: Option<(u16, u16)>) -> Result<O
         #[cfg(test)]
         _ => bail!("{session} has no herdr pane"),
     };
-    let mut command =
-        tokio::process::Command::new(crate::config::herdr_command_path(herdr.command()));
+    let mut command = crate::herdr::command(crate::config::herdr_command_path(herdr.command()));
     command.args(["terminal", "session", "control", &pane]);
-    for name in [
-        "HERDR_WORKSPACE_ID",
-        "HERDR_TAB_ID",
-        "HERDR_PANE_ID",
-        "HERDR_ENV",
-    ] {
-        command.env_remove(name);
-    }
     if let Some((cols, rows)) = size {
         command.args(["--cols", &cols.to_string(), "--rows", &rows.to_string()]);
     }
     // Control is the stream alone: stdin is its commands, and closing it
     // releases the pane.
     use std::os::unix::process::CommandExt;
-    let error = command.as_std_mut().exec();
+    let error = command.exec();
     Err(anyhow::Error::new(error).context("running herdr terminal session control"))
 }
 

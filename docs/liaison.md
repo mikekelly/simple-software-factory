@@ -15,7 +15,7 @@ and that decides what it needs before it can do anything for them:
 |---|---|---|
 | Example | A bot-account assistant running on the same rented host as `ssf-server` | A desktop assistant watching a factory on another machine |
 | Factory commands | `ssf` on this machine is the whole setup: no catalog entry, no SSH | `ssf` on the liaison machine drives the factory over SSH, so it needs the client, a key and `ssf-server` on the far side, see [Reach the factory over SSH](#reach-the-factory-over-ssh) |
-| herdr | The herdr server the daemon drives is on this machine, so `herdr` and `ssf dashboard` inspect it directly | The factory's herdr server is saved in the liaison machine's herdr, see [Inspect the factory's herdr server](#inspect-the-factorys-herdr-server) |
+| herdr | The herdr server the daemon drives is on this machine, so `herdr session attach ssf` and `ssf dashboard` inspect it directly | The factory's herdr server is saved in the liaison machine's herdr, see [Inspect the factory's herdr server](#inspect-the-factorys-herdr-server) |
 | GitHub | The liaison's own integration or account, never the factory bot's credentials | The same, on the liaison machine, alongside the SSH access it needs |
 
 Complete the factory first: [Install](install.md), or
@@ -70,7 +70,7 @@ event does not transfer the factory bot's responsibilities to the liaison.
 ## Setup: a liaison on the factory host
 
 Nothing is added for the factory side: the `ssf` client on the host is the
-whole setup, with no catalog entry and no SSH, and `herdr` and `ssf
+whole setup, with no catalog entry and no SSH, and `herdr session attach ssf` and `ssf
 dashboard` inspect the factory's panes directly. What the liaison does need
 is GitHub access of its own, configured through its platform, never the
 bot's `ssf auth` credential. Every command it runs acts as the factory's
@@ -135,9 +135,13 @@ then save that server once and it sits beside Local in the sidebar, switchable
 like any other machine:
 
 ```sh
-herdr machine add user@factory.example --label factory
+herdr machine add user@factory.example --label factory --remote-session ssf
 herdr machine list
 ```
+
+A host factory's agents live in the herdr session `ssf`, not the default one,
+hence `--remote-session ssf`; a VM factory's live in the guest's default
+session, so leave it out for one.
 
 Run `machine add` in an interactive terminal. It checks the binary and the
 running server at the other end, and can offer to install or update the remote
@@ -146,7 +150,7 @@ with. **Answer No to replacing the factory's running server unless the user
 asks for it**: those panes are live agent sessions, and a version difference
 alone is not a reason to stop them. Once saved, the machine reconnects in the
 background. The saved label is for the sidebar only: `herdr --remote` takes
-the SSH target, so attaching is `herdr --remote user@factory.example`, which
+the SSH target, so attaching is `herdr --remote user@factory.example --session ssf`, which
 is also the command to run when herdr reports a machine needs attention. A
 host alias in `~/.ssh/config` shortens both.
 

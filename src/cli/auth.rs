@@ -503,7 +503,7 @@ pub(super) fn pick_hostname(
 
 /// herdr starts and reads only the agents it can recognise in a pane.
 pub(super) fn check_herdr_harness(harness: &str) {
-    let known = std::process::Command::new(config::herdr_command_path(
+    let known = crate::herdr::command(config::herdr_command_path(
         &std::env::var("HERDR_COMMAND").unwrap_or_else(|_| "herdr".into()),
     ))
     .args(["agent", "start", "--help"])

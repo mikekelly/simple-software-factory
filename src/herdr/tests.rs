@@ -2041,3 +2041,68 @@ async fn a_long_prompt_is_not_pasted_into_a_question() {
     assert!(!calls.contains("send-keys"), "{calls}");
     std::fs::remove_dir_all(base).unwrap();
 }
+
+/// Every inherited `HERDR_*` variable is removed, `HERDR_SOCKET_PATH` (which
+/// wins over `HERDR_SESSION`) included, and the command names ssf's session
+/// and config (#602); other variables are left alone.
+#[test]
+fn herdr_command_leaves_the_inherited_session_for_ssfs_own() {
+    let inherited = [
+        "HERDR_SOCKET_PATH",
+        "HERDR_CLIENT_SOCKET_PATH",
+        "HERDR_SESSION",
+        "HERDR_CONFIG_PATH",
+        "HERDR_ENV",
+        "HERDR_PANE_ID",
+        "HERDR_SOMETHING_NEW",
+        "PATH",
+    ]
+    .map(std::ffi::OsString::from);
+    let config = Path::new("/cfg/ssf/herdr.toml");
+    let command = isolated(
+        std::process::Command::new("herdr"),
+        inherited,
+        Some((SESSION, config)),
+    );
+    let envs: std::collections::BTreeMap<_, _> = command
+        .get_envs()
+        .map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_owned())))
+        .collect();
+    let expected: std::collections::BTreeMap<_, _> = [
+        ("HERDR_CLIENT_SOCKET_PATH", None),
+        ("HERDR_CONFIG_PATH", Some(config.as_os_str().to_owned())),
+        ("HERDR_ENV", None),
+        ("HERDR_PANE_ID", None),
+        ("HERDR_SESSION", Some("ssf".into())),
+        ("HERDR_SOCKET_PATH", None),
+        ("HERDR_SOMETHING_NEW", None),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    assert_eq!(envs, expected);
+    // In the VM guest: nothing inherited, herdr's default session.
+    let guest = isolated(
+        std::process::Command::new("herdr"),
+        [std::ffi::OsString::from("HERDR_SOCKET_PATH")],
+        None,
+    );
+    let envs: Vec<_> = guest.get_envs().collect();
+    assert_eq!(envs, [(std::ffi::OsStr::new("HERDR_SOCKET_PATH"), None)]);
+}
+
+/// The ssf session's config turns herdr's own agent restore off, and is
+/// written where the start command says, into a sandbox here.
+#[test]
+fn herdr_config_turns_agent_restore_off() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let path = write_config().unwrap();
+    assert_eq!(path, config_path());
+    let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        parsed["session"]["resume_agents_on_restore"],
+        toml::Value::Boolean(false)
+    );
+    assert!(server_command().contains(&format!("HERDR_CONFIG_PATH={}", path.display())));
+    assert!(server_command().ends_with("herdr --session ssf server"));
+}
