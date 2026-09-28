@@ -45,12 +45,15 @@ accounts, spending money, choosing a model and effort, allowing anyone to
 drive the factory, or passing `--force`. Hand `sudo` commands to the person
 to run; run them yourself only where you already have non-interactive root.
 The bot's credentials are the bot's, never the person's.
-Upgrading ssf on the host does not upgrade a VM's guest: `ssf --server NAME
-vm upgrade [VERSION]` (or `--deb PATH`) does, on the running guest, under
-every backend. An Arch lima guest from an older ssf has no package and takes
-the host's binary on `ssf vm restart`. `ssf vm build --force` and `ssf vm
-reset` discard anything installed in the guest root; don't use them to
-upgrade.
+Upgrading ssf on the host does not upgrade a VM's guest, nor restart it:
+`ssf --server NAME vm upgrade [VERSION]` (or `--deb PATH`) does, on the
+running guest, under every backend, when the person chooses; `ssf status` and
+`ssf doctor` show the difference until then. An Arch lima guest from an older
+ssf has no package and takes the host's binary on `ssf vm restart`. The VM has
+its own lifetime: restarting or stopping the `ssf@NAME` service leaves it
+running; `ssf vm stop|restart` and `ssf ui service disable` stop it. `ssf vm
+build --force` and `ssf vm reset` discard anything installed in the guest
+root; don't use them to upgrade.
 A host-mode factory runs its agents in its own herdr session, `ssf`, never
 the person's own herdr session, with a herdr config ssf writes (`ssf doctor`
 and `ssf status` print the session and its commands). Start it with

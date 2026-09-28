@@ -534,6 +534,10 @@ impl Snapshot {
         });
         let mut payload = json!({
             "server": {"hostname": crate::hostname(), "location": "local"},
+            // The release this factory runs. In a VM that is the guest's,
+            // which is upgraded on its own (`ssf vm upgrade`), so the host
+            // side compares it with its own.
+            "version": env!("CARGO_PKG_VERSION"),
             "bot_login": self.bot_login(),
             "token_configured": self.cfg.github_token().is_ok(),
             "service_enabled": crate::ui::service_enabled(),

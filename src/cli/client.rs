@@ -88,30 +88,51 @@ pub async fn client_main() -> Result<()> {
     }
     // A server that may run another release (over ssh, or in a VM): warn on a
     // major or minor difference, never refuse. `ssf vm` manages the VM itself.
+    let mut skewed_server = None;
     if (route.destination.is_some() || route.vm_context.is_some())
         && !matches!(cli.command, Command::Vm { .. })
     {
         let identity = route_identity(route, &catalog, inherited.as_ref());
         let identity = identity.as_ref().filter(|_| route.destination.is_none());
-        if let Ok(Some(server)) = probe_target_version(route, identity)
-            && let Some(warning) = super::doctor::version_skew_warning(
+        if let Ok(Some(server)) = probe_target_version(route, identity) {
+            if let Some(warning) = super::doctor::version_skew_warning(
                 env!("CARGO_PKG_VERSION"),
                 &server,
                 route.vm_context.is_some(),
-            )
-        {
-            eprintln!("{warning}");
+            ) {
+                eprintln!("{warning}");
+            }
+            if server != env!("CARGO_PKG_VERSION") {
+                skewed_server = Some(server);
+            }
         }
     }
 
     let err = match &route.destination {
         Some(host) => {
             let command = remote_client_command(&args, None, None);
-            std::process::Command::new("ssh")
-                .arg("--")
-                .arg(host)
-                .arg(command)
-                .exec()
+            let mut ssh = std::process::Command::new("ssh");
+            ssh.arg("--").arg(host).arg(command);
+            // On another release, a command that fails says so: the
+            // difference may be why. A VM target's guest says it itself
+            // (`command_main`), so only the SSH transport waits here.
+            match skewed_server {
+                Some(server) => {
+                    let status = ssh.status().context("running ssh")?;
+                    if !status.success() {
+                        eprintln!(
+                            "{}",
+                            super::doctor::version_skew_hint(
+                                &server,
+                                env!("CARGO_PKG_VERSION"),
+                                false
+                            )
+                        );
+                    }
+                    std::process::exit(status.code().unwrap_or(1));
+                }
+                None => ssh.exec(),
+            }
         }
         None => {
             let mut command = std::process::Command::new(server_executable()?);
@@ -172,6 +193,7 @@ fn run_doctor_client(
             Some(&client_version),
             server_version.as_deref(),
             route.name.as_deref(),
+            route_is_vm(route),
         )
     };
     let status = match &route.destination {
@@ -204,6 +226,16 @@ fn run_doctor_client(
     } else {
         status.code().unwrap_or(1)
     });
+}
+
+/// Does this route reach a factory in a managed VM: a catalog VM target,
+/// or the legacy `[vm] enabled` installation without a catalog?
+fn route_is_vm(route: &server_catalog::Route) -> bool {
+    route.vm_context.is_some()
+        || (route.destination.is_none()
+            && route.local_context.is_none()
+            && !factory_vm::in_guest()
+            && Config::load().is_ok_and(|cfg| cfg.vm.enabled))
 }
 
 fn probe_target_version(
@@ -303,6 +335,31 @@ fn remote_version_command(
             )
         },
     )
+}
+
+/// `ssf status`'s line on the guest's release against this host's.
+pub(super) fn version_line(guest: &str) -> String {
+    let host = env!("CARGO_PKG_VERSION");
+    if guest == host {
+        format!("version: ssf {host} on this host and in the guest")
+    } else {
+        format!(
+            "version: {}",
+            super::doctor::version_skew_hint(guest, host, true)
+        )
+    }
+}
+
+/// The ssf release the guest runs: its installed package's version, else
+/// (a guest without the package) its `ssf-server --version`; None when it
+/// does not answer.
+pub(super) fn guest_version(vm: &factory_vm::Vm) -> Option<String> {
+    if let Ok(Some(version)) = vm.guest_package_version() {
+        return Some(version);
+    }
+    vm.ssh_output(&["ssf-server", "--version"])
+        .ok()
+        .and_then(|out| parse_program_version(out.as_bytes()))
 }
 
 fn parse_program_version(stdout: &[u8]) -> Option<String> {
@@ -740,6 +797,13 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                         probe_word(&probe)
                     );
                 }
+                // The guest is upgraded on its own (`ssf vm upgrade`), so
+                // its release can differ from this host's: status says so.
+                if matches!(cli.command, Command::Status { json: false, .. })
+                    && let Some(guest) = guest_version(&vm)
+                {
+                    eprintln!("{}", version_line(&guest));
+                }
                 // The guest answers `doctor`, and the one thing it is asked
                 // about the desktop integration -- a bar widget left by a
                 // version before #413 -- is a fact of this host's
@@ -793,11 +857,23 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                                 answer["server"] = server.clone().into();
                                 answer["transport"] = "vm".into();
                             }
+                            // A guest from before `version` was published
+                            // is asked directly.
+                            let guest = answer["version"]
+                                .as_str()
+                                .map(str::to_owned)
+                                .or_else(|| guest_version(&vm));
+                            let host = env!("CARGO_PKG_VERSION");
                             answer["host_vm"] = serde_json::json!({
                                 "name": cfg.vm.name, "backend": backend,
                                 "state": probe_word(&probe),
                                 "service_enabled": factory_ui::service_enabled(),
                                 "server": selected_server,
+                                "host_version": host,
+                                "guest_version": guest,
+                                "version_note": guest.as_deref().filter(|g| *g != host).map(
+                                    |g| super::doctor::version_skew_hint(g, host, true)
+                                ),
                             });
                             println!("{answer}");
                             std::process::exit(
@@ -816,6 +892,16 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 let st = vm
                     .exec_ssf(&args)
                     .with_context(|| format!("running `ssf {name}` in the VM"))?;
+                // A guest on another release may be why it failed.
+                if !st.success()
+                    && let Some(guest) = guest_version(&vm)
+                    && guest != env!("CARGO_PKG_VERSION")
+                {
+                    eprintln!(
+                        "{}",
+                        super::doctor::version_skew_hint(&guest, env!("CARGO_PKG_VERSION"), true)
+                    );
+                }
                 std::process::exit(st.code().unwrap_or(1));
             }
         }
@@ -1008,7 +1094,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         }
         Command::Doctor { json } => doctor(json).await,
         Command::Vm { command } => vm_cmd(command).await,
-        Command::Ui { command } => ui_cmd(command),
+        Command::Ui { command } => ui_cmd(command).await,
         Command::Uninstall {
             yes,
             force,
@@ -1046,6 +1132,57 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
     }
 }
 
+/// `ssf-server --stop-vm`, which package removal runs: stop every VM this
+/// host's ssf manages (the legacy `[vm]` and each catalog VM target),
+/// since stopping a service leaves its VM running and a removed package
+/// would leave no `ssf` to stop it with. What cannot be read names no VM
+/// and a VM that cannot be asked about (its backend's tools gone, say) is
+/// not known to run: both are warnings, so they cannot block removal for
+/// ever. Only a VM known to be running that does not stop is an error.
+async fn stop_all_vms() -> Result<()> {
+    if factory_vm::in_guest() {
+        return Ok(());
+    }
+    let base = match Config::load_from(&config::config_path()) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("warning: no VM to stop: {e:#}");
+            return Ok(());
+        }
+    };
+    let mut configs = Vec::new();
+    if base.vm.enabled {
+        configs.push(base.clone());
+    }
+    match server_catalog::Catalog::owned_vm_contexts() {
+        Ok(contexts) => configs.extend(contexts.into_iter().map(|context| {
+            let mut cfg = base.clone();
+            cfg.vm = context.config;
+            cfg
+        })),
+        Err(e) => eprintln!("warning: could not read the VM targets: {e:#}"),
+    }
+    let mut still_running = Vec::new();
+    for cfg in configs {
+        let vm = factory_vm::Vm::new(&cfg);
+        if vm.running_state() == Some(false) {
+            continue;
+        }
+        if let Err(e) = vm.stop().await {
+            if vm.running_state() == Some(true) {
+                eprintln!("VM {}: {e:#}", cfg.vm.name);
+                still_running.push(cfg.vm.name.clone());
+            } else {
+                eprintln!("warning: VM {}: {e:#}", cfg.vm.name);
+            }
+        }
+    }
+    if !still_running.is_empty() {
+        bail!("VM(s) still running: {}", still_running.join(", "));
+    }
+    Ok(())
+}
+
 /// Run the `ssf-server` daemon.
 pub async fn server_main() -> Result<()> {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
@@ -1069,7 +1206,7 @@ pub async fn server_main() -> Result<()> {
         return command_main(command_args).await;
     }
     let cli = ServerCli::parse();
-    if let Some(target) = &cli.target {
+    if let Some(target) = cli.target.as_deref().filter(|_| !cli.stop_vm) {
         server_catalog::activate_service_target(target)?;
     }
     let filter = EnvFilter::try_from_env("RUST_LOG")
@@ -1084,6 +1221,9 @@ pub async fn server_main() -> Result<()> {
         .install_default()
         .ok();
 
+    if cli.stop_vm {
+        return stop_all_vms().await;
+    }
     if cli.once && !factory_vm::in_guest() {
         let cfg = Config::load()?;
         if cfg.vm.enabled {

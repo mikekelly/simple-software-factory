@@ -219,8 +219,10 @@ async function refresh() {
     fill(buildNode, body.build || "");
     render(body.cards, body.monitored_items || []);
     if (body.warning) show(emptyNode, false);
-    fill(noticeNode, body.warning ? `Status may be incomplete: ${body.warning}` : "");
-    show(noticeNode, Boolean(body.warning));
+    // A VM guest is upgraded on its own (`ssf vm upgrade`), so its release
+    // can differ from the host's that serves this page; the note says so.
+    fill(noticeNode, body.warning ? `Status may be incomplete: ${body.warning}` : body.version_note || "");
+    show(noticeNode, Boolean(body.warning || body.version_note));
     fill(statusNode, `Updated ${new Date(body.refreshed_at * 1000).toLocaleTimeString()}`);
     return true;
   } catch (error) {

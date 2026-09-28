@@ -31,7 +31,7 @@ In the order the pieces depend on each other:
 | Step | Effect |
 | --- | --- |
 | purge | removes the clean, pushed workspaces of closed items; needs the running daemon, and is skipped when it is down |
-| service disable | stops and disables the background service; with `[vm] enabled` that shuts the guest down |
+| service disable | stops and disables the background service, then shuts the VM down cleanly (stopping the service alone leaves a VM running) |
 | auth logout | revokes the bot's keys on GitHub and forgets it |
 | vm destroy | destroys the VM and, under the lima backend, its instance and data disk |
 

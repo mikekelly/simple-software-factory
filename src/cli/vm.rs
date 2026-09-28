@@ -161,7 +161,16 @@ pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
             Ok(())
         }
         VmCommand::Start => vm.start(&cfg).await,
-        VmCommand::Stop => vm.stop().await,
+        VmCommand::Stop => {
+            vm.stop().await?;
+            if factory_ui::service_active() {
+                eprintln!(
+                    "note: the {} service supervises this VM and starts it again; `ssf ui service disable` stops both",
+                    platform::service_unit()
+                );
+            }
+            Ok(())
+        }
         VmCommand::Restart => {
             vm.stop().await?;
             vm.start(&cfg).await

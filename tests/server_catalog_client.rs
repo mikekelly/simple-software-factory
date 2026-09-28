@@ -274,6 +274,8 @@ fn doctor_reports_the_invoking_client_and_selected_server_versions() {
         .env("PATH", &root.0)
         .env("SSF_CONFIG_DIR", &config)
         .env("SSF_STATE_DIR", &state)
+        // A doctor in a VM guest names `ssf vm upgrade` instead.
+        .env_remove("SSF_VM_GUEST")
         .env("SSF_INTERNAL_CLIENT_VERSION", "0.6.9")
         .env(
             "SSF_INTERNAL_SELECTED_TARGET",

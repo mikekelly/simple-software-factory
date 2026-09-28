@@ -482,3 +482,46 @@ fn guest_git_carries_keys_and_tokens_in_and_rewrites_the_paths() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A VM process moved into a scope of its own runs exactly what was asked,
+/// under a unit name systemd accepts.
+#[test]
+fn a_scoped_command_runs_the_same_program_in_a_named_scope() {
+    let mut cmd = Command::new("/vm/bin/firecracker");
+    cmd.args(["--api-sock", "/vm/a b.sock"]).env("K", "v");
+    let scoped = in_own_scope(&cmd, "ssf-vm-my vm/1-firecracker");
+    assert_eq!(scoped.get_program(), "systemd-run");
+    let args: Vec<_> = scoped
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        [
+            "--user",
+            "--scope",
+            "--quiet",
+            "--collect",
+            "--unit=ssf-vm-my_vm_1-firecracker",
+            "--",
+            "/vm/bin/firecracker",
+            "--api-sock",
+            "/vm/a b.sock",
+        ]
+    );
+    assert!(
+        scoped
+            .get_envs()
+            .any(|(k, v)| k == "K" && v == Some("v".as_ref()))
+    );
+    // Tests never start units on the machine running them.
+    assert!(!scopes_available());
+}
+
+/// Whether a VM process dies with this service is read off its cgroup.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_process_shares_its_own_cgroup_and_a_missing_one_none() {
+    assert!(shares_our_cgroup(std::process::id()));
+    assert!(!shares_our_cgroup(u32::MAX));
+}

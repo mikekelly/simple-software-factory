@@ -353,7 +353,7 @@ impl Vm {
 
     /// The version of the guest's installed ssf package; None when the guest
     /// has none (it runs the binary the host copies in at each boot).
-    pub(in crate::vm) fn guest_package_version(&self) -> Result<Option<String>> {
+    pub fn guest_package_version(&self) -> Result<Option<String>> {
         let out = self.ssh_output(&[
             "sh",
             "-c",
@@ -403,17 +403,18 @@ impl Vm {
     /// guest once, so from then on the guest keeps its own version. Skipped
     /// with `[vm] guest_binary` (a development build is copied in instead)
     /// and on a guest without dpkg (an Arch lima guest), which keep the
-    /// copied-in binary.
+    /// copied-in binary. A guest that has the package gets
+    /// [`Vm::repair_package_boot`] instead.
     pub(in crate::vm) fn adopt_guest_package(&self) -> Result<()> {
-        if self.cfg.guest_binary.is_some() || self.guest_package_version()?.is_some() {
+        if self.cfg.guest_binary.is_some() {
             return Ok(());
         }
         let Some(arch) = self.guest_deb_arch()? else {
             tracing::debug!("the guest has no dpkg; it keeps the copied-in ssf binary");
             return Ok(());
         };
-        // The first boot's seed unit installs the copied-in binary; let it
-        // finish before dpkg replaces it.
+        // The boot's seed unit installs the copied-in binary; let it finish
+        // before the package's links replace it.
         let deadline = Instant::now() + Duration::from_secs(120);
         while self
             .ssh_output(&["systemctl", "is-active", "--quiet", "ssf-seed"])
@@ -424,12 +425,64 @@ impl Vm {
             }
             std::thread::sleep(Duration::from_secs(2));
         }
+        if self.guest_package_version()?.is_some() {
+            return self.repair_package_boot();
+        }
         let deb = self.guest_deb(env!("CARGO_PKG_VERSION"), &arch)?;
         println!(
             "installing the ssf {} package in the guest",
             env!("CARGO_PKG_VERSION")
         );
         self.install_guest_deb(&deb)
+    }
+
+    /// A package-managed guest whose package predates the boot script that
+    /// leaves the package's ssf alone (a release before 0.19) still copies
+    /// the host's binary over `/usr/local/bin/ssf` at every boot, shadowing
+    /// the package. Give it this ssf's boot script and point the links back
+    /// at the package, restarting the guest daemon only if they were wrong.
+    fn repair_package_boot(&self) -> Result<()> {
+        const SCRIPT: &str = r#"set -e
+tmp=$(mktemp)
+cat > "$tmp"
+# Only a script without the package branch; a newer package's is kept.
+if ! grep -q 'dpkg-query -W' /usr/local/lib/ssf/seed-common.sh; then
+    sudo install -m644 "$tmp" /usr/local/lib/ssf/seed-common.sh
+fi
+rm -f "$tmp"
+changed=
+for b in ssf ssf-server; do
+    if [ "$(readlink "/usr/local/bin/$b")" != "/usr/bin/$b" ]; then
+        sudo ln -sfn "/usr/bin/$b" "/usr/local/bin/$b"
+        changed=1
+    fi
+done
+if [ -n "$changed" ]; then
+    echo relinked
+    sudo systemctl restart ssf
+fi
+"#;
+        let mut child = self
+            .ssh(&["sh".into(), "-c".into(), SCRIPT.into()], false)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .context("running ssh")?;
+        {
+            use std::io::Write;
+            let mut stdin = child.stdin.take().context("ssh stdin")?;
+            stdin.write_all(include_bytes!("../../vm/guest/seed-common.sh"))?;
+        }
+        let out = child.wait_with_output().context("running ssh")?;
+        if !out.status.success() {
+            bail!("repairing the guest's boot script failed ({})", out.status);
+        }
+        if String::from_utf8_lossy(&out.stdout).contains("relinked") {
+            println!(
+                "the guest's ssf now runs from its package again (its boot script copied the host's binary over it)"
+            );
+        }
+        Ok(())
     }
 
     /// The guest's Debian architecture (`dpkg --print-architecture`); None

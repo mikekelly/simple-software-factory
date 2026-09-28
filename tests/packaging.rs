@@ -248,6 +248,10 @@ fn packages_leave_service_enablement_to_explicit_setup() {
         read("packaging/release/ssf.install")
     );
     let upgrade = read("packaging/ssf.install");
+    // The restart reaches the supervisor only; one whose VM is still
+    // inside the service (an older ssf's) is not restarted.
+    assert!(upgrade.contains("cgroup.procs"));
+    assert!(upgrade.contains("\"limactl hostagent \"*|qemu-system-*"));
     assert!(upgrade.contains("argv[]=/usr/bin/ssf run ;"));
     assert!(upgrade.contains("argv[]=/usr/bin/ssf-server ;"));
     assert!(upgrade.contains("daemon-reload"));
@@ -346,6 +350,80 @@ fn removal_stops_only_the_package_owned_opted_in_unit() {
     assert!(alpm.contains("AbortOnFail"));
 }
 
+/// `systemd-run` for the removal hooks: records what it was asked to run.
+#[cfg(target_os = "linux")]
+const FAKE_SYSTEMD_RUN: &str = "#!/bin/sh\necho \"systemd-run $*\" >>\"$SSF_HOOK_LOG\"\n";
+
+/// A VM whose service was disabled by hand still runs in its scope, and
+/// removal stops it: there is no service to find it by.
+#[cfg(target_os = "linux")]
+#[test]
+fn removal_hook_stops_a_vm_left_without_a_service() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("ssf-package-hook-scope-{}", std::process::id()));
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("loginctl"), "#!/bin/sh\necho '1000 alice'\n").unwrap();
+    std::fs::write(bin.join("systemctl"), "#!/bin/sh\ncase \"$*\" in *is-system-running*) echo running;; *\"list-units --no-legend --plain ssf-vm-*\"*) echo 'ssf-vm-crucible-firecracker.scope loaded active running x';; *list-unit*) ;; *FragmentPath*) echo '';; *) echo \"$*\" >>\"$SSF_HOOK_LOG\";; esac\n").unwrap();
+    std::fs::write(bin.join("systemd-run"), FAKE_SYSTEMD_RUN).unwrap();
+    for name in ["loginctl", "systemctl", "systemd-run"] {
+        std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let log = root.join("calls");
+    for script in [
+        "packaging/package-pre-remove.sh",
+        "packaging/linux/preremove.sh",
+    ] {
+        let _ = std::fs::remove_file(&log);
+        let status = Command::new("sh")
+            .arg(repo().join(script))
+            .arg("0")
+            .env("PATH", format!("{}:/usr/bin", bin.display()))
+            .env("SSF_HOOK_LOG", &log)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{script}");
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            calls.contains("/usr/bin/ssf-server --stop-vm"),
+            "{script}: {calls}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A VM that does not stop keeps the package: removed, it would leave the
+/// guest running with nothing installed to stop it.
+#[cfg(target_os = "linux")]
+#[test]
+fn removal_hook_fails_when_the_vm_cannot_stop() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("ssf-package-hook-vm-{}", std::process::id()));
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("loginctl"), "#!/bin/sh\necho '1000 alice'\n").unwrap();
+    std::fs::write(bin.join("systemctl"), "#!/bin/sh\ncase \"$*\" in *'is-system-running'*) echo running;; *'show -p FragmentPath'*) echo /usr/lib/systemd/user/ssf.service;; *'show -p ExecStart'*) echo '{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server ; }';; *'is-active'*) exit 1;; *) echo \"$*\" >>\"$SSF_HOOK_LOG\";; esac\n").unwrap();
+    std::fs::write(bin.join("systemd-run"), "#!/bin/sh\nexit 1\n").unwrap();
+    for name in ["loginctl", "systemctl", "systemd-run"] {
+        std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let log = root.join("calls");
+    for script in [
+        "packaging/package-pre-remove.sh",
+        "packaging/linux/preremove.sh",
+    ] {
+        let status = Command::new("sh")
+            .arg(repo().join(script))
+            .arg("0")
+            .env("PATH", format!("{}:/usr/bin", bin.display()))
+            .env("SSF_HOOK_LOG", &log)
+            .status()
+            .unwrap();
+        assert!(!status.success(), "{script}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn removal_hook_discovers_and_stops_target_instances() {
@@ -359,7 +437,8 @@ fn removal_hook_discovers_and_stops_target_instances() {
         "#!/bin/sh\ncase \"$*\" in *is-system-running*) echo running;; *list-unit-files*) echo 'ssf@one.service enabled';; *list-units*) echo 'ssf@two.service loaded active running target';; *FragmentPath*ssf@*.service*) echo /usr/lib/systemd/user/ssf@.service;; *FragmentPath*) echo '';; *ExecStart*ssf@one.service*) echo '{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server --target one ; }';; *ExecStart*ssf@two.service*) echo '{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server --target two ; }';; *is-active*) exit 1;; *) echo \"$*\" >>\"$SSF_HOOK_LOG\";; esac\n",
     )
     .unwrap();
-    for name in ["loginctl", "systemctl"] {
+    std::fs::write(bin.join("systemd-run"), FAKE_SYSTEMD_RUN).unwrap();
+    for name in ["loginctl", "systemctl", "systemd-run"] {
         std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let log = root.join("calls");
@@ -376,6 +455,17 @@ fn removal_hook_discovers_and_stops_target_instances() {
     assert!(calls.contains("disable ssf@one.service"), "{calls}");
     assert!(calls.contains("stop ssf@two.service"), "{calls}");
     assert!(calls.contains("disable ssf@two.service"), "{calls}");
+    // Stopping a service leaves its VM running; removal stops the VMs too,
+    // once for the user.
+    assert_eq!(
+        calls
+            .matches(
+                "systemd-run --machine=alice@.host --user --wait --quiet --collect /usr/bin/ssf-server --stop-vm"
+            )
+            .count(),
+        1,
+        "{calls}"
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -388,7 +478,8 @@ fn removal_hook_stops_an_owned_active_unit_even_when_disabled() {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("loginctl"), "#!/bin/sh\necho '1000 alice'\n").unwrap();
     std::fs::write(bin.join("systemctl"), "#!/bin/sh\ncase \"$*\" in *'is-system-running'*) echo running;; *'show -p FragmentPath'*) echo /usr/lib/systemd/user/ssf.service;; *'show -p ExecStart'*) echo '{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server ; }';; *'is-active'*) exit 1;; *) echo \"$*\" >>\"$SSF_HOOK_LOG\";; esac\n").unwrap();
-    for name in ["loginctl", "systemctl"] {
+    std::fs::write(bin.join("systemd-run"), FAKE_SYSTEMD_RUN).unwrap();
+    for name in ["loginctl", "systemctl", "systemd-run"] {
         std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let log = root.join("calls");
@@ -402,6 +493,10 @@ fn removal_hook_stops_an_owned_active_unit_even_when_disabled() {
     assert!(status.success());
     let calls = std::fs::read_to_string(log).unwrap();
     assert!(calls.contains("stop ssf.service"), "{calls}");
+    assert!(
+        calls.contains("--collect /usr/bin/ssf-server --stop-vm"),
+        "{calls}"
+    );
     assert!(calls.contains("disable ssf.service"), "{calls}");
     assert!(calls.contains("daemon-reload"), "{calls}");
     std::fs::remove_dir_all(root).unwrap();

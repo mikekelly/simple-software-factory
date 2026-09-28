@@ -387,9 +387,66 @@ pub(in crate::vm) fn kill(pid: u32, sig: i32) {
     }
 }
 
+/// End `pid` (running `program`): SIGTERM, up to five seconds for it to
+/// go, then SIGKILL, and a moment for that to land.
+pub(in crate::vm) fn end_process(pid: u32, program: &str) {
+    kill(pid, libc::SIGTERM);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pid_runs(pid, program) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if pid_runs(pid, program) {
+        kill(pid, libc::SIGKILL);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while pid_runs(pid, program) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
 /// Start `cmd` in a session of its own so it outlives us, with stdin
-/// closed and its output appended to `log` (or dropped).
-pub(in crate::vm) fn spawn_detached(cmd: &mut Command, log: Option<&Path>) -> Result<u32> {
+/// closed and its output appended to `log` (or dropped). With `scope`, and
+/// a systemd user manager to ask ([`scopes_available`]), it runs in the
+/// transient `<scope>.scope` rather than in this process's cgroup, so that
+/// stopping or restarting the service this process belongs to (the
+/// `ssf@NAME` supervisor) leaves it running. A scope that could not be made
+/// falls back to the plain start, with a warning.
+pub(in crate::vm) fn spawn_detached(
+    cmd: &mut Command,
+    log: Option<&Path>,
+    scope: Option<&str>,
+) -> Result<u32> {
+    if let Some(unit) = scope.filter(|_| scopes_available()) {
+        let program = cmd.get_program().to_string_lossy().into_owned();
+        let name = Path::new(&program)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or(program);
+        let mut child = spawn_session(&mut in_own_scope(cmd, unit), log)?;
+        // `systemd-run --scope` becomes the program once the scope exists.
+        // Until then the PID reads as systemd-run, which a caller checking
+        // it at once would take for a program that already exited.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if pid_runs(child.id(), &name) {
+                return Ok(child.id());
+            }
+            if let Ok(Some(st)) = child.try_wait() {
+                warn!(
+                    "could not start {name} in {unit}.scope ({st}); starting it in this service's own cgroup, where a restart of the service takes it down"
+                );
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Ok(child.id());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    Ok(spawn_session(cmd, log)?.id())
+}
+
+fn spawn_session(cmd: &mut Command, log: Option<&Path>) -> Result<std::process::Child> {
     use std::os::unix::process::CommandExt;
     cmd.stdin(Stdio::null());
     match log {
@@ -411,10 +468,86 @@ pub(in crate::vm) fn spawn_detached(cmd: &mut Command, log: Option<&Path>) -> Re
             Ok(())
         });
     }
-    let child = cmd
-        .spawn()
-        .with_context(|| format!("starting {:?}", cmd.get_program()))?;
-    Ok(child.id())
+    cmd.spawn()
+        .with_context(|| format!("starting {:?}", cmd.get_program()))
+}
+
+/// Can VM processes be given a systemd scope of their own? Only with a
+/// systemd user manager to ask (its private socket under
+/// `$XDG_RUNTIME_DIR`, which every user unit, the `ssf@NAME` supervisor
+/// included, has) and `systemd-run` that can make one; asked once. Not on
+/// macOS, and not in tests, which must not start units on the machine
+/// running them.
+pub(in crate::vm) fn scopes_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        if cfg!(test) || !cfg!(target_os = "linux") {
+            return false;
+        }
+        let manager = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(|d| Path::new(&d).join("systemd/private"))
+            .is_some_and(|p| p.exists());
+        manager
+            && Command::new("systemd-run")
+                .args(["--user", "--scope", "--quiet", "--collect", "--", "true"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|st| st.success())
+    })
+}
+
+/// `cmd` as `systemd-run --user --scope --unit=<unit>` runs it: the same
+/// program, arguments, environment and directory, moved into
+/// `<unit>.scope` of the user manager before it starts. The scope ends
+/// when its last process does.
+pub(in crate::vm) fn in_own_scope(cmd: &Command, unit: &str) -> Command {
+    let mut scoped = Command::new("systemd-run");
+    scoped
+        .stdin(Stdio::null())
+        .args(["--user", "--scope", "--quiet", "--collect"])
+        .arg(format!("--unit={}", scope_unit_name(unit)))
+        .arg("--")
+        .arg(cmd.get_program())
+        .args(cmd.get_args());
+    for (k, v) in cmd.get_envs() {
+        match v {
+            Some(v) => scoped.env(k, v),
+            None => scoped.env_remove(k),
+        };
+    }
+    if let Some(dir) = cmd.get_current_dir() {
+        scoped.current_dir(dir);
+    }
+    scoped
+}
+
+/// A unit name systemd accepts, from a VM's name.
+pub(in crate::vm) fn scope_unit_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Does `pid` share this process's cgroup? A VM process that does was
+/// started inside this service (by an older ssf, or where no scope could
+/// be made), and dies with it; one that does not has its own lifetime.
+pub(in crate::vm) fn shares_our_cgroup(pid: u32) -> bool {
+    let read = |p: String| std::fs::read_to_string(p).ok().filter(|s| !s.is_empty());
+    match (
+        read(format!("/proc/{pid}/cgroup")),
+        read("/proc/self/cgroup".into()),
+    ) {
+        (Some(theirs), Some(ours)) => theirs == ours,
+        _ => false,
+    }
 }
 
 /// One request to Firecracker's API socket.

@@ -8,6 +8,7 @@ listing=$(loginctl list-users --no-legend 2>/dev/null) || {
 users=$(printf '%s\n' "$listing" | awk '{print $2}') || exit 1
 for user in $users; do
   ctl="systemctl --machine=${user}@.host --user"
+  stop_vms=
   manager=$($ctl is-system-running 2>/dev/null); manager_status=$?
   case "$manager" in
     offline) continue ;;
@@ -50,8 +51,21 @@ for user in $users; do
       failed=1
       continue
     fi
+    stop_vms=1
     $ctl disable "$unit" || { echo "ssf: could not disable $unit for $user" >&2; failed=1; }
   done
+  # Stopping a service leaves its VM running (the VM has its own lifetime,
+  # so an upgrade does not reboot it). Removal stops every VM ssf manages
+  # for this user, cleanly and with ssf's own code, in the user manager the
+  # services ran in: after a stopped service, or while a VM scope runs
+  # (a service disabled by hand, or `ssf vm start` without one).
+  scopes=$($ctl list-units --no-legend --plain 'ssf-vm-*.scope' 2>/dev/null) || scopes=
+  if [ -n "$stop_vms" ] || [ -n "$scopes" ]; then
+    if ! systemd-run --machine="${user}@.host" --user --wait --quiet --collect /usr/bin/ssf-server --stop-vm; then
+      echo "ssf: refusing package removal: a VM of $user did not stop (the user journal has why); stop it with \`ssf --server NAME vm stop\`, then remove the package again" >&2
+      failed=1
+    fi
+  fi
   $ctl daemon-reload || { echo "ssf: could not reload the user manager for $user" >&2; failed=1; }
 done
 exit "$failed"
