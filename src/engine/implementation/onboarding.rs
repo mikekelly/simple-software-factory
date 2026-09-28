@@ -757,9 +757,7 @@ impl Engine {
         let mut all = self.diff(repo, &BTreeMap::new(), &timeline).rendered;
         all.retain(|r| !mine.iter().any(|n| n.key == r.key));
         let all = self.for_recipient(&all, &self.acting_on(repo, issue.number), OwnPosts::Shown);
-        let mut relaunch_text = prompt::initial_prompt(issue, &all, &ctx);
-        relaunch_text.push_str("\n\n");
-        relaunch_text.push_str(&text);
+        let relaunch_text = prompt::then(&prompt::initial_prompt(issue, &all, &ctx), &text);
         let d = self
             .deliver_to(repo, issue.number, &text, Some(&relaunch_text))
             .await?;

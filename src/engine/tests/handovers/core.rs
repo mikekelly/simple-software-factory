@@ -368,7 +368,8 @@ async fn the_summary_outlives_a_harness_that_would_not_start() {
     let prompts = d.prompts();
     assert_eq!(prompts.len(), 1, "{prompts:?}");
     assert!(
-        prompts[0].starts_with("You took over this issue from a session on Claude Code"),
+        prompts[0]
+            .contains("<handover-summary>\nYou took over this issue from a session on Claude Code"),
         "{}",
         prompts[0]
     );
@@ -401,7 +402,7 @@ async fn a_started_harness_behind_a_start_block_is_told_before_the_block_lifts()
     let log = d.log();
     assert_eq!(log.len(), 1, "{log:?}");
     assert!(
-        log[0].starts_with("deliver:w5:You took over this issue"),
+        log[0].starts_with("deliver:w5:[ssf] Simple Software Factory"),
         "{log:?}"
     );
     let prompts = d.prompts();
@@ -455,7 +456,7 @@ async fn a_handover_blocked_at_the_sign_in_prompt_is_told_when_a_person_signs_in
     let log = d.log();
     assert_eq!(log.len(), 1, "{log:?}");
     assert!(
-        log[0].starts_with("deliver:w5:You took over this issue"),
+        log[0].starts_with("deliver:w5:[ssf] Simple Software Factory"),
         "{log:?}"
     );
     let prompts = d.prompts();
@@ -598,7 +599,8 @@ async fn a_second_handover_without_a_summary_keeps_the_one_still_owed() {
     e.run_handovers(&repo()).await;
     let prompts = d.prompts();
     assert!(
-        prompts[0].starts_with("You took over this issue from a session on Claude Code"),
+        prompts[0]
+            .contains("<handover-summary>\nYou took over this issue from a session on Claude Code"),
         "{}",
         prompts[0]
     );
@@ -649,7 +651,8 @@ async fn a_second_handover_names_the_session_that_did_the_work() {
     assert!(st.handover_note.is_none(), "Codex took it on");
     let prompts = d.prompts();
     assert!(
-        prompts[0].starts_with("You took over this issue from a session on Claude Code"),
+        prompts[0]
+            .contains("<handover-summary>\nYou took over this issue from a session on Claude Code"),
         "{}",
         prompts[0]
     );
@@ -718,7 +721,7 @@ async fn a_handover_onto_the_configured_stack_moves_a_session_left_behind() {
     assert!(st.handover_note.is_none(), "{:?}", st.handover_note);
     let prompts = d.prompts();
     assert!(
-        prompts[0].starts_with("You took over this issue from a session on Codex"),
+        prompts[0].contains("<handover-summary>\nYou took over this issue from a session on Codex"),
         "{}",
         prompts[0]
     );
@@ -844,7 +847,7 @@ async fn a_handover_waits_for_a_pass_that_can_read_the_panes() {
     assert!(handed.1.contains("\nto: Oh My Pi\n"), "{}", handed.1);
     let prompts = d.prompts();
     assert!(
-        prompts[0].starts_with("You took over this issue from a session on Codex"),
+        prompts[0].contains("<handover-summary>\nYou took over this issue from a session on Codex"),
         "{}",
         prompts[0]
     );

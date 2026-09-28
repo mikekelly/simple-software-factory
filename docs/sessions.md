@@ -102,9 +102,9 @@ Exactly one session acts on an item; any number can hear about it. Each item car
 list of subscriber sessions next to its owner, and, for any of them that asked for more
 than the default, the level it asked for. Every delivery about the item (new activity, its
 closure, the bot being dropped from it, or the item getting a session of its own) is fanned
-out to the subscribers with FYI framing: `[ssf] FYI: new activity on <item>:`, `[ssf] FYI:
-<item> has been closed.`, and so on, each ending with one line saying it is for information
-only and how to stop them. A level decides only what counts as that *new activity*; the
+out to the subscribers with FYI framing: `[ssf] FYI: new activity on <item>`, `[ssf] FYI:
+<item> has been closed.`, and so on, each ending with an `<ssf-instructions>` line saying it
+is for information only and how to stop them. A level decides only what counts as that *new activity*; the
 lifecycle notices always go. Subscriptions live in the state file, so they survive
 relaunches and a session being brought back; a session that retires is unsubscribed
 everywhere.
@@ -266,7 +266,15 @@ phrases are the harnesses' own, and they are checked against the harness the dri
 reports for that pane, not the one the item's record would launch, because a config edit
 under a live session leaves the pane on the harness it started with. Two things keep an
 agent's own screen from tripping this: only the bottom of an idle agent's screen counts,
-and a line carrying ssf's `> ` quote marker or inside echoed `[ssf]` text is skipped.
+and a line carrying ssf's `> ` quote marker or inside echoed `[ssf]` text is skipped:
+an echo runs from the `[ssf]` lead line through every line inside ssf's section tags
+(`<ssf-instructions>`, `<description>`, `<history>`, `<event>` and the rest) and the
+bullet, quote and tag lines around them. Only the item and activity sections
+(`<issue>`, `<pull-request>`, `<history>`, `<new-activity>`, `<next-message>`) hold other
+sections; the rest are read as opaque, ending only at their own closing tag, so a tag
+written inside a guidance file or a handover summary opens nothing. A section the screen
+never closes (an echo shown in part) does not hide what follows it: from where it opened,
+only the bullet, quote and tag lines count as echo.
 The item's own words are relayed under that marker, so a phrase someone quoted in a
 comment is not read as the harness's prompt. What remains is an agent quoting the exact
 phrase itself, which costs one `blocked` post and one restart, and nothing more.
@@ -386,7 +394,7 @@ If the item has closed or the bot was dropped from it meanwhile, the workspace i
 and cannot be brought back, the item cannot be read, or the outgoing agent cannot be
 stopped, the handover is **refused at that point**: one `handed-over` post carrying
 `refused: <reason>`, and, if the old agent is still there, one `[ssf] Handover to
-<harness> refused: <reason>. Carry on.` message to it. The old session keeps the item.
+<harness> refused: <reason>.` message to it, telling it to carry on. The old session keeps the item.
 
 If the new harness comes up on its own sign-in screen, the `handed-over` post is made
 (the handover did happen) and the item is **blocked** the usual way. The old session is
@@ -415,8 +423,8 @@ chars`).
 
 **Calling it off.** `ssf handover [ITEM] --cancel` drops a handover the daemon has not
 carried out yet: nothing about the item changes, and the session that is there is told
-in one `[ssf] The handover to <harness> was cancelled: this session keeps the item.
-Carry on.` message, since it was told to stop working when the handover was recorded.
+in one `[ssf] The handover to <harness> was cancelled: this session keeps the item.`
+message telling it to carry on, since it was told to stop working when the handover was recorded.
 The flags that describe a handover are refused with `--cancel`, as is a cancel with
 nothing pending. Nothing is posted on the item: the handover was never announced there.
 

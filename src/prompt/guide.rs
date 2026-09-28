@@ -38,6 +38,12 @@ conclusion stays above the evidence; fenced code blocks for commands, errors and
 Screenshots and wireframes need a place to live: `gh` cannot attach an image to a post, so \
 commit it on the branch and link the raw file.\n\n\
 ## Messages you receive\n\n\
+Each message is one `[ssf]` lead line, then sections in plain tags on lines of their own: \
+`<ssf-instructions>` for what ssf tells you, `<history>` or `<new-activity>` for the item's \
+events, one `<event>` each, with ssf's `<note>` or `<omitted>` about them first, \
+`<description>`, `<handover-summary>`, `<workspace-note>` and the guidance files \
+(`<repository-guidance file=\"SSF.md\">`) as they apply. A message delivered together with \
+the one before it follows it in `<next-message>`.\n\n\
 - `[ssf] New activity on ...`: comments, reviews, label changes, renames, linked PRs and the \
 like on your item, and emoji reactions added to or removed from its posts (who, which emoji, \
 which post). Your own posts are not echoed back here; a session started again is shown \

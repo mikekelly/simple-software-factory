@@ -171,8 +171,9 @@ const SETUP_TAIL_LINES: usize = 32;
 /// a pasted prompt, the item's description, activity delivered from the
 /// item, where a person may well have quoted the phrase -- is relayed
 /// under that marker, and an echo carries `[ssf]` from its first line
-/// through the bullet, quote and tag lines (`- `, `> `, `<github-event>`)
-/// that follow it. Every
+/// through the bullet, quote and tag lines (`- `, `> `, `<event>`) that
+/// follow it and every line inside ssf's section tags
+/// (`<ssf-instructions>`, `<description>`, ...). Every
 /// string ssf itself writes into a terminal or that agents read stays
 /// free of these phrases (`prompt::login_back_prompt`, the `blocked` and
 /// `unblocked` event posts, `BlockedView::describe`, `SessionBlocked`),
@@ -217,30 +218,146 @@ fn dialog_candidates(screen: &str, limit: usize) -> Vec<&str> {
     // never indented behind a `> `.
     let tail: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
     let start = tail.len().saturating_sub(limit);
-    let mut in_echo = false;
     // Read echo boundaries before trimming the window: a long echoed
     // wizard can put its [ssf] marker above the login tail.
+    let (mut echo, unclosed) = echo_lines(&tail, usize::MAX);
+    // A section the screen never closes (a truncated echo, or text of
+    // someone else's that opens a tag) must not hide what follows it:
+    // from where it opened, only the line-shape rule marks echo.
+    if let Some(from) = unclosed {
+        echo = echo_lines(&tail, from).0;
+    }
     tail.iter()
-        .copied()
+        .zip(echo)
         .enumerate()
-        .filter(|(index, raw)| {
-            let l = raw.trim();
-            if l.contains("[ssf]") {
-                in_echo = true;
-                return false;
-            }
-            let quoted = l.starts_with("> ") && raw.len() > l.len();
-            // ssf's tags around relayed events (`<history>`,
-            // `<github-event ...>`, `</github-event>`) carry the echo on.
-            let continues = l.starts_with('-') || l.starts_with('>') || l.starts_with('<');
-            if quoted || (in_echo && continues) {
-                return false;
-            }
-            in_echo = false;
-            *index >= start
-        })
-        .map(|(_, raw)| raw.trim())
+        .filter(|(index, (_, echoed))| !echoed && *index >= start)
+        .map(|(_, (raw, _))| raw.trim())
         .collect()
+}
+
+/// Which of `tail`'s lines are echoed ssf text, and where the outermost
+/// section still open at the end of the screen was opened, if one is.
+/// Section tags count only on lines before `depth_until`.
+fn echo_lines(tail: &[&str], depth_until: usize) -> (Vec<bool>, Option<usize>) {
+    let mut echo = Vec::with_capacity(tail.len());
+    let mut in_echo = false;
+    // The sections the echo has open, innermost last, and the line the
+    // outermost opened on: every line inside one is ssf's.
+    let mut open: Vec<&str> = Vec::new();
+    let mut opened_at = None;
+    for (index, raw) in tail.iter().enumerate() {
+        let l = raw.trim();
+        if l.contains("[ssf]") {
+            in_echo = true;
+            open.clear();
+            opened_at = None;
+            echo.push(true);
+            continue;
+        }
+        let quoted = l.starts_with("> ") && raw.len() > l.len();
+        let depth = index < depth_until;
+        if in_echo && depth {
+            track_section(&mut open, l);
+            if open.is_empty() {
+                opened_at = None;
+            } else if opened_at.is_none() {
+                opened_at = Some(index);
+            }
+        }
+        // Bullet, quote and tag lines carry the echo on, and so does
+        // any line inside one of ssf's sections.
+        let continues = (depth && !open.is_empty())
+            || l.starts_with('-')
+            || l.starts_with('>')
+            || l.starts_with('<');
+        if quoted || (in_echo && continues) {
+            echo.push(true);
+        } else {
+            in_echo = false;
+            open.clear();
+            opened_at = None;
+            echo.push(false);
+        }
+    }
+    (echo, opened_at.filter(|_| !open.is_empty()))
+}
+
+/// Sections that hold only other sections of ssf's; every other section
+/// is opaque: text inside it can be anyone's (a guidance file, a comment,
+/// a handover summary), so only its own closing tag ends it and no tag
+/// inside it counts.
+const CONTAINERS: &[&str] = &[
+    "issue",
+    "pull-request",
+    "history",
+    "new-activity",
+    "next-message",
+];
+
+/// Apply `line`'s section tag, if it has one, to the open sections.
+fn track_section<'a>(open: &mut Vec<&'a str>, line: &'a str) {
+    let top = open.last().copied();
+    match section_tag(line) {
+        Some((Tag::Close, name)) if top == Some(name) => {
+            open.pop();
+        }
+        Some((Tag::Open, name)) if top.is_none_or(|t| CONTAINERS.contains(&t)) => {
+            open.push(name);
+        }
+        _ => {}
+    }
+}
+
+/// The section tags ssf frames its messages with (`prompt::section`).
+const SSF_TAGS: &[&str] = &[
+    "ssf-instructions",
+    "global-guidance",
+    "global-harness-guidance",
+    "repository-guidance",
+    "harness-guidance",
+    "handover-summary",
+    "workspace-note",
+    "issue",
+    "pull-request",
+    "project-boards",
+    "description",
+    "history",
+    "new-activity",
+    "next-message",
+    "note",
+    "event",
+    "omitted",
+];
+
+enum Tag {
+    /// `<tag>` or `<tag file="..">` on a line of its own.
+    Open,
+    /// `</tag>` on a line of its own.
+    Close,
+    /// A section opened and closed on one line (`<omitted>..</omitted>`).
+    Whole,
+}
+
+/// Whether `line` (trimmed) opens or closes one of ssf's sections, and which.
+fn section_tag(line: &str) -> Option<(Tag, &str)> {
+    let name_of = |rest: &'_ str| {
+        let end = rest.find(['>', ' ']).unwrap_or(rest.len());
+        SSF_TAGS.iter().copied().find(|t| *t == &rest[..end])
+    };
+    if let Some(rest) = line.strip_prefix("</") {
+        return name_of(rest)
+            .filter(|_| line.ends_with('>'))
+            .map(|n| (Tag::Close, n));
+    }
+    let rest = line.strip_prefix('<')?;
+    let name = name_of(rest)?;
+    if line.contains("</") {
+        Some((Tag::Whole, name))
+    } else if line.ends_with('>') {
+        Some((Tag::Open, name))
+    } else {
+        None
+    }
 }
 
 /// Would `text`, shown at the bottom of any harness's screen, pass for

@@ -397,7 +397,22 @@ async fn guidance_follows_the_harness_on_the_pane() {
     assert!(prompts[0].contains("Global OMP guidance."));
     assert!(!prompts[0].contains("Codex-only guidance."));
     // ... and the delivered activity, which the harness needs to see.
-    assert!(prompts[0].contains("[ssf] hello"));
+    // As the next message of the same delivery, under the story's one
+    // `[ssf]` lead line.
+    assert!(
+        prompts[0].contains("<next-message>\nhello\n</next-message>"),
+        "{}",
+        prompts[0]
+    );
+    assert_eq!(
+        prompts[0]
+            .lines()
+            .filter(|l| l.starts_with("[ssf]"))
+            .count(),
+        1,
+        "{}",
+        prompts[0]
+    );
 }
 
 #[tokio::test]
@@ -446,7 +461,7 @@ async fn a_handover_replaces_the_session_in_the_same_workspace() {
     let log = d.log();
     assert_eq!(log[0], "stop:t5", "{log:?}");
     assert!(
-        log[1].starts_with("start:w5:You took over this issue from a session on Claude"),
+        log[1].starts_with("start:w5:[ssf] Simple Software Factory"),
         "{log:?}"
     );
     assert_eq!(log.len(), 2, "{log:?}");

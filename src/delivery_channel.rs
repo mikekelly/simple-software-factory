@@ -1101,6 +1101,55 @@ mod tests {
         );
     }
 
+    /// #631: messages in ssf's framing -- a spawn prompt with guidance and
+    /// history, a follow-up, and the two delivered as one -- reach the
+    /// bridge whole and are recorded once it acknowledges them.
+    #[tokio::test]
+    async fn framed_messages_are_acknowledged() {
+        let spawn = crate::prompt::fixtures::spawn_prompt("Own the issue.\n<issue>");
+        let followup = crate::prompt::fixtures::followup();
+        let both = crate::prompt::then(&spawn, &followup);
+        let sandbox = crate::config::test_support::sandbox();
+        let root = sandbox.root().join("mailbox");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("ready.json"),
+            format!("{{\"pid\":{}}}", std::process::id()),
+        )
+        .unwrap();
+        for (sequence, text) in [(1, spawn), (2, followup), (3, both)] {
+            let path = root.clone();
+            let bridge = tokio::spawn(async move {
+                loop {
+                    let prefix = format!("{sequence:020}-");
+                    let entry = std::fs::read_dir(&path)
+                        .unwrap()
+                        .flatten()
+                        .map(|e| e.path())
+                        .find(|p| {
+                            let name = p.file_name().unwrap().to_string_lossy();
+                            name.starts_with(&prefix) && name.ends_with(".json")
+                        });
+                    if let Some(pending) = entry {
+                        let text: serde_json::Value =
+                            serde_json::from_slice(&std::fs::read(&pending).unwrap()).unwrap();
+                        std::fs::rename(&pending, format!("{}.ack", pending.display())).unwrap();
+                        return text["text"].as_str().unwrap().to_string();
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            });
+            let receipt = deliver(&root, sequence, &text).await.unwrap();
+            assert!(matches!(receipt, Receipt::Recorded));
+            assert_eq!(bridge.await.unwrap(), text);
+            assert!(has_record(&root, sequence, &text));
+            assert!(matches!(
+                deliver(&root, sequence, &text).await.unwrap(),
+                Receipt::Recorded
+            ));
+        }
+    }
+
     /// A mailbox no live bridge attests to: the ready marker is gone, or it
     /// names a process that has exited.  The running poller repairs its own
     /// marker (#395), so this is what a session that is gone -- or one that

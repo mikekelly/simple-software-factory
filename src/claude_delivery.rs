@@ -406,6 +406,38 @@ mod tests {
 
     #[tokio::test]
     async fn sends_authenticated_frame_and_reconciles_without_resending() {
+        inbox_round_trip("[ssf] event").await;
+    }
+
+    /// #631: messages in ssf's framing -- a spawn prompt with guidance and
+    /// history, a follow-up, and the two delivered as one -- are matched
+    /// in the transcript, as queued and as the peer's user turn.
+    #[tokio::test]
+    async fn framed_messages_are_confirmed() {
+        let spawn = crate::prompt::fixtures::spawn_prompt("Own the issue.\n<issue>");
+        let followup = crate::prompt::fixtures::followup();
+        let both = crate::prompt::then(&spawn, &followup);
+        for text in [&spawn, &followup, &both] {
+            inbox_round_trip(text).await;
+        }
+        let sandbox = crate::config::test_support::sandbox();
+        let transcript = sandbox.root().join("transcript.jsonl");
+        let record = Record {
+            transcript: transcript.clone(),
+            content: format!(
+                "<cross-session-message from-name=\"ssf\">\n{both}\n</cross-session-message>"
+            ),
+            confirmed: false,
+        };
+        assert!(!observed(&record));
+        let turn = json!({"type":"user","origin":{"kind":"peer"},
+            "message":{"content":format!("peer said:\n{}", record.content)}});
+        std::fs::write(&transcript, turn.to_string()).unwrap();
+        assert!(observed(&record));
+    }
+
+    async fn inbox_round_trip(text: &str) {
+        let text = text.to_string();
         let sandbox = crate::config::test_support::sandbox();
         let socket = sandbox.root().join("inbox.sock");
         let transcript = sandbox.root().join("transcript.jsonl");
@@ -416,6 +448,7 @@ mod tests {
             transcript: transcript.clone(),
             token: "test-token".into(),
         };
+        let sent = text.clone();
         let receiver = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut lines = BufReader::new(stream).lines();
@@ -430,7 +463,7 @@ mod tests {
                 frame["message"]["content"]
                     .as_str()
                     .unwrap()
-                    .contains("[ssf] event")
+                    .contains(&sent)
             );
             std::fs::write(transcript, json!({"type":"queue-operation","operation":"enqueue","content":frame["message"]["content"]}).to_string()).unwrap();
             // No second socket connection is allowed during reconciliation.
@@ -440,21 +473,14 @@ mod tests {
                     .is_err()
             );
         });
-        assert!(
-            deliver(Some(&inbox), &mailbox, 1, "[ssf] event")
-                .await
-                .unwrap()
-        );
-        let path = record_path(&mailbox, 1, "[ssf] event");
+        assert!(deliver(Some(&inbox), &mailbox, 1, &text).await.unwrap());
+        let path = record_path(&mailbox, 1, &text);
         let mut record: Record = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(record.confirmed);
         record.confirmed = false; // Simulate receipt before the daemon saved confirmation.
         save(&path, &record).unwrap();
-        assert!(
-            deliver(Some(&inbox), &mailbox, 1, "[ssf] event")
-                .await
-                .unwrap()
-        );
-        assert!(deliver(None, &mailbox, 1, "[ssf] event").await.unwrap());
+        assert!(deliver(Some(&inbox), &mailbox, 1, &text).await.unwrap());
+        assert!(deliver(None, &mailbox, 1, &text).await.unwrap());
         receiver.await.unwrap();
     }
 

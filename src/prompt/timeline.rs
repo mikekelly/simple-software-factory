@@ -21,8 +21,6 @@ pub struct Rendered {
     /// renamed ...), rather than carrying what someone wrote on it or
     /// echoing work done to it. What a follower at the default level hears.
     pub state_change: bool,
-    /// Who did it (the login, without `@`), when known.
-    pub actor: Option<String>,
     /// When it happened (GitHub's ISO timestamp), when known.
     pub at: Option<String>,
 }
@@ -180,7 +178,7 @@ fn post_origin(body: &str, author: &str, bot: &str) -> Option<String> {
 }
 
 /// Author text placed unquoted on an event line (titles, names, commit
-/// messages): `<` becomes `‹` so it can never close a `<github-event>` or
+/// messages): `<` becomes `‹` so it can never close an `<event>` or
 /// `<history>` tag.
 fn inline(v: &str) -> String {
     v.replace('<', "‹")
@@ -396,7 +394,6 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
         origin,
         assignee,
         state_change: state_change(&kind),
-        actor: Some(actor),
         at: Some(when(ev)).filter(|w| !w.is_empty()),
     })
 }

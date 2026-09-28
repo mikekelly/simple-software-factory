@@ -168,7 +168,7 @@ impl Engine {
         let noted;
         let text = match re_created.as_ref().and_then(|r| r.note.as_deref()) {
             Some(note) => {
-                noted = format!("[ssf] {note}\n\n{text}");
+                noted = prompt::with_workspace_note(text, note);
                 noted.as_str()
             }
             None => text,
@@ -204,7 +204,7 @@ impl Engine {
                 .await
             {
                 Ok(s) => {
-                    story = Some(format!("{}\n\n{text}", s.text));
+                    story = Some(prompt::then(&s.text, text));
                     note_given = owed;
                 }
                 Err(e) => warn!(
