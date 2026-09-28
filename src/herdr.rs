@@ -42,10 +42,7 @@ pub fn session_summary() -> String {
     if crate::vm::in_guest() {
         "herdr's default session in the VM (attach: `ssf vm attach`)".to_string()
     } else {
-        format!(
-            "herdr session `{SESSION}` (attach: `herdr session attach {SESSION}`; start: `{}`)",
-            server_command()
-        )
+        format!("herdr session `{SESSION}` (attach: `herdr session attach {SESSION}`)")
     }
 }
 
@@ -83,34 +80,31 @@ pub fn write_config() -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-/// A herdr command aimed at ssf's session: [`SESSION`] with ssf's config on
-/// a host, herdr's default session in the VM guest. Every inherited
+/// A herdr command aimed at ssf's session: [`SESSION`] on a host (its
+/// config is the server's, given by [`server_command`]), herdr's default session in the VM guest. Every inherited
 /// `HERDR_*` variable goes: ssf may itself run inside a herdr pane, whose
 /// workspace, pane and socket (`HERDR_SOCKET_PATH` wins over
 /// `HERDR_SESSION`) are the person's, not ssf's.
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
-    let session = (!crate::vm::in_guest()).then(|| (SESSION, config_path()));
     isolated(
         std::process::Command::new(program),
         std::env::vars_os().map(|(name, _)| name),
-        session.as_ref().map(|(s, c)| (*s, c.as_path())),
+        (!crate::vm::in_guest()).then_some(SESSION),
     )
 }
 
 fn isolated(
     mut command: std::process::Command,
     inherited: impl IntoIterator<Item = std::ffi::OsString>,
-    session: Option<(&str, &Path)>,
+    session: Option<&str>,
 ) -> std::process::Command {
     for name in inherited {
         if name.to_string_lossy().starts_with("HERDR_") {
             command.env_remove(name);
         }
     }
-    if let Some((session, config)) = session {
-        command
-            .env("HERDR_SESSION", session)
-            .env("HERDR_CONFIG_PATH", config);
+    if let Some(session) = session {
+        command.env("HERDR_SESSION", session);
     }
     command
 }
