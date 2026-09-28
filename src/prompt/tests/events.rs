@@ -449,6 +449,10 @@ fn a_first_prompt_frames_the_timeline_as_history_and_tags_each_event() {
     assert!(!p.contains("Activity so far"), "{p}");
     let history = &p[p.find("\n<history>\n").unwrap()..];
     assert!(
+        history.starts_with("\n<history>\n<note>\nEverything below"),
+        "{p}"
+    );
+    assert!(
         history.contains(
             "Everything below happened before this session was spawned. Posts by @bot here \
 were made by earlier sessions, not by you"
@@ -460,7 +464,7 @@ were made by earlier sessions, not by you"
     assert!(!history.contains("handed it over"), "{p}");
     assert!(
         history.ends_with(
-            "Act on the latest request.\n<event>\n- 2026-09-01 10:00Z @alice commented \
+            "Act on the latest request.\n</note>\n<event>\n- 2026-09-01 10:00Z @alice commented \
 (https://gh/406#c1):\n  > please fix\n</event>\n</history>\n"
         ),
         "{p}"
@@ -625,7 +629,7 @@ fn callouts_survive_an_empty_history_and_an_ignored_reopen() {
         "{p}"
     );
     assert!(
-        p.contains("before starting over.\n(no activity yet)\n</history>"),
+        p.contains("before starting over.\n</note>\n(no activity yet)\n</history>"),
         "{p}"
     );
     assert!(!p.contains("Everything below happened"), "{p}");

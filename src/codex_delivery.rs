@@ -650,6 +650,23 @@ mod tests {
 
     #[tokio::test]
     async fn native_message_receipt_and_restart_replay_never_resend() {
+        native_round_trip("[ssf] event").await;
+    }
+
+    /// #631: messages in ssf's framing -- a spawn prompt with guidance and
+    /// history, a follow-up, and the two delivered as one -- are
+    /// confirmed from their echo like any other text.
+    #[tokio::test]
+    async fn framed_messages_are_confirmed() {
+        let spawn = crate::prompt::fixtures::spawn_prompt("Own the issue.\n<issue>");
+        let followup = crate::prompt::fixtures::followup();
+        let both = crate::prompt::then(&spawn, &followup);
+        for text in [spawn, followup, both] {
+            native_round_trip(&text).await;
+        }
+    }
+
+    async fn native_round_trip(text: &str) {
         let (sandbox, socket, transcript, listener) = fixture();
         let cwd = sandbox.root().to_owned();
         let transcript_for_server = transcript.clone();
@@ -704,22 +721,19 @@ mod tests {
         });
         let mailbox = sandbox.root().join("mailbox");
         assert!(
-            deliver(
-                Some(&info(&socket, sandbox.root())),
-                &mailbox,
-                1,
-                "[ssf] event"
-            )
-            .await
-            .unwrap()
+            deliver(Some(&info(&socket, sandbox.root())), &mailbox, 1, text)
+                .await
+                .unwrap()
         );
-        let path = record_path(&mailbox, 1, "[ssf] event");
+        let path = record_path(&mailbox, 1, text);
         let mut record: Record = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         // Reproduce receipt committed but confirmation lost across process exit.
+        assert!(record.confirmed);
+        assert_eq!(record.text, text);
         record.confirmed = false;
         save(&path, &record).unwrap();
-        assert!(deliver(None, &mailbox, 1, "[ssf] event").await.unwrap());
-        assert!(deliver(None, &mailbox, 1, "[ssf] event").await.unwrap());
+        assert!(deliver(None, &mailbox, 1, text).await.unwrap());
+        assert!(deliver(None, &mailbox, 1, text).await.unwrap());
         server.await.unwrap();
     }
 

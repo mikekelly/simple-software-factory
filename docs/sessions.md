@@ -269,7 +269,12 @@ agent's own screen from tripping this: only the bottom of an idle agent's screen
 and a line carrying ssf's `> ` quote marker or inside echoed `[ssf]` text is skipped:
 an echo runs from the `[ssf]` lead line through every line inside ssf's section tags
 (`<ssf-instructions>`, `<description>`, `<history>`, `<event>` and the rest) and the
-bullet, quote and tag lines around them.
+bullet, quote and tag lines around them. Only the item and activity sections
+(`<issue>`, `<pull-request>`, `<history>`, `<new-activity>`, `<next-message>`) hold other
+sections; the rest are read as opaque, ending only at their own closing tag, so a tag
+written inside a guidance file or a handover summary opens nothing. A section the screen
+never closes (an echo shown in part) does not hide what follows it: from where it opened,
+only the bullet, quote and tag lines count as echo.
 The item's own words are relayed under that marker, so a phrase someone quoted in a
 comment is not read as the harness's prompt. What remains is an agent quoting the exact
 phrase itself, which costs one `blocked` post and one restart, and nothing more.

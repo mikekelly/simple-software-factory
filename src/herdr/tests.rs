@@ -2219,3 +2219,34 @@ fn a_command_with_its_own_timeout_gets_it_plus_the_margin() {
         RUN_TIMEOUT + Duration::from_secs(5)
     );
 }
+
+/// #631: messages in ssf's framing are told apart by their prose, not by
+/// the plain tag lines: a composer card showing the start of a spawn
+/// prompt, a follow-up, or the two delivered as one identifies it, and
+/// the same text scrolled up into history does not.
+#[test]
+fn framed_messages_are_identified_on_screen() {
+    let spawn = crate::prompt::fixtures::spawn_prompt("Own the issue.\n<issue>");
+    let followup = crate::prompt::fixtures::followup();
+    let both = crate::prompt::then(&spawn, &followup);
+    for prompt in [&spawn, &followup, &both] {
+        // A collapsed card: the first lines, cut short.
+        let card: Vec<String> = prompt
+            .lines()
+            .take(8)
+            .map(|l| format!("│{}…", l.chars().take(12).collect::<String>()))
+            .collect();
+        let screen = format!("╭───╮\n{}\n╰ +90 lines ─╯", card.join("\n"));
+        assert!(prompt_on_screen(&screen, prompt), "{screen}\n---\n{prompt}");
+        let history = format!(
+            "{screen}\n{}",
+            (0..30)
+                .map(|n| format!("assistant response line {n}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert!(!prompt_on_screen(&history, prompt));
+    }
+    // The follow-up is short enough to show whole.
+    assert!(prompt_on_screen(&format!("❯ {followup}"), &followup));
+}

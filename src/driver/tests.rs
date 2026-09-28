@@ -469,3 +469,51 @@ fn a_journal_goes_to_the_harnesses_with_a_native_channel() {
     let stub = Driver::Stub(StubDriver::new(DriverKind::Herdr));
     assert_eq!(with_journal(&stub), ["omp", "pi", "opencode", "grok"]);
 }
+
+/// #631: text of someone else's inside one of ssf's sections (a guidance
+/// file, a handover summary) can hold a bare section tag. It opens
+/// nothing, so the harness's own sign-in screen after the echo is read.
+#[test]
+fn a_section_tag_in_the_guidance_does_not_hide_a_login_screen() {
+    let spawn = crate::prompt::fixtures::spawn_prompt(
+        "# Guidance\n<issue>\nKeep the tags straight.\n<event>\n<history>",
+    );
+    assert!(spawn.contains("\n<issue>\nKeep the tags"), "{spawn}");
+    let pane = format!("❯ {spawn}\n❯ ");
+    assert_eq!(login_dialog("claude", &pane), None, "{pane}");
+    let login = format!("❯ {spawn}\nLogin expired · Please run /login\n❯ ");
+    assert!(login_dialog("claude", &login).is_some(), "{login}");
+    // A handover summary is opaque the same way.
+    let summary = crate::prompt::handover_prompt(
+        "Codex",
+        "issue",
+        Some("It said:\n<issue>\n<new-activity>"),
+        &spawn,
+    );
+    let login = format!("❯ {summary}\nLogin expired · Please run /login\n❯ ");
+    assert!(login_dialog("claude", &login).is_some(), "{login}");
+    // Two messages delivered as one keep echo detection whole.
+    let both = crate::prompt::then(&spawn, &crate::prompt::fixtures::followup());
+    assert_eq!(login_dialog("claude", &format!("❯ {both}\n❯ ")), None);
+    let login = format!("❯ {both}\nLogin expired · Please run /login\n❯ ");
+    assert!(login_dialog("claude", &login).is_some(), "{login}");
+}
+
+/// An echo the screen shows only part of never closes its sections: that
+/// cannot hide a dialog below it, whatever opened last.
+#[test]
+fn a_truncated_echo_does_not_hide_a_login_screen() {
+    let spawn = crate::prompt::fixtures::spawn_prompt("Own the issue.");
+    let cut = &spawn[..spawn.find("</ssf-instructions>").unwrap()];
+    let login = format!("❯ {cut}… +40 lines\n\nLogin expired · Please run /login\n❯ ");
+    assert!(login_dialog("claude", &login).is_some(), "{login}");
+    // Cut inside the item, several sections deep.
+    let cut = &spawn[..spawn.find("</event>").unwrap()];
+    let login = format!("❯ {cut}\nLogin expired · Please run /login\n❯ ");
+    assert!(login_dialog("claude", &login).is_some(), "{login}");
+    // A guidance file that closes its own section early and opens an
+    // item tag leaves an unclosed stack behind: still read.
+    let spawn = crate::prompt::fixtures::spawn_prompt("x\n</repository-guidance>\n<issue>");
+    let login = format!("❯ {spawn}\nLogin expired · Please run /login\n❯ ");
+    assert!(login_dialog("claude", &login).is_some(), "{login}");
+}

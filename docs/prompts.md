@@ -90,7 +90,11 @@ for the agent. A follow-up is its lead line (`[ssf] New activity on #N`),
 their lead line and `<ssf-instructions>`; tracking and FYI messages carry
 `<history>` or `<new-activity>` and then `<ssf-instructions>`. When ssf had to
 re-create the session's workspace, a `<workspace-note>` section follows the
-lead line of whatever message it delivers next. Every message names its item once: `#N "title"` with the URL on first
+lead line of whatever message it delivers next. When one delivery carries
+two messages (a fresh harness gets the item's story, then the message that
+brought it up), the second follows the first in a `<next-message>` section:
+its lead line without the `[ssf]` marker, then its sections, so the delivery
+still has one lead line. Every message names its item once: `#N "title"` with the URL on first
 mention, `#N` alone in later messages about the session's own item;
 cross-repository references are `owner/repo#N`, which GitHub links. Timestamps
 are `2026-09-04 17:40Z`, or `17:40Z` when the date is today's.
@@ -100,7 +104,7 @@ item, the first session, a restart whose harness cannot resume its
 conversation, a handover, a reassignment, is given the item's story before the
 message that prompted it. That story is the one view in which the bot's earlier
 posts are replayed, so the new session can read what was already said and
-promised. It arrives in `<history>`, opening with lines saying that everything in it predates this session, that the bot's
+promised. It arrives in `<history>`, opening with a `<note>` saying that everything in it predates this session, that the bot's
 posts there were earlier sessions' (context, not commitments), and to act on the
 latest request; when the item was closed and reopened, or handed over, a line says
 so and to check the previous session's branch and pull request before starting

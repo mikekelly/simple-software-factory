@@ -464,3 +464,27 @@ of origin/b.\n</workspace-note>\n\n<new-activity>\n<event>\n- x\n</event>\n</new
         "[ssf] Handover to Pi refused: gone.\n\n<workspace-note>\nn\n</workspace-note>"
     );
 }
+
+/// #631: two messages delivered as one (a fresh harness's story, then the
+/// message behind the restart) keep one `[ssf]` lead line: the second
+/// follows in a `<next-message>` section, lead text first.
+#[test]
+fn two_messages_delivered_as_one_keep_one_lead_line() {
+    let spawn = super::super::fixtures::spawn_prompt("Own the issue.");
+    let followup = super::super::fixtures::followup();
+    let both = then(&spawn, &followup);
+    assert_eq!(
+        both.lines().filter(|l| l.starts_with("[ssf]")).count(),
+        1,
+        "{both}"
+    );
+    assert!(both.starts_with(spawn.trim_end()), "{both}");
+    assert!(
+        both.contains("\n\n<next-message>\nNew activity on #5\n\n<new-activity>\n"),
+        "{both}"
+    );
+    assert!(
+        both.ends_with("</new-activity>\n</next-message>\n"),
+        "{both}"
+    );
+}

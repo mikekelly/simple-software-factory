@@ -9,6 +9,8 @@ use crate::config::{DaemonConfig, DriverKind, RepoConfig};
 use crate::github::{Issue, PrInfo, ProjectCard};
 use crate::origin;
 
+#[cfg(test)]
+pub mod fixtures;
 mod guide;
 mod timeline;
 pub use guide::{VM_GUEST_LINE, guide};
@@ -443,6 +445,20 @@ fn with_section_after_lead(text: &str, extra: &str) -> String {
     }
 }
 
+/// Two messages delivered as one (a fresh harness's story, then the
+/// message that prompted the restart): `first` unchanged, then `second`
+/// in a `<next-message>` section, its lead line without the `[ssf]`
+/// marker, so the delivery keeps the one lead line every message has.
+pub fn then(first: &str, second: &str) -> String {
+    let second = second.trim();
+    let second = second.strip_prefix("[ssf]").map_or(second, str::trim_start);
+    format!(
+        "{}\n\n{}\n",
+        first.trim_end(),
+        section("next-message", second)
+    )
+}
+
 /// A delivery with the note ssf adds when it re-created the session's
 /// workspace (a branch kept ahead of origin, say): a `<workspace-note>`
 /// section after the message's lead line.
@@ -537,6 +553,9 @@ pub fn initial_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
     let (shown, omitted) = first_prompt_events(events, ctx);
     // The handover and reopen callouts hold even with no events shown.
     let mut lead = history_lead(issue, events, ctx, !shown.is_empty());
+    if !lead.is_empty() {
+        lead = format!("{}\n", section("note", &lead));
+    }
     if let Some(note) = omitted_notice(issue, ctx, shown.len(), omitted) {
         lead.push_str(&note);
         lead.push('\n');

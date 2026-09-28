@@ -204,7 +204,7 @@ impl Engine {
                 .await
             {
                 Ok(s) => {
-                    story = Some(format!("{}\n\n{text}", s.text));
+                    story = Some(prompt::then(&s.text, text));
                     note_given = owed;
                 }
                 Err(e) => warn!(
