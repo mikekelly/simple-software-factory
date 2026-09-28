@@ -5,9 +5,7 @@ fn invitation(id: u64, repository: &str, inviter: &str) -> Value {
         "id": id,
         "repository": {
             "id": id + 100,
-            "full_name": repository,
-            "clone_url": format!("https://github.com/{repository}.git"),
-            "ssh_url": format!("git@github.com:{repository}.git")
+            "full_name": repository
         },
         "inviter": {"login": inviter, "id": id + 200, "type": "User"}
     })
@@ -22,9 +20,7 @@ async fn only_invitations_from_configured_users_are_accepted() {
         json!({
             "id": 4,
             "repository": {
-                "id": 104, "full_name": "gone/four",
-                "clone_url": "https://github.com/gone/four.git",
-                "ssh_url": "git@github.com:gone/four.git"
+                "id": 104, "full_name": "gone/four"
             },
             "inviter": null
         }),

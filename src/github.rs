@@ -148,10 +148,18 @@ pub struct KeyRecord {
     pub key: String,
 }
 
+/// The repository in an invitation: GitHub sends a minimal repository
+/// there, without `clone_url` or `ssh_url`, so it is not a
+/// [`RepositoryIdentity`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct InvitedRepository {
+    pub full_name: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RepositoryInvitation {
     pub id: u64,
-    pub repository: RepositoryIdentity,
+    pub repository: InvitedRepository,
     pub inviter: Option<User>,
 }
 
