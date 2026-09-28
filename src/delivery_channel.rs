@@ -101,6 +101,20 @@ pub(crate) fn unavailable(mailbox: &Path) -> anyhow::Error {
     .into()
 }
 
+/// Whether `command`, started for `harness`, picks up an earlier
+/// conversation: the Pi/OMP launcher resumes the latest transcript in the
+/// mailbox's `session` directory, which outlives the harness and the guest.
+pub(crate) fn launcher_resumes(harness: &str, command: &str, mailbox: &Path) -> bool {
+    matches!(harness, "pi" | "omp")
+        && command.contains("SSF_PI_LAUNCHER")
+        && std::fs::read_dir(mailbox.join("session")).is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                e.path().extension().is_some_and(|x| x == "jsonl")
+                    && e.file_type().is_ok_and(|t| t.is_file())
+            })
+        })
+}
+
 pub(crate) fn mailbox(repo: &str, number: u64) -> PathBuf {
     repo_dir(repo).join(number.to_string())
 }
@@ -811,6 +825,35 @@ impl Channel for Grok {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_launched_pi_or_omp_with_a_transcript_resumes() {
+        let dir = std::env::temp_dir().join(format!("ssf-launcher-resumes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = Dir(dir);
+        let cmd = "\"$SSF_PI_LAUNCHER\" pi --model x";
+        assert!(!launcher_resumes("pi", cmd, dir.path()));
+        std::fs::create_dir(dir.path().join("session")).unwrap();
+        assert!(!launcher_resumes("pi", cmd, dir.path()));
+        std::fs::write(dir.path().join("session/2026.jsonl"), "{}\n").unwrap();
+        assert!(launcher_resumes("pi", cmd, dir.path()));
+        assert!(launcher_resumes("omp", cmd, dir.path()));
+        assert!(!launcher_resumes("pi", "pi --model x", dir.path()));
+        assert!(!launcher_resumes("opencode", cmd, dir.path()));
+    }
+
+    struct Dir(PathBuf);
+    impl Dir {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn mailbox_is_scoped_to_repository_and_session() {

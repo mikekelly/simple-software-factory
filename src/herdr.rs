@@ -1737,6 +1737,15 @@ keeping it"
                     command = driver::redacted(relaunch.command),
                     "no live agent; relaunching harness"
                 );
+                // Pi and OMP have no resume command of ssf's: their launcher
+                // continues the transcript it finds in the mailbox (#659).
+                resumed = relaunch.channel.is_some_and(|(mailbox, _)| {
+                    crate::delivery_channel::launcher_resumes(
+                        relaunch.harness,
+                        relaunch.command,
+                        mailbox,
+                    )
+                });
                 self.launch(
                     workspace_id,
                     relaunch.command,
