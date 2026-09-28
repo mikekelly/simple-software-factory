@@ -320,6 +320,10 @@ pub struct IssueState {
     /// `updated_at` alone (a reaction).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timeline_etags: Vec<String>,
+    /// ETag of the item itself when a subscribed-only poll last left it
+    /// fully handled, so an unchanged item answers 304 (free) next time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_etag: Option<String>,
     /// Set when `seen`, `timeline_etags` and `origins` were dropped once
     /// the item was closed, retired and released
     /// ([`IssueState::compactable`]): the newest timestamp `seen` held,
@@ -956,6 +960,7 @@ impl State {
                     st.compacted_through = st.heard_through();
                     st.seen.clear();
                     st.timeline_etags.clear();
+                    st.issue_etag = None;
                     st.origins.clear();
                 }
             }

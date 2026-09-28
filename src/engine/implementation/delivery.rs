@@ -24,8 +24,16 @@ impl Engine {
         let mut failed = false;
         for st in watched {
             let number = st.number;
-            let issue = match self.gh.issue(owner, name, number).await {
-                Ok(i) => i,
+            // Asked with the ETag the item had when it was last left fully
+            // handled here: a 304 says it is exactly as it was then, so
+            // only its timeline (reactions) can have moved.
+            let fetched = self
+                .gh
+                .issue_if_changed(owner, name, number, st.issue_etag.as_deref())
+                .await;
+            let (fresh, mut etag) = match fetched {
+                Ok(Conditional::Modified { value, etag }) => (Some(value), etag),
+                Ok(Conditional::NotModified) => (None, st.issue_etag.clone()),
                 Err(e) => {
                     failed = true;
                     warn!(
@@ -38,15 +46,22 @@ impl Engine {
             };
             // A reaction leaves `updated_at` alone but moves the timeline's
             // ETag, which a 304 answers for free.
-            if st.updated_at.as_deref() == Some(issue.updated_at.as_str())
-                && !super::issues::body_reactions_moved(&st.seen, &issue)
-            {
+            let unchanged = fresh.as_ref().is_none_or(|issue| {
+                st.updated_at.as_deref() == Some(issue.updated_at.as_str())
+                    && !super::issues::body_reactions_moved(&st.seen, issue)
+            });
+            if unchanged {
                 match self
                     .gh
                     .timeline_changed(owner, name, number, &st.timeline_etags)
                     .await
                 {
-                    Ok(false) => continue,
+                    Ok(false) => {
+                        if st.issue_etag != etag {
+                            self.entry(repo, number).issue_etag = etag;
+                        }
+                        continue;
+                    }
                     Ok(true) => {}
                     Err(e) => {
                         failed = true;
@@ -59,6 +74,33 @@ impl Engine {
                     }
                 }
             }
+            let issue = match fresh {
+                Some(issue) => issue,
+                None => match self.gh.issue_if_changed(owner, name, number, None).await {
+                    Ok(Conditional::Modified { value, etag: tag }) => {
+                        etag = tag;
+                        value
+                    }
+                    Ok(Conditional::NotModified) => {
+                        failed = true;
+                        warn!(
+                            repo = repo.name,
+                            issue = number,
+                            "unconditional fetch answered 304"
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        failed = true;
+                        warn!(
+                            repo = repo.name,
+                            issue = number,
+                            "polling subscribed item failed: {e:#}"
+                        );
+                        continue;
+                    }
+                },
+            };
             let reacted = match self.gh.timeline_tagged(owner, name, number).await {
                 Ok((timeline, etags)) => self
                     .reaction_diff(repo, owner, name, &issue, &st.seen, &timeline)
@@ -105,6 +147,7 @@ impl Engine {
             e.updated_at = Some(issue.updated_at.clone());
             e.seen = diff.seen;
             e.timeline_etags = etags;
+            e.issue_etag = etag;
             e.title = issue.title.clone();
             e.github_state = Some(github_state(&issue, None, merged));
             if closed {

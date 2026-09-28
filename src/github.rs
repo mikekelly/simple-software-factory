@@ -7,7 +7,8 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, ETAG, IF_NONE_MATCH, LINK, USER_AGE
 use reqwest::{Client, Response, StatusCode};
 use serde::Deserialize;
 use serde_json::Value;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const API_VERSION: &str = "2022-11-28";
 
@@ -16,6 +17,81 @@ pub struct GitHub {
     client: Client,
     api_url: String,
     token: String,
+    /// When the last rate-limit answer said requests may resume; shared by
+    /// every clone, so the engine can pause all polling until then.
+    paused_until: Arc<Mutex<Option<SystemTime>>>,
+}
+
+/// GitHub refused a request for its rate limit (403/429 with
+/// `Retry-After` or `x-ratelimit-remaining: 0`). Downcast from the
+/// `anyhow::Error` a call returns; `until` is when to try again.
+#[derive(Debug, Clone)]
+pub struct RateLimited {
+    pub what: String,
+    pub until: SystemTime,
+    pub message: String,
+}
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let wait = self
+            .until
+            .duration_since(SystemTime::now())
+            .unwrap_or_default()
+            .as_secs();
+        write!(
+            f,
+            "GitHub rate limited while {} (retry in {wait}s): {}",
+            self.what, self.message
+        )
+    }
+}
+
+impl std::error::Error for RateLimited {}
+
+/// How long to wait when GitHub gives no usable hint.
+const DEFAULT_RATE_LIMIT_PAUSE: Duration = Duration::from_secs(60);
+/// Never trust a hint that asks for more than this.
+const MAX_RATE_LIMIT_PAUSE: Duration = Duration::from_secs(3600);
+
+/// When requests may resume after a rate-limit answer: `Retry-After`
+/// seconds if given, else `x-ratelimit-reset` (epoch seconds) when
+/// `x-ratelimit-remaining` is 0, else a minute. `None` when the answer is
+/// not a rate limit at all (a plain 403).
+pub fn rate_limit_until(
+    status: StatusCode,
+    retry_after: Option<&str>,
+    remaining: Option<&str>,
+    reset: Option<&str>,
+    message: &str,
+    now: SystemTime,
+) -> Option<SystemTime> {
+    if status != StatusCode::FORBIDDEN && status != StatusCode::TOO_MANY_REQUESTS {
+        return None;
+    }
+    let exhausted = remaining.map(str::trim) == Some("0");
+    // A secondary rate limit is a 403 that may carry neither header.
+    let secondary = message.to_ascii_lowercase().contains("rate limit");
+    if retry_after.is_none() && !exhausted && !secondary && status != StatusCode::TOO_MANY_REQUESTS
+    {
+        return None;
+    }
+    let wait = if let Some(secs) = retry_after.and_then(|v| v.trim().parse::<u64>().ok()) {
+        Duration::from_secs(secs)
+    } else if let Some(at) = reset
+        .filter(|_| exhausted)
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        (UNIX_EPOCH + Duration::from_secs(at))
+            .duration_since(now)
+            .unwrap_or_default()
+            // The reset is to the second; a little slack avoids a retry
+            // that lands just before it.
+            + Duration::from_secs(1)
+    } else {
+        DEFAULT_RATE_LIMIT_PAUSE
+    };
+    Some(now + wait.min(MAX_RATE_LIMIT_PAUSE))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -301,7 +377,15 @@ impl GitHub {
             client,
             api_url: api_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
+            paused_until: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// When the last rate-limit answer said to resume, while that is still
+    /// in the future.
+    pub fn paused_until(&self) -> Option<SystemTime> {
+        let until = (*self.paused_until.lock().unwrap_or_else(|e| e.into_inner()))?;
+        (until > SystemTime::now()).then_some(until)
     }
 
     fn get(&self, url: &str) -> reqwest::RequestBuilder {
@@ -317,21 +401,20 @@ impl GitHub {
         format!("{}/{}", self.api_url, path.trim_start_matches('/'))
     }
 
-    async fn check(resp: Response, what: &str) -> Result<Response> {
+    async fn check(&self, resp: Response, what: &str) -> Result<Response> {
         let status = resp.status();
         if status.is_success() || status == StatusCode::NOT_MODIFIED {
             return Ok(resp);
         }
-        let remaining = resp
-            .headers()
-            .get("x-ratelimit-remaining")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        let retry_after = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        let remaining = header("x-ratelimit-remaining");
+        let retry_after = header("retry-after");
+        let reset = header("x-ratelimit-reset");
         let body = resp.text().await.unwrap_or_default();
         let msg: String = serde_json::from_str::<Value>(&body)
             .ok()
@@ -341,13 +424,24 @@ impl GitHub {
                     .map(str::to_string)
             })
             .unwrap_or_else(|| body.chars().take(300).collect());
-        if status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS {
-            if remaining.as_deref() == Some("0") || retry_after.is_some() {
-                bail!(
-                    "GitHub rate limited while {what} (retry-after: {}): {msg}",
-                    retry_after.unwrap_or_else(|| "unknown".into())
-                );
+        if let Some(until) = rate_limit_until(
+            status,
+            retry_after.as_deref(),
+            remaining.as_deref(),
+            reset.as_deref(),
+            &msg,
+            SystemTime::now(),
+        ) {
+            let mut paused = self.paused_until.lock().unwrap_or_else(|e| e.into_inner());
+            if paused.is_none_or(|p| p < until) {
+                *paused = Some(until);
             }
+            return Err(RateLimited {
+                what: what.to_string(),
+                until,
+                message: msg,
+            }
+            .into());
         }
         bail!("GitHub {status} while {what}: {msg}")
     }
@@ -378,7 +472,7 @@ impl GitHub {
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;
-        let resp = Self::check(resp, &format!("listing {kind}")).await?;
+        let resp = self.check(resp, &format!("listing {kind}")).await?;
         resp.json().await.context("decoding keys")
     }
 
@@ -397,11 +491,12 @@ impl GitHub {
             .send()
             .await
             .with_context(|| format!("POST {url}"))?;
-        let resp = Self::check(
-            resp,
-            &format!("adding {kind} entry (token needs write access to keys)"),
-        )
-        .await?;
+        let resp = self
+            .check(
+                resp,
+                &format!("adding {kind} entry (token needs write access to keys)"),
+            )
+            .await?;
         let rec: KeyRecord = resp.json().await.context("decoding key")?;
         Ok(rec.id)
     }
@@ -416,7 +511,8 @@ impl GitHub {
         if resp.status() == StatusCode::NOT_FOUND {
             return Ok(());
         }
-        Self::check(resp, &format!("removing {kind} entry {id}")).await?;
+        self.check(resp, &format!("removing {kind} entry {id}"))
+            .await?;
         Ok(())
     }
 
@@ -426,30 +522,42 @@ impl GitHub {
             .send()
             .await
             .context("GET /user")?;
-        let resp = Self::check(resp, "fetching bot identity").await?;
+        let resp = self.check(resp, "fetching bot identity").await?;
         resp.json::<User>().await.context("decoding /user")
     }
 
     /// Pending repository invitations for the authenticated user, across all
     /// pages. These are account-wide rather than scoped to a configured repo.
-    pub async fn repository_invitations(&self) -> Result<Vec<RepositoryInvitation>> {
+    pub async fn repository_invitations(
+        &self,
+        etag: Option<&str>,
+    ) -> Result<Conditional<Vec<RepositoryInvitation>>> {
         let mut url = Some(format!(
             "{}?per_page=100",
             self.url("user/repository_invitations")
         ));
         let mut invitations = Vec::new();
         let mut pages = 0;
+        let mut new_etag = None;
         while let Some(u) = url.take() {
             pages += 1;
             if pages > 50 {
                 bail!("repository invitations exceed 50 pages; giving up");
             }
-            let resp = self
-                .get(&u)
-                .send()
-                .await
-                .with_context(|| format!("GET {u}"))?;
-            let resp = Self::check(resp, "listing repository invitations").await?;
+            let mut req = self.get(&u);
+            if pages == 1
+                && let Some(tag) = etag
+            {
+                req = req.header(IF_NONE_MATCH, tag);
+            }
+            let resp = req.send().await.with_context(|| format!("GET {u}"))?;
+            let resp = self.check(resp, "listing repository invitations").await?;
+            if pages == 1 {
+                if resp.status() == StatusCode::NOT_MODIFIED {
+                    return Ok(Conditional::NotModified);
+                }
+                new_etag = header_str(&resp, ETAG);
+            }
             url = next_link(&resp);
             let page: Vec<RepositoryInvitation> = resp
                 .json()
@@ -457,7 +565,12 @@ impl GitHub {
                 .context("decoding repository invitations")?;
             invitations.extend(page);
         }
-        Ok(invitations)
+        // The first page's ETag vouches for the whole list only when there
+        // is no other page.
+        Ok(Conditional::Modified {
+            value: invitations,
+            etag: new_etag.filter(|_| pages == 1),
+        })
     }
 
     pub async fn accept_repository_invitation(&self, id: u64) -> Result<()> {
@@ -472,7 +585,8 @@ impl GitHub {
             .send()
             .await
             .with_context(|| format!("PATCH {url}"))?;
-        Self::check(resp, &format!("accepting repository invitation {id}")).await?;
+        self.check(resp, &format!("accepting repository invitation {id}"))
+            .await?;
         Ok(())
     }
 
@@ -483,7 +597,9 @@ impl GitHub {
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;
-        let resp = Self::check(resp, &format!("resolving repository {owner}/{repo}")).await?;
+        let resp = self
+            .check(resp, &format!("resolving repository {owner}/{repo}"))
+            .await?;
         resp.json().await.context("decoding repository identity")
     }
 
@@ -494,7 +610,9 @@ impl GitHub {
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;
-        let resp = Self::check(resp, &format!("resolving repository id {id}")).await?;
+        let resp = self
+            .check(resp, &format!("resolving repository id {id}"))
+            .await?;
         resp.json().await.context("decoding repository identity")
     }
 
@@ -517,7 +635,9 @@ impl GitHub {
             req = req.header(IF_NONE_MATCH, tag);
         }
         let resp = req.send().await.with_context(|| format!("GET {first}"))?;
-        let resp = Self::check(resp, &format!("listing {filter} items for {owner}/{repo}")).await?;
+        let resp = self
+            .check(resp, &format!("listing {filter} items for {owner}/{repo}"))
+            .await?;
         if resp.status() == StatusCode::NOT_MODIFIED {
             return Ok(Conditional::NotModified);
         }
@@ -530,7 +650,7 @@ impl GitHub {
                 .send()
                 .await
                 .with_context(|| format!("GET {url}"))?;
-            let resp = Self::check(resp, "paging item list").await?;
+            let resp = self.check(resp, "paging item list").await?;
             next = next_link(&resp);
             let page: Vec<Issue> = resp.json().await.context("decoding item page")?;
             issues.extend(page);
@@ -550,7 +670,7 @@ impl GitHub {
         etag: Option<&str>,
     ) -> Result<Conditional<Vec<(Issue, PrInfo)>>> {
         let first = format!(
-            "{}?state=open&per_page=100&sort=updated&direction=asc",
+            "{}?state=open&per_page=100&sort=updated&direction=desc",
             self.url(&format!("repos/{owner}/{repo}/pulls"))
         );
         let mut req = self.get(&first);
@@ -558,7 +678,9 @@ impl GitHub {
             req = req.header(IF_NONE_MATCH, tag);
         }
         let resp = req.send().await.with_context(|| format!("GET {first}"))?;
-        let resp = Self::check(resp, &format!("listing pull requests for {owner}/{repo}")).await?;
+        let resp = self
+            .check(resp, &format!("listing pull requests for {owner}/{repo}"))
+            .await?;
         if resp.status() == StatusCode::NOT_MODIFIED {
             return Ok(Conditional::NotModified);
         }
@@ -571,7 +693,7 @@ impl GitHub {
                 .send()
                 .await
                 .with_context(|| format!("GET {url}"))?;
-            let resp = Self::check(resp, "paging pull list").await?;
+            let resp = self.check(resp, "paging pull list").await?;
             next = next_link(&resp);
             let page: Vec<Value> = resp.json().await.context("decoding pull page")?;
             pulls.extend(page);
@@ -612,7 +734,9 @@ impl GitHub {
             req = req.header(IF_NONE_MATCH, tag);
         }
         let resp = req.send().await.with_context(|| format!("GET {first}"))?;
-        let resp = Self::check(resp, &format!("listing collaborators of {owner}/{repo}")).await?;
+        let resp = self
+            .check(resp, &format!("listing collaborators of {owner}/{repo}"))
+            .await?;
         if resp.status() == StatusCode::NOT_MODIFIED {
             return Ok(Conditional::NotModified);
         }
@@ -625,7 +749,7 @@ impl GitHub {
                 .send()
                 .await
                 .with_context(|| format!("GET {url}"))?;
-            let resp = Self::check(resp, "paging collaborators").await?;
+            let resp = self.check(resp, "paging collaborators").await?;
             next = next_link(&resp);
             let page: Vec<Value> = resp.json().await.context("decoding collaborators page")?;
             out.extend(page);
@@ -644,7 +768,9 @@ impl GitHub {
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;
-        let resp = Self::check(resp, &format!("fetching {owner}/{repo} PR #{number}")).await?;
+        let resp = self
+            .check(resp, &format!("fetching {owner}/{repo} PR #{number}"))
+            .await?;
         let v: Value = resp.json().await.context("decoding pull request")?;
         Ok(PrInfo::from_value(&v))
     }
@@ -667,11 +793,12 @@ impl GitHub {
             .send()
             .await
             .with_context(|| format!("POST {url}"))?;
-        let resp = Self::check(
-            resp,
-            &format!("looking up project boards of {owner}/{repo}#{number}"),
-        )
-        .await?;
+        let resp = self
+            .check(
+                resp,
+                &format!("looking up project boards of {owner}/{repo}#{number}"),
+            )
+            .await?;
         let v: Value = resp.json().await.context("decoding GraphQL response")?;
         if let Some(errors) = v
             .get("errors")
@@ -703,7 +830,7 @@ impl GitHub {
             .await
             .with_context(|| format!("POST {url}"))?;
         let what = format!("looking up the projects of {owner}/{repo}");
-        let resp = Self::check(resp, &what).await?;
+        let resp = self.check(resp, &what).await?;
         let v: Value = resp.json().await.context("decoding GraphQL response")?;
         if let Some(errors) = v
             .get("errors")
@@ -727,6 +854,36 @@ impl GitHub {
             .with_context(|| format!("GitHub 404 Not Found while fetching {owner}/{repo}#{number}"))
     }
 
+    /// The item, asked with `If-None-Match: etag`: `NotModified` (free
+    /// against the rate limit) when it is exactly as it was when `etag`
+    /// was read.
+    pub async fn issue_if_changed(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        etag: Option<&str>,
+    ) -> Result<Conditional<Issue>> {
+        let url = self.url(&format!("repos/{owner}/{repo}/issues/{number}"));
+        let mut req = self.get(&url);
+        if let Some(tag) = etag {
+            req = req.header(IF_NONE_MATCH, tag);
+        }
+        let resp = req.send().await.with_context(|| format!("GET {url}"))?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            bail!("GitHub 404 Not Found while fetching {owner}/{repo}#{number}");
+        }
+        let resp = self
+            .check(resp, &format!("fetching {owner}/{repo}#{number}"))
+            .await?;
+        if resp.status() == StatusCode::NOT_MODIFIED {
+            return Ok(Conditional::NotModified);
+        }
+        let etag = header_str(&resp, ETAG);
+        let value = resp.json().await.context("decoding issue")?;
+        Ok(Conditional::Modified { value, etag })
+    }
+
     /// The item, or `None` when GitHub 404s for it: deleted, or not
     /// readable with this token any more. An item transferred to another
     /// repository answers a redirect, which is followed, so it comes back
@@ -743,7 +900,9 @@ impl GitHub {
         if resp.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let resp = Self::check(resp, &format!("fetching {owner}/{repo}#{number}")).await?;
+        let resp = self
+            .check(resp, &format!("fetching {owner}/{repo}#{number}"))
+            .await?;
         resp.json().await.context("decoding issue").map(Some)
     }
 
@@ -774,7 +933,8 @@ impl GitHub {
         if resp.status() == StatusCode::NOT_FOUND {
             return Ok(false);
         }
-        Self::check(resp, &format!("looking for {path} in {owner}/{repo}")).await?;
+        self.check(resp, &format!("looking for {path} in {owner}/{repo}"))
+            .await?;
         Ok(true)
     }
 
@@ -792,7 +952,9 @@ impl GitHub {
             .send()
             .await
             .with_context(|| format!("POST {url}"))?;
-        let resp = Self::check(resp, &format!("commenting on {owner}/{repo}#{number}")).await?;
+        let resp = self
+            .check(resp, &format!("commenting on {owner}/{repo}#{number}"))
+            .await?;
         let v: Value = resp.json().await.unwrap_or(Value::Null);
         Ok(v.get("html_url")
             .and_then(Value::as_str)
@@ -816,7 +978,7 @@ impl GitHub {
             .send()
             .await
             .with_context(|| format!("POST {url}"))?;
-        Self::check(
+        self.check(
             resp,
             &format!("assigning @{login} to {owner}/{repo}#{number}"),
         )
@@ -870,11 +1032,12 @@ impl GitHub {
                 .send()
                 .await
                 .with_context(|| format!("GET {u}"))?;
-            let resp = Self::check(
-                resp,
-                &format!("fetching timeline of {owner}/{repo}#{number}"),
-            )
-            .await?;
+            let resp = self
+                .check(
+                    resp,
+                    &format!("fetching timeline of {owner}/{repo}#{number}"),
+                )
+                .await?;
             url = next_link(&resp);
             etags.push(header_str(&resp, ETAG).unwrap_or_default());
             let page: Vec<Value> = resp.json().await.context("decoding timeline page")?;
@@ -900,11 +1063,12 @@ impl GitHub {
             if resp.status() == StatusCode::NOT_FOUND {
                 break;
             }
-            let resp = Self::check(
-                resp,
-                &format!("fetching review comments of {owner}/{repo}#{number}"),
-            )
-            .await?;
+            let resp = self
+                .check(
+                    resp,
+                    &format!("fetching review comments of {owner}/{repo}#{number}"),
+                )
+                .await?;
             url = next_link(&resp);
             etags.push(format!(
                 "{PULLS_ETAG}{}",
@@ -955,11 +1119,12 @@ impl GitHub {
                 .send()
                 .await
                 .with_context(|| format!("GET {u}"))?;
-            let resp = Self::check(
-                resp,
-                &format!("checking timeline of {owner}/{repo}#{number}"),
-            )
-            .await?;
+            let resp = self
+                .check(
+                    resp,
+                    &format!("checking timeline of {owner}/{repo}#{number}"),
+                )
+                .await?;
             if resp.status() != StatusCode::NOT_MODIFIED {
                 return Ok(true);
             }
@@ -991,8 +1156,9 @@ impl GitHub {
                 .send()
                 .await
                 .with_context(|| format!("GET {u}"))?;
-            let resp =
-                Self::check(resp, &format!("listing reactions on {owner}/{repo} {on}")).await?;
+            let resp = self
+                .check(resp, &format!("listing reactions on {owner}/{repo} {on}"))
+                .await?;
             url = next_link(&resp);
             let page: Vec<Value> = resp.json().await.context("decoding reactions page")?;
             out.extend(page.iter().map(|r| {
@@ -1078,6 +1244,62 @@ pub fn value_u64(v: &Value, path: &[&str]) -> Option<u64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rate_limit_answers_say_when_to_resume() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        let wait = |until: Option<SystemTime>| until.map(|u| u.duration_since(now).unwrap());
+        // Retry-After wins.
+        let got = rate_limit_until(
+            StatusCode::FORBIDDEN,
+            Some("30"),
+            Some("0"),
+            Some("5000"),
+            "",
+            now,
+        );
+        assert_eq!(wait(got), Some(Duration::from_secs(30)));
+        // Exhausted primary limit: until the reset, plus a second.
+        let got = rate_limit_until(
+            StatusCode::FORBIDDEN,
+            None,
+            Some("0"),
+            Some("1100"),
+            "",
+            now,
+        );
+        assert_eq!(wait(got), Some(Duration::from_secs(101)));
+        // A 429 or a secondary limit with no hints: a minute.
+        let got = rate_limit_until(StatusCode::TOO_MANY_REQUESTS, None, None, None, "", now);
+        assert_eq!(wait(got), Some(Duration::from_secs(60)));
+        let msg = "You have exceeded a secondary rate limit.";
+        let got = rate_limit_until(StatusCode::FORBIDDEN, None, Some("12"), None, msg, now);
+        assert_eq!(wait(got), Some(Duration::from_secs(60)));
+        // A hint far in the future is capped at an hour.
+        let got = rate_limit_until(StatusCode::FORBIDDEN, Some("99999"), None, None, "", now);
+        assert_eq!(wait(got), Some(Duration::from_secs(3600)));
+        // A plain 403, or any other status, is not a rate limit.
+        let msg = "Must have push access";
+        assert!(
+            rate_limit_until(StatusCode::FORBIDDEN, None, Some("12"), None, msg, now).is_none()
+        );
+        assert!(rate_limit_until(StatusCode::NOT_FOUND, Some("30"), None, None, "", now).is_none());
+    }
+
+    #[test]
+    fn a_rate_limit_error_is_found_under_context() {
+        let err: anyhow::Error = RateLimited {
+            what: "listing".into(),
+            until: SystemTime::now() + Duration::from_secs(5),
+            message: "slow down".into(),
+        }
+        .into();
+        let err = err.context("tick_repo");
+        assert!(
+            err.chain()
+                .any(|c| c.downcast_ref::<RateLimited>().is_some())
+        );
+    }
 
     #[test]
     fn repository_projects_are_parsed() {

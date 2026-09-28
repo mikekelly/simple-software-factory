@@ -102,6 +102,15 @@ See [Session dashboard](dashboard.md).
   pages are also asked for conditionally against the ETags of the last
   fetch (a 304 is free); a page that moved sends the item through the usual
   follow-up.
+  An item followed only through `ssf sub` is itself fetched against its
+  last ETag, and so is the invitation list. An item that fails to be
+  handled drops only the ETag of the listing(s) it came from, so the next
+  pass fetches just those in full.
+- **Rate limits and backoff.** A 403/429 rate-limit answer pauses all
+  GitHub polling until `Retry-After` (or `x-ratelimit-reset` once the quota
+  is spent; a minute when neither says), logged once. A repository whose
+  pass fails sits out 1, 2, 4 ... up to 32 passes before the next try; a
+  clean pass resets it. Both are in memory and start afresh on restart.
 - **Reactions.** An emoji added to or removed from the item's body or a
   comment on it arrives as one line (`- 17:25Z @alice reacted 👍 to <url>`,
   `- 17:26Z @alice removed 👍 from <url>`; a swap is a removal and an

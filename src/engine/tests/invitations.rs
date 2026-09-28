@@ -75,7 +75,7 @@ async fn one_failed_acceptance_does_not_block_later_invitations() {
 #[tokio::test]
 async fn an_empty_inviter_list_makes_no_github_request() {
     let stub = GitHubStub::start().await;
-    let engine = engine_at(&stub.base);
+    let mut engine = engine_at(&stub.base);
 
     engine.accept_repository_invitations().await.unwrap();
 
