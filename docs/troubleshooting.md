@@ -54,6 +54,7 @@ One row per check `ssf doctor` makes, in the order it makes them.
 | `<harness> not signed in` | each harness in use is signed in where the daemon runs | run the command the line prints; in a VM, `ssf vm ssh`, run the harness and use its own sign-in (or [install.md step 8](install.md#8-sign-in-the-harness)) |
 | `data disk ... full` | guest disk under 85 % used | see [VM out of disk or memory](#vm-out-of-disk-or-memory) |
 | `guest memory: ... short` | the guest has headroom | see [VM out of disk or memory](#vm-out-of-disk-or-memory) |
+| `GitHub token lacks scopes ...` | the bot token has every scope ssf requests | `ssf auth login` again and approve the added scopes; without `workflow`, GitHub rejects pushes touching `.github/workflows/` |
 | `0 repositories configured` | at least one repository is watched | `ssf repo add owner/repo --harness ...`; see [repositories.md](repositories.md) |
 | `harness \`X\` installed` | a harness an item is pinned to exists | install it, or hand the item to an installed one with `ssf handover` |
 | `<repo>: supported model/effort settings explicit` | the repository names a model and effort its harness supports | `ssf repo set owner/repo --model ... --effort ...`, ids from `ssf models <harness>` and `ssf agents --json` |

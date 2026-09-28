@@ -106,7 +106,7 @@ pub(super) async fn auth(command: AuthCommand) -> Result<()> {
                     let needed: Vec<&str> = acc
                         .missing_scopes()
                         .into_iter()
-                        .filter(|s| !no_keys || *s == "repo")
+                        .filter(|s| !no_keys || matches!(*s, "repo" | "workflow"))
                         .collect();
                     if !needed.is_empty() {
                         if interactive {
@@ -120,7 +120,7 @@ pub(super) async fn auth(command: AuthCommand) -> Result<()> {
                             r?;
                         } else {
                             eprintln!(
-                                "warning: @{chosen}'s gh token lacks {}; key enrollment may fail",
+                                "warning: @{chosen}'s gh token lacks {}; pushes to workflows or key enrollment may fail",
                                 needed.join(", ")
                             );
                         }
@@ -226,6 +226,7 @@ pub(super) async fn auth(command: AuthCommand) -> Result<()> {
                     "{}",
                     json!({
                         "login": me.login, "type": me.kind, "id": me.id,
+                        "scopes": me.scopes, "missing_scopes": me.missing_scopes(cfg.github.ssh_key_path.is_none()),
                         "email": cfg.github.email,
                         "ssh_key": cfg.github.ssh_key_path, "ssh_key_present": key_ok,
                         "ssh_key_id": cfg.github.ssh_key_id, "signing_key_id": cfg.github.signing_key_id,
@@ -250,6 +251,13 @@ pub(super) async fn auth(command: AuthCommand) -> Result<()> {
                 me.id,
                 cfg.token_source()
             );
+            let missing = me.missing_scopes(cfg.github.ssh_key_path.is_none());
+            if !missing.is_empty() {
+                println!(
+                    "warning: the token lacks scopes {}; run `ssf auth login`",
+                    missing.join(", ")
+                );
+            }
             if let Some(l) = &cfg.github.login {
                 if !l.eq_ignore_ascii_case(&me.login) {
                     println!(
