@@ -140,13 +140,14 @@ see
 A factory running several sessions at once needs most of the machine, so the VM
 is sized from the machine rather than from constants. `ssf vm build` reads the
 host, fills in every size key left unset in `[vm]`, prints what it chose and
-where each value came from, and writes the values where they stay visible and
+where each value came from (under Incus, vCPUs and memory are labelled
+as limits: the container shares them with the host), and writes the values where they stay visible and
 editable.
 
 | key | rule | floor |
 |---|---|---|
 | `vcpus` | the host's logical CPUs minus one | 2 |
-| `mem_mib` | half the host's RAM, rounded down to 256 MiB | 4096 |
+| `mem_mib` | half the host's RAM, rounded down to 256 MiB; never more than the host's RAM | 4096, or the host's RAM when smaller |
 | `data_gib` | half the free space, at build time, of the filesystem that will hold the data disk | 20 |
 | `root_gib` | the system only: 8 under Firecracker | 20 under lima, whatever the key says |
 

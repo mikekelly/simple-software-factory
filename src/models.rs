@@ -1126,6 +1126,53 @@ pub fn available(harness: &str) -> Result<Available> {
     })
 }
 
+/// Harnesses whose own model list is the whole of what they will run: Pi
+/// and Oh My Pi list the models of the providers they are signed in to, and
+/// start any other one only to stop at a sign-in prompt. The others take
+/// ids their list leaves out (Claude Code's `opus`, a Codex custom
+/// provider), so for them an unlisted model is only a warning.
+const LIST_IS_COMPLETE: &[&str] = &["pi", "omp"];
+
+/// Whether `model` is one `ssf models <harness>` lists, given what that
+/// listing returned. `Ok(None)`: listed, or nothing to say. `Ok(Some(w))`:
+/// accepted with the warning `w`. `Err`: refused.
+pub fn check_listed(
+    harness: &str,
+    model: &str,
+    listing: Result<Available>,
+) -> Result<Option<String>> {
+    let hint = format!("see `ssf models {harness}`");
+    let available = match listing {
+        Ok(a) => a,
+        Err(e) => {
+            return Ok(Some(format!(
+                "could not list {harness}'s models to check {model:?} ({e:#}); {hint}"
+            )));
+        }
+    };
+    if available.models.iter().any(|m| m == model) {
+        return Ok(None);
+    }
+    let own = available.source.kind != SourceKind::Table;
+    if own && LIST_IS_COMPLETE.contains(&harness) {
+        bail!(
+            "model {model:?} is not one {harness} lists here, so sessions would stop at its sign-in prompt; {hint}"
+        );
+    }
+    Ok(Some(format!(
+        "model {model:?} is not in {}; {hint}",
+        available.source.describe(harness)
+    )))
+}
+
+/// [`check_listed`] against this machine's listing, printing a warning.
+pub fn check_model_listed(harness: &str, model: &str) -> Result<()> {
+    if let Some(w) = check_listed(harness, model, available(harness))? {
+        eprintln!("warning: {w}");
+    }
+    Ok(())
+}
+
 /// Check that `model` and `effort` can be applied to `harness`. Model ids are
 /// opaque (the harness decides whether it knows them); effort levels must be
 /// ones the harness accepts.
@@ -1959,6 +2006,48 @@ mod tests {
         assert_eq!(percent_of(299_999, 500_000), 59);
         assert_eq!(percent_of(300_000, 256_000), 100);
         assert_eq!(percent_of(1_000, 500_000), 1);
+    }
+
+    #[test]
+    fn an_unlisted_model_is_refused_only_where_the_list_is_complete() {
+        let listing = |harness: &str, kind| {
+            Ok(Available {
+                harness: harness.into(),
+                models: vec!["anthropic/claude-haiku".into()],
+                source: Source {
+                    kind,
+                    detail: "pi --list-models".into(),
+                },
+            })
+        };
+        assert_eq!(
+            check_listed(
+                "pi",
+                "anthropic/claude-haiku",
+                listing("pi", SourceKind::Command)
+            )
+            .unwrap(),
+            None
+        );
+        let e = check_listed("pi", "deepseek/x", listing("pi", SourceKind::Command)).unwrap_err();
+        assert!(format!("{e}").contains("ssf models pi"), "{e}");
+        // ssf's own table goes stale: a warning only.
+        assert!(
+            check_listed("pi", "deepseek/x", listing("pi", SourceKind::Table))
+                .unwrap()
+                .is_some()
+        );
+        // Claude Code takes aliases its catalogue leaves out.
+        assert!(
+            check_listed("claude", "opus", listing("claude", SourceKind::Catalogue))
+                .unwrap()
+                .is_some()
+        );
+        // No listing at all: accepted with a warning.
+        let w = check_listed("omp", "x", Err(anyhow::anyhow!("not installed")))
+            .unwrap()
+            .unwrap();
+        assert!(w.contains("ssf models omp"), "{w}");
     }
 
     #[test]

@@ -311,6 +311,8 @@ phrase itself, which costs one `blocked` post and one restart, and nothing more.
 
 `ssf doctor` prints one line per harness in use: signed in, `FAIL ... not signed in ...`
 with the command to run, or `note ... cannot tell` for a harness ssf has no check for.
+Before any repository is configured (a fresh install signs the harness in first), it
+reports each installed harness instead, as a note rather than a FAIL when not signed in.
 The harnesses in use are the ones the configured repositories name plus any a handover
 or an assignment put on an item; the line for one of those says which item put it there
 and how, and such a harness is checked for being installed too. With the factory in a VM

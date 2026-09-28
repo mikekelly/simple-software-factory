@@ -313,13 +313,17 @@ impl Sizes {
 
 /// The sizing rule: the host's CPUs minus one, half its RAM (rounded down
 /// to 256 MiB), half the free space where the VM lives; never under
-/// `Sizes::MIN`. The data disk is sparse, so its size reserves nothing.
+/// `Sizes::MIN`, except that memory never exceeds the host's own (rounded
+/// down to 256 MiB). The data disk is sparse, so its size reserves nothing.
 pub fn sizes_for(facts: &HostFacts) -> Sizes {
     let mem = u32::try_from(facts.mem_mib / 2 / 256 * 256).unwrap_or(u32::MAX);
+    let host_mem = u32::try_from(facts.mem_mib / 256 * 256).unwrap_or(u32::MAX);
+    let mem = mem.max(Sizes::MIN.mem_mib);
+    let mem = if host_mem > 0 { mem.min(host_mem) } else { mem };
     let data = u32::try_from((facts.free_bytes / 2) >> 30).unwrap_or(u32::MAX);
     Sizes {
         vcpus: facts.cpus.saturating_sub(1).max(Sizes::MIN.vcpus),
-        mem_mib: mem.max(Sizes::MIN.mem_mib),
+        mem_mib: mem,
         data_gib: data.max(Sizes::MIN.data_gib),
     }
 }
@@ -829,4 +833,91 @@ pub fn grow_image(disk: &Path, bytes: u64) -> Result<()> {
     f.set_len(bytes)?;
     drop(f);
     run_ok(Command::new("resize2fs").arg(disk), "resize2fs")
+}
+
+/// The gid and members of group `name` in an `/etc/group` text.
+pub fn group_entry(text: &str, name: &str) -> Option<(u32, Vec<String>)> {
+    text.lines().find_map(|line| {
+        let mut f = line.split(':');
+        (f.next()? == name).then_some(())?;
+        let gid = f.nth(1)?.trim().parse().ok()?;
+        let members = f
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(String::from)
+            .collect();
+        Some((gid, members))
+    })
+}
+
+/// Whether `user` is listed in the `incus-admin` group while this process
+/// does not carry that group: the systemd user manager, kept alive by
+/// linger, still runs with the groups it had before `usermod -aG`, so the
+/// daemon cannot talk to Incus until it restarts.
+pub fn stale_group(group: Option<(u32, Vec<String>)>, user: &str, gids: &[u32]) -> bool {
+    group.is_some_and(|(gid, members)| members.iter().any(|m| m == user) && !gids.contains(&gid))
+}
+
+/// [`stale_group`] for `incus-admin`, this user and this process.
+pub fn incus_group_stale() -> bool {
+    let Ok(text) = std::fs::read_to_string("/etc/group") else {
+        return false;
+    };
+    let Some(user) = std::env::var("USER").ok().filter(|u| !u.is_empty()) else {
+        return false;
+    };
+    // SAFETY: getgroups with a buffer of the size it reported.
+    let gids = unsafe {
+        let n = libc::getgroups(0, std::ptr::null_mut());
+        let mut buf = vec![0 as libc::gid_t; n.max(0) as usize];
+        let n = libc::getgroups(n, buf.as_mut_ptr());
+        buf.truncate(n.max(0) as usize);
+        buf.push(libc::getegid());
+        buf
+    };
+    let gids: Vec<u32> = gids.into_iter().collect();
+    let group = group_entry(&text, "incus-admin");
+    if stale_group(group.clone(), &user, &gids) {
+        return true;
+    }
+    // The user manager the service runs under: linger keeps it alive
+    // across logins, with the groups it started with.
+    // SAFETY: getuid cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let manager = Command::new("systemctl")
+        .args([
+            "show",
+            &format!("user@{uid}.service"),
+            "-p",
+            "MainPID",
+            "--value",
+        ])
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|pid| !pid.is_empty() && pid != "0");
+    let Some(pid) = manager else {
+        return false;
+    };
+    let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+        return false;
+    };
+    let Some(manager_gids) = proc_groups(&status) else {
+        return false;
+    };
+    stale_group(group, &user, &manager_gids)
+}
+
+/// The supplementary groups on a `/proc/PID/status` `Groups:` line.
+pub fn proc_groups(status: &str) -> Option<Vec<u32>> {
+    let line = status.lines().find_map(|l| l.strip_prefix("Groups:"))?;
+    Some(
+        line.split_whitespace()
+            .filter_map(|g| g.parse().ok())
+            .collect(),
+    )
 }

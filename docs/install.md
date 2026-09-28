@@ -13,7 +13,7 @@ At the end:
 - A harness (the coding agent program) is signed in where sessions run.
 - One repository is watched, with a harness, model and effort the person chose.
 - One small issue assigned to the bot has produced an agent comment on GitHub.
-- `ssf doctor` passes (with the default Codex launch, its `Codex item-activity channel; standalone TUI: terminal fallback` line is expected, not a failure).
+- `ssf doctor` passes.
 - When the agents run on a VM or a rented server: that machine is reachable over SSH, the agents can become root on it without asking anyone (so they administer their own environment), and it is saved in the person's local herdr, so the person and any agents on their machine can oversee the sessions there.
 
 Work through the sections in order. Every step says what a good result looks like and what is safe to re-run.
@@ -78,7 +78,7 @@ command -v gh herdr
 `ssf vm build` sizes the guest from the host and prints what it chose:
 
 - vCPUs: host CPUs minus one, at least 2.
-- Memory: half the RAM, at least 4096 MiB.
+- Memory: half the RAM, at least 4096 MiB, but never more than the host has.
 - Data disk: half the free space where the disk lands, at least 20 GiB, sparse so it reserves nothing up front.
 
 Rule of thumb for judging "reasonable": each parallel agent session wants about one vCPU and 2 GiB of RAM, and the person's own desktop needs to keep about 4 GB. A 4-core, 8 GB machine gives a guest of 3 vCPUs and 4 GiB, which is one or two sessions at a time and leaves the machine usable. An 8-core, 8 GB machine gets the same 4 GiB but 7 vCPUs by the rule, which is more CPU than that memory can use: pass `--vcpus 2` or `--vcpus 3` to `ssf vm build` on a small machine rather than accept the rule. With 8 GB or less in total, present all three options and recommend host mode or a rented host over a VM; below 8 GB, the VM is not reasonable. An Incus guest is a container: its vCPUs and memory are limits shared with the host, not reserved, so the 8 GB rule does not apply to it, and a small VPS with 4 GB can run one session at a time. Allow roughly 30 GB of disk headroom for images and data, plus room for the repositories and their builds.
