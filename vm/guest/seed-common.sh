@@ -93,5 +93,19 @@ seed_from() {
 	helper = !/usr/local/bin/ssf git-credential
 GIT
     fi
+    # herdr must not restart agents itself when it restores its panes after a
+    # reboot: it runs a bare `claude --resume`, without the environment and
+    # inbox channel `ssf launch` gives a session, and the daemon then takes
+    # that agent for a live one. The daemon's resume_on_start does it (#593).
+    herdr_cfg=/home/ssf/.config/herdr/config.toml
+    mkdir -p "${herdr_cfg%/*}"
+    touch "$herdr_cfg"
+    if ! grep -q '^[[:space:]]*resume_agents_on_restore[[:space:]]*=' "$herdr_cfg"; then
+        if grep -q '^\[session\]' "$herdr_cfg"; then
+            sed -i '/^\[session\]/a resume_agents_on_restore = false' "$herdr_cfg"
+        else
+            printf '\n[session]\nresume_agents_on_restore = false\n' >> "$herdr_cfg"
+        fi
+    fi
     chown -R ssf:ssf /home/ssf
 }
