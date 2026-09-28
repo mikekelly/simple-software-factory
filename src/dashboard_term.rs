@@ -9,10 +9,9 @@
 //! one control stream per pane and shares it among every viewer: each sees
 //! the output. One viewer at a time holds control (#574): only its typing,
 //! paste and wheel reach the pane, and the pane takes its size; the others'
-//! are dropped here, and they see the pane at its size. The first viewer to
-//! join a pane no one controls takes control, any viewer can take it
-//! (`take`), and when the controller goes no one holds it until a viewer
-//! takes it or joins. Only a request allowed to type opens one at all
+//! are dropped here, and they see the pane at its size. Every viewer
+//! joins view only (#606), any viewer can take control (`take`), and when
+//! the controller goes no one holds it until a viewer takes it. Only a request allowed to type opens one at all
 //! (decided from the request by the caller, and by `item_pane_input` where
 //! the config is). See [`bridge_item`] for the messages.
 
@@ -434,7 +433,7 @@ impl Drop for Viewer {
         let mut viewers = self.stream.viewers.lock().unwrap();
         viewers.retain(|(id, _, _)| *id != self.id);
         // Control does not pass on by itself: no one holds it until a
-        // viewer takes it, or joins, and the pane keeps its size meanwhile.
+        // viewer takes it, and the pane keeps its size meanwhile.
         let mut controller = self.stream.controller.lock().unwrap();
         if *controller == Some(self.id) {
             *controller = None;
@@ -455,11 +454,9 @@ pub(crate) fn join(
     check: Check,
 ) -> (Viewer, tokio::sync::broadcast::Receiver<Out>) {
     let mut streams = STREAMS.lock().unwrap();
-    let mut fresh = false;
     let stream = match streams.get(session).and_then(std::sync::Weak::upgrade) {
         Some(stream) => stream,
         None => {
-            fresh = true;
             let (input, asks) = tokio::sync::mpsc::unbounded_channel();
             let (output, _) = tokio::sync::broadcast::channel(256);
             let stream = std::sync::Arc::new(Stream {
@@ -475,7 +472,8 @@ pub(crate) fn join(
                 weak,
                 asks,
                 output,
-                size,
+                // At the pane's own size: no one controls it yet.
+                None,
                 spawn,
                 check,
             ));
@@ -485,18 +483,7 @@ pub(crate) fn join(
     let receiver = stream.output.subscribe();
     let id = VIEWER_IDS.fetch_add(1, Ordering::SeqCst);
     stream.viewers.lock().unwrap().push((id, name, size));
-    // The first to join a pane no one controls takes control, and the pane
-    // its size (a new stream starts at it already).
-    let took = {
-        let mut controller = stream.controller.lock().unwrap();
-        controller
-            .is_none()
-            .then(|| *controller = Some(id))
-            .is_some()
-    };
-    if let (true, false, Some((cols, rows))) = (took, fresh, size) {
-        let _ = stream.input.send(In::Size(cols, rows));
-    }
+    // Every viewer joins view only (#606): control is only ever taken.
     drop(streams);
     stream.tell_viewers();
     let _ = stream.input.send(In::Redraw);
@@ -997,7 +984,7 @@ echo released > '{}'"#,
             allowed(),
         );
         assert_eq!(next_viewers(&mut heard_a).await, ["@alice"]);
-        assert_eq!(next_bytes(&mut heard_a).await, "started 100x30");
+        assert_eq!(next_bytes(&mut heard_a).await, "started none");
         // The second viewer joins the same stream (no second start), and
         // asks for the screen again: a same-size resize, drawn to both.
         let (b, mut heard_b) = join(
@@ -1015,8 +1002,17 @@ echo released > '{}'"#,
             "{redraw}"
         );
         assert_eq!(next_bytes(&mut heard_a).await, redraw);
-        // The first to join holds control: only its typing reaches the
-        // pane, and only its size; the other's are dropped.
+        // Joining never takes control (#606): no one's typing or size
+        // reaches the pane until someone takes it.
+        a.input("dropped\n".into());
+        a.resize(60, 12);
+        a.take();
+        assert_eq!(next_control(&mut heard_b).await, Some("@alice".into()));
+        assert_eq!(next_control(&mut heard_a).await, Some("@alice".into()));
+        assert!(next_bytes(&mut heard_a).await.contains("\"cols\":60"));
+        assert!(next_bytes(&mut heard_b).await.contains("\"cols\":60"));
+        // Only the controller's typing reaches the pane, and only its
+        // size; the other's are dropped.
         a.input("from a\n".into());
         b.input("from b\n".into());
         a.input("again a\n".into());
@@ -1037,7 +1033,7 @@ echo released > '{}'"#,
         b.input("from b\n".into());
         assert_eq!(next_bytes(&mut heard_a).await, "from b");
         // When the controller goes no one holds control, and what is
-        // typed is dropped, until a viewer takes it or joins.
+        // typed is dropped, until a viewer takes it: joining does not.
         drop(b);
         assert_eq!(next_viewers(&mut heard_a).await, ["@alice"]);
         a.input("dropped\n".into());
@@ -1048,9 +1044,8 @@ echo released > '{}'"#,
             fake_pane(&gone),
             allowed(),
         );
-        assert_eq!(next_control(&mut heard_a).await, Some("extension".into()));
-        assert!(next_bytes(&mut heard_a).await.contains("\"cols\":70"));
-        assert_eq!(next_control(&mut heard_d).await, Some("extension".into()));
+        assert_eq!(next_viewers(&mut heard_a).await, ["@alice", "extension"]);
+        assert_eq!(next_control(&mut heard_d).await, None);
         a.take();
         assert_eq!(next_control(&mut heard_d).await, Some("@alice".into()));
         assert_eq!(next_control(&mut heard_a).await, Some("@alice".into()));

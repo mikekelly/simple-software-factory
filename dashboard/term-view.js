@@ -4,9 +4,9 @@
 // tmux session: everyone sees the pane. One viewer at a time holds control:
 // only its typing, paste and wheel reach the pane (the server drops the
 // others'), and the pane takes its size; everyone else sees it at that size,
-// the font shrunk to fit, and has **Take control** in the title bar. The
-// first to open a pane no one controls holds control; when its holder leaves
-// no one does until someone takes it. The title bar lists who is watching. The page is offered only where this server
+// the font shrunk to fit, and has **Take control** in the title bar. Every
+// viewer opens view only (#606); when the holder leaves no one holds control
+// until someone takes it. The title bar lists who is watching. The page is offered only where this server
 // and the factory take typing from it (`dashboard.terminal_input`,
 // `item_pane_input`), and the server refuses it otherwise. Half an hour with
 // nothing typed here closes this page's connection (Reconnect opens it again).

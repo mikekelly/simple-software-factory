@@ -245,9 +245,24 @@ refreshButton.addEventListener("click", refresh);
 // localStorage; a terminal whose session has gone is dropped on restore.
 const LAYOUT_KEY = "ssf.dashboard.layout";
 const agentsNode = document.querySelector("#agents");
-const { createDockview } = window["dockview-core"];
+const { createDockview, DefaultTab } = window["dockview-core"];
+
+/// dockview's tab, less its close control on the Agents panel (#606): the
+/// cards keep their place. This build's tab closes only by that control.
+class Tab extends DefaultTab {
+  init(params) {
+    super.init(params);
+    if (params.api.id === "agents") this.action.remove();
+  }
+}
+
 const dock = createDockview(document.querySelector("#dock"), {
   theme: { name: "ssf", className: "dockview-theme-ssf" },
+  // Every tab is this one, restored layouts' included (they name no tab).
+  defaultTabComponent: "ssf",
+  createTabComponent: () => new Tab(),
+  // A floating group of the cards could be closed or lost off screen.
+  disableFloatingGroups: true,
   createComponent({ name }) {
     const element = document.createElement("div");
     element.className = "dock-panel";
@@ -339,7 +354,7 @@ async function start() {
   );
   restoreLayout(live);
   dock.onDidLayoutChange(saveLayout);
-  // The cards cannot be closed away: closing their panel puts it back.
+  // A fallback: should the cards' panel go anyway, it comes back.
   dock.onDidRemovePanel((panel) => {
     if (panel.id === "agents") setTimeout(() => dock.getPanel("agents") || dock.addPanel(AGENTS));
   });
