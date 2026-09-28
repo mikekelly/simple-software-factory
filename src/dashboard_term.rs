@@ -9,10 +9,9 @@
 //! one control stream per pane and shares it among every viewer: each sees
 //! the output. One viewer at a time holds control (#574): only its typing,
 //! paste and wheel reach the pane, and the pane takes its size; the others'
-//! are dropped here, and they see the pane at its size. The first viewer to
-//! join a pane no one controls takes control, any viewer can take it
-//! (`take`), and when the controller goes no one holds it until a viewer
-//! takes it or joins. Only a request allowed to type opens one at all
+//! are dropped here, and they see the pane at its size. Every viewer
+//! joins view only (#606), any viewer can take control (`take`), and when
+//! the controller goes no one holds it until a viewer takes it. Only a request allowed to type opens one at all
 //! (decided from the request by the caller, and by `item_pane_input` where
 //! the config is). See [`bridge_item`] for the messages.
 
@@ -434,7 +433,7 @@ impl Drop for Viewer {
         let mut viewers = self.stream.viewers.lock().unwrap();
         viewers.retain(|(id, _, _)| *id != self.id);
         // Control does not pass on by itself: no one holds it until a
-        // viewer takes it, or joins, and the pane keeps its size meanwhile.
+        // viewer takes it, and the pane keeps its size meanwhile.
         let mut controller = self.stream.controller.lock().unwrap();
         if *controller == Some(self.id) {
             *controller = None;
