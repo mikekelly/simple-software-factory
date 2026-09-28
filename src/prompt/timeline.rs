@@ -309,8 +309,8 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
                 let path = inline(value_str(c, &["path"]).unwrap_or("?"));
                 let line = c
                     .get("line")
-                    .or_else(|| c.get("original_line"))
-                    .and_then(Value::as_u64);
+                    .and_then(Value::as_u64)
+                    .or_else(|| c.get("original_line").and_then(Value::as_u64));
                 let raw = value_str(c, &["body"]).unwrap_or("");
                 if origin.is_none() {
                     origin = post_origin(raw, who, bot);
@@ -320,8 +320,16 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
                 let at = value_str(c, &["created_at"])
                     .map(|c| fmt_when(c, &today))
                     .unwrap_or_else(|| at.clone());
+                let verb = match (
+                    edited,
+                    c.get("in_reply_to_id").is_some_and(|r| !r.is_null()),
+                ) {
+                    (true, _) => "edited their comment on",
+                    (false, true) => "replied on",
+                    (false, false) => "commented on",
+                };
                 out.push(format!(
-                    "- {at} @{who} commented on `{path}`{}{session} ({url}):\n{}",
+                    "- {at} @{who} {verb} `{path}`{}{session} ({url}):\n{}",
                     line.map(|l| format!(" line {l}")).unwrap_or_default(),
                     quote(&body, cfg.max_body_chars)
                 ));

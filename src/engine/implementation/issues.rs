@@ -220,7 +220,7 @@ impl Engine {
             let Some(key) = event_key(ev) else { continue };
             let kind = ev.get("event").and_then(Value::as_str).unwrap_or("");
             let marker = crate::github::value_str(ev, &["updated_at"])
-                .filter(|_| kind == "commented")
+                .filter(|_| matches!(kind, "commented" | "line-commented"))
                 .unwrap_or("")
                 .to_string();
             let previous = seen.get(&key);

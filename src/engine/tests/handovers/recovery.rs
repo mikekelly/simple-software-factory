@@ -289,16 +289,14 @@ async fn a_mention_still_in_the_item_holds_the_session_through_an_empty_listing(
     );
 
     // Once the interval has passed the item is read again. This time
-    // the mention is in a review comment, one level down in the
-    // timeline the way GitHub reports a batch of them.
+    // the mention is in an inline review comment, which only the pull
+    // request's review-comments listing has.
     e.entry(&r, 5).retirement_held_at = Some(EXPIRED.into());
     stub.set_issue(5, item("nothing to see"));
-    stub.set_timeline(
+    stub.set_timeline(5, vec![]);
+    stub.set_review_comments(
         5,
-        vec![json!({
-            "event": "line-commented",
-            "comments": [{"body": "@bot what do you think?", "user": {"login": "alice"}}]
-        })],
+        vec![json!({"id": 3, "body": "@bot what do you think?", "user": {"login": "alice"}})],
     );
     e.tick_repo(&r).await.unwrap();
     assert!(
@@ -308,6 +306,7 @@ async fn a_mention_still_in_the_item_holds_the_session_through_an_empty_listing(
 
     // A near miss is not a mention, so this one does retire.
     e.entry(&r, 5).retirement_held_at = Some(EXPIRED.into());
+    stub.set_review_comments(5, vec![]);
     stub.set_timeline(5, vec![comment("ask @bot-2, not this one")]);
     e.tick_repo(&r).await.unwrap();
     assert!(

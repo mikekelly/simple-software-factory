@@ -258,6 +258,8 @@ struct GitHubStub {
     identity: std::sync::Arc<std::sync::Mutex<RepositoryIdentity>>,
     /// Reactions by what they are on (`issues/5`, `issues/comments/2`).
     reactions: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Vec<Value>>>>,
+    /// Inline review comments by pull request number.
+    review_comments: std::sync::Arc<std::sync::Mutex<BTreeMap<u64, Vec<Value>>>>,
 }
 
 impl GitHubStub {
@@ -307,6 +309,8 @@ impl GitHubStub {
         let ri = identity.clone();
         let reactions: Arc<Mutex<BTreeMap<String, Vec<Value>>>> = Arc::default();
         let rx = reactions.clone();
+        let review_comments: Arc<Mutex<BTreeMap<u64, Vec<Value>>>> = Arc::default();
+        let rc = review_comments.clone();
         tokio::spawn(async move {
             let other_etags = AtomicU32::new(1);
             loop {
@@ -441,6 +445,29 @@ impl GitHubStub {
                                 }
                                 Some(list) => ("200 OK", etag, Value::Array(list).to_string()),
                             }
+                } else if let Some(n) = path
+                    .strip_prefix("/repos/o/r/pulls/")
+                    .and_then(|rest| rest.strip_suffix("/comments"))
+                    .and_then(|n| n.parse::<u64>().ok())
+                {
+                    // Inline review comments: a pull request's are in
+                    // `review_comments`; an issue is not found.
+                    match rc.lock().unwrap().get(&n).cloned() {
+                        Some(list) => {
+                            let body = Value::Array(list).to_string();
+                            let etag = format!("\"rc{}\"", body.len());
+                            if if_none_match.as_deref() == Some(etag.as_str()) {
+                                ("304 Not Modified", etag, String::new())
+                            } else {
+                                ("200 OK", etag, body)
+                            }
+                        }
+                        None => (
+                            "404 Not Found",
+                            "\"rc\"".to_string(),
+                            r#"{"message":"Not Found"}"#.to_string(),
+                        ),
+                    }
                 } else if let Some(pull) = path
                     .strip_prefix("/repos/o/r/pulls/")
                     .and_then(|n| n.parse::<u64>().ok())
@@ -529,6 +556,7 @@ impl GitHubStub {
             rejected_invitations,
             identity,
             reactions,
+            review_comments,
         }
     }
 
@@ -601,6 +629,15 @@ impl GitHubStub {
 
     fn set_timeline(&self, number: u64, events: Vec<Value>) {
         self.timelines.lock().unwrap().insert(number, events);
+    }
+
+    /// Serve inline review comments for pull request `number`; a number
+    /// never set answers 404, as an issue does.
+    fn set_review_comments(&self, number: u64, comments: Vec<Value>) {
+        self.review_comments
+            .lock()
+            .unwrap()
+            .insert(number, comments);
     }
 
     fn set_assigned(&self, items: Vec<Value>) {

@@ -836,8 +836,20 @@ impl GitHub {
         )
     }
 
+    fn review_comments_page(&self, owner: &str, repo: &str, number: u64, page: usize) -> String {
+        format!(
+            "{}?per_page=100&page={page}",
+            self.url(&format!("repos/{owner}/{repo}/pulls/{number}/comments"))
+        )
+    }
+
     /// The full timeline and the ETag of each of its pages, in order, for
-    /// [`Self::timeline_changed`] to ask about later.
+    /// [`Self::timeline_changed`] to ask about later. The timeline lacks a
+    /// pull request's inline review comments, so they are read from
+    /// `pulls/N/comments` and appended, oldest first, each as its own
+    /// `line-commented` event keyed by the comment's id; those pages' ETags
+    /// follow the timeline's, prefixed [`PULLS_ETAG`]. An issue answers
+    /// 404 there: no comments, no ETags.
     pub async fn timeline_tagged(
         &self,
         owner: &str,
@@ -866,8 +878,43 @@ impl GitHub {
             url = next_link(&resp);
             etags.push(header_str(&resp, ETAG).unwrap_or_default());
             let page: Vec<Value> = resp.json().await.context("decoding timeline page")?;
-            events.extend(page);
+            // Inline review comments come from `pulls/N/comments` below.
+            events.extend(
+                page.into_iter()
+                    .filter(|e| value_str(e, &["event"]) != Some("line-commented")),
+            );
         }
+        let mut url = Some(self.review_comments_page(owner, repo, number, 1));
+        let mut comments = Vec::new();
+        let mut pages = 0;
+        while let Some(u) = url.take() {
+            pages += 1;
+            if pages > 50 {
+                bail!("review comments on {owner}/{repo}#{number} exceed 50 pages; giving up");
+            }
+            let resp = self
+                .get(&u)
+                .send()
+                .await
+                .with_context(|| format!("GET {u}"))?;
+            if resp.status() == StatusCode::NOT_FOUND {
+                break;
+            }
+            let resp = Self::check(
+                resp,
+                &format!("fetching review comments of {owner}/{repo}#{number}"),
+            )
+            .await?;
+            url = next_link(&resp);
+            etags.push(format!(
+                "{PULLS_ETAG}{}",
+                header_str(&resp, ETAG).unwrap_or_default()
+            ));
+            let page: Vec<Value> = resp.json().await.context("decoding review comments")?;
+            comments.extend(page);
+        }
+        comments.sort_by(|a, b| value_str(a, &["created_at"]).cmp(&value_str(b, &["created_at"])));
+        events.extend(comments.into_iter().map(review_comment_event));
         Ok((events, etags))
     }
 
@@ -883,11 +930,25 @@ impl GitHub {
         number: u64,
         etags: &[String],
     ) -> Result<bool> {
-        if etags.is_empty() || etags.iter().any(String::is_empty) {
+        let empty = |t: &String| t.strip_prefix(PULLS_ETAG).unwrap_or(t).is_empty();
+        if etags.is_empty() || etags.iter().any(empty) {
             return Ok(true);
         }
-        for (i, tag) in etags.iter().enumerate() {
-            let u = self.timeline_page(owner, repo, number, i + 1);
+        let (mut timeline, mut pulls) = (0, 0);
+        for tag in etags {
+            let (u, tag) = match tag.strip_prefix(PULLS_ETAG) {
+                Some(t) => {
+                    pulls += 1;
+                    (self.review_comments_page(owner, repo, number, pulls), t)
+                }
+                None => {
+                    timeline += 1;
+                    (
+                        self.timeline_page(owner, repo, number, timeline),
+                        tag.as_str(),
+                    )
+                }
+            };
             let resp = self
                 .get(&u)
                 .header(IF_NONE_MATCH, tag)
@@ -946,6 +1007,25 @@ impl GitHub {
         }
         Ok(out)
     }
+}
+
+/// Marks the ETag of a `pulls/N/comments` page among a timeline's
+/// ([`GitHub::timeline_tagged`]).
+pub const PULLS_ETAG: &str = "pulls:";
+
+/// An inline review comment (`pulls/N/comments`) as a timeline event: a
+/// `line-commented` batch of one, keyed `line-commented:<comment id>` like
+/// the per-comment keys origin scanning records.
+pub fn review_comment_event(c: Value) -> Value {
+    serde_json::json!({
+        "event": "line-commented",
+        "id": c.get("id").cloned().unwrap_or(Value::Null),
+        "created_at": c.get("created_at").cloned().unwrap_or(Value::Null),
+        "updated_at": c.get("updated_at").cloned().unwrap_or(Value::Null),
+        "user": c.get("user").cloned().unwrap_or(Value::Null),
+        "html_url": c.get("html_url").cloned().unwrap_or(Value::Null),
+        "comments": [c],
+    })
 }
 
 /// `type base64` part of an OpenSSH public key, ignoring the comment.
