@@ -330,6 +330,7 @@ impl Engine {
             state,
             failures: BTreeMap::new(),
             startup_pending,
+            listener: None,
             collaborators: BTreeMap::new(),
             dropped_logged: std::sync::Mutex::new(BTreeSet::new()),
             probe: std::sync::Arc::new(login::probe),
@@ -523,7 +524,8 @@ impl Engine {
     pub async fn run_forever(mut self) -> Result<()> {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .context("installing SIGTERM handler")?;
-        let listener = bind_socket()?;
+        let listener = std::sync::Arc::new(bind_socket()?);
+        self.listener = Some(listener.clone());
         info!(
             repos = self.cfg.repos.len(),
             poll_secs = self.cfg.daemon.poll_interval_secs,
@@ -571,6 +573,19 @@ are resumed on the first pass that finds it: {err:#}"
         self.state.save()?;
         let _ = std::fs::remove_file(crate::ipc::socket_path());
         Ok(())
+    }
+
+    /// Answer the CLI connections already waiting, without blocking: what a
+    /// long pass does between repositories.
+    pub(in crate::engine) async fn serve_waiting(&mut self) {
+        let Some(listener) = self.listener.clone() else {
+            return;
+        };
+        while let Ok(Ok((stream, _))) =
+            tokio::time::timeout(Duration::from_millis(1), listener.accept()).await
+        {
+            self.serve(stream).await;
+        }
     }
 
     /// Answer the CLI (`ssf sub|unsub`, `ssf release|purge`) until
