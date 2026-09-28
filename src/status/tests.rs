@@ -174,7 +174,12 @@ fn a_session_shows_the_branch_its_pull_request_pushed() {
         head_repo: "acme/widgets".into(),
         ..Default::default()
     });
-    let st = state_with(vec![item(1, Some("r1::/w/one")), pr, item(2, None)]);
+    // A closed pull request no longer names the session's branch.
+    let mut closed = pr.clone();
+    closed.number = 3;
+    closed.shares_workspace_of = Some(2);
+    closed.github_state = Some("closed".into());
+    let st = state_with(vec![item(1, Some("r1::/w/one")), pr, item(2, None), closed]);
     let s = sessions(&cfg(), &st, Some(&[workspace("r1::/w/one", None, None)]));
     let branch = |n| s.iter().find(|s| s.number == n).unwrap().branch.clone();
     assert_eq!(branch(1).as_deref(), Some("issue-1-omp-haiku"));
