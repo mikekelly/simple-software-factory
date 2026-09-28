@@ -244,9 +244,23 @@ pub fn add_held(report: &mut Report, root: &str, held: &release::HeldReport) {
     }
 }
 
-/// The same directory, whichever way each side spells it.
+/// The same directory, whichever way each side spells it, even when it is
+/// gone: `/var` and `/private/var` on macOS name one worktree.
 fn same_dir(a: &Path, b: &Path) -> bool {
-    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+    a == b || matches!((resolved(a), resolved(b)), (Some(x), Some(y)) if x == y)
+}
+
+/// `path` with its nearest existing ancestor canonicalized and the missing
+/// rest appended as spelled.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let mut rest = Vec::new();
+    for base in path.ancestors() {
+        if let Ok(real) = base.canonicalize() {
+            return Some(rest.iter().rev().fold(real, |p, c| p.join(c)));
+        }
+        rest.push(base.file_name()?);
+    }
+    None
 }
 
 /// The report from a given state and a way of looking at a path. Every

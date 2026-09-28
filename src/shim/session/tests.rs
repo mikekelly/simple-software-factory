@@ -105,3 +105,19 @@ fn the_parent_comes_after_the_command_name_in_the_parens() {
         Some(std::os::unix::process::parent_id()),
     );
 }
+
+#[test]
+fn the_environment_follows_the_arguments_in_procargs() {
+    let mut buf = 2i32.to_ne_bytes().to_vec();
+    buf.extend_from_slice(b"/bin/sh\0\0\0sh\0-c\0SSF_REPO=o/r\0A=1\0\0junk\0");
+    assert_eq!(
+        environ_of_procargs(&buf).unwrap(),
+        b"SSF_REPO=o/r\0A=1\0".to_vec()
+    );
+}
+
+#[test]
+fn a_real_ancestor_environment_can_be_read() {
+    let own = environ_of(std::process::id()).expect("own environment");
+    assert!(!own.is_empty());
+}
