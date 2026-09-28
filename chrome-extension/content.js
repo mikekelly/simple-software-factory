@@ -1012,42 +1012,6 @@
     return line;
   }
 
-  /// The message, trimmed to two lines behind a `more` toggle that is shown only
-  /// when the text is actually clipped.
-  function messageBlock(name, factory, match) {
-    const message = messageFor(match);
-    if (!message) return null;
-    const key = `${name}|${factory.url}`;
-    const flags = opened.get(key) ?? {};
-    const wrap = element("div", "ssf-said");
-    // Where `measure` finds this block's own answer again: whether the message
-    // overflows the clamp is a fact about the layout, not about the frame.
-    wrap.ssfKey = key;
-    const body = element("div", "ssf-message", message);
-    body.dataset.clamped = String(!flags.more);
-    const more = element("button", "ssf-more", flags.more ? "less" : "more");
-    more.type = "button";
-    // Up when the reader has the message open, or when the last layout pass
-    // found the trimmed message really is clipped. Drawn here rather than
-    // written by the pass afterwards, so a frame that says what the page
-    // already says leaves this node -- and everything else in the block --
-    // alone.
-    more.hidden = !(flags.more || overflowed.get(key) === true);
-    more.setAttribute("aria-expanded", String(Boolean(flags.more)));
-    more.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const now = !(opened.get(key)?.more ?? false);
-      opened.set(key, { ...(opened.get(key) ?? {}), more: now });
-      body.dataset.clamped = String(!now);
-      more.textContent = now ? "less" : "more";
-      more.setAttribute("aria-expanded", String(now));
-      if (popover) placePopover();
-    });
-    wrap.append(body, more);
-    return wrap;
-  }
-
   /// The rows Details carries for one card, each a fact the card is holding:
   /// what ssf says the state is, which item this is, the stack the session runs
   /// (harness, model and effort), the stack the next launch would use when it
@@ -1178,18 +1142,8 @@
     }
     const stack = stackChips(match.item);
     if (stack) body.append(named(stack, "stack"));
-    if (match.item.branch) {
-      const branch = element("div", "ssf-branch");
-      branch.append(element("span", "ssf-branch-mark", "\u2387"));
-      const value = element("span", "ssf-clip", match.item.branch);
-      value.title = match.item.branch;
-      branch.append(value);
-      body.append(named(branch, "branch"));
-    }
     const where = whereLine(factory, match, closed);
     if (where) body.append(named(where, "where"));
-    const message = messageBlock(name, factory, match);
-    if (message) body.append(named(message, "said"));
     const also = (match.item.additional ?? []).filter((issue) => issue?.id);
     if (match.kind === "agent" && also.length) {
       const line = element("div", "ssf-also");
@@ -1295,7 +1249,7 @@
       const typable = match.item.pane_input === true && match.factory.writes !== false;
       const open =
         typable &&
-        globalThis.ssfPane?.button(match.factory.url, session, true, "Show agent");
+        globalThis.ssfPane?.button(match.factory.url, session, true, "Show agent TUI");
       const row = globalThis.ssfWrites?.renderActions({
         factories: [match.factory],
         repo,

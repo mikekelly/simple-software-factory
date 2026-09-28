@@ -120,8 +120,7 @@ function forget(mounted, keep) {
   for (const key of [...mounted.keys()]) if (!keep.has(key)) mounted.delete(key);
 }
 
-// One item of a list of links, drawn from nothing: the monitored list's rows
-// and a card's additional issues both use it.
+// One item of a list of links, drawn from nothing: the monitored list's rows.
 function rowFor(issue) {
   const item = document.createElement("li");
   const anchor = document.createElement("a");
@@ -130,6 +129,62 @@ function rowFor(issue) {
   item.append(anchor);
   issueLink(anchor, issue, issue.title);
   return item;
+}
+
+// GitHub-style octicons for an issue and a pull request (#637).
+const ICONS = {
+  issue:
+    '<path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"/><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"/>',
+  pull_request:
+    '<path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>',
+};
+
+function kindOf(issue) {
+  return issue.kind === "pull_request" ? "pull_request" : "issue";
+}
+
+// An item's reference as the card shows it: `#N` in the card's own
+// repository, `owner/repo#N` in any other.
+function shortRef(id, home) {
+  const [repo, number] = String(id).split("#");
+  return number !== undefined && repo === home ? `#${number}` : String(id);
+}
+
+// One row of a card's Owns or Following list: kind icon, reference, title and,
+// for a followed item, the level it is followed at.
+function relatedRow(row, issue, home) {
+  if (!row) {
+    row = document.createElement("li");
+    row.innerHTML =
+      '<svg class="icon kind" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" role="img"></svg>' +
+      '<a class="ref" target="_blank" rel="noopener noreferrer"></a><span class="title"></span><span class="level"></span>';
+  }
+  const kind = kindOf(issue);
+  const icon = row.querySelector(".kind");
+  if (icon.dataset.kind !== kind) {
+    icon.dataset.kind = kind;
+    icon.innerHTML = ICONS[kind];
+    icon.setAttribute("aria-label", kind === "pull_request" ? "Pull request" : "Issue");
+  }
+  const state = String(issue.github_state || "").toLowerCase();
+  if (icon.dataset.state !== state) icon.dataset.state = state;
+  const anchor = row.querySelector(".ref");
+  fill(anchor, shortRef(issue.id, home));
+  if (issue.url && anchor.getAttribute("href") !== issue.url) anchor.href = issue.url;
+  fill(row.querySelector(".title"), issue.title && issue.title !== issue.id ? issue.title : "");
+  const level = row.querySelector(".level");
+  fill(level, issue.events || "");
+  show(level, Boolean(issue.events));
+  return row;
+}
+
+// A card's Owns or Following section, hidden when it has nothing to list. A row
+// already at its place is written to, and only a new one is drawn.
+function relatedList(section, issues, home) {
+  const list = section.querySelector("ul");
+  const rows = issues.map((issue, index) => relatedRow(list.children[index], issue, home));
+  show(section, rows.length !== 0);
+  place(list, rows);
 }
 
 // One card, in the node already drawn for this issue if there is one, so the
@@ -145,8 +200,9 @@ function cardNode(card) {
   if (article.dataset.state !== state) article.dataset.state = state;
   fill(article.querySelector(".state-text"), card.agent_state);
   fill(article.querySelector(".harness"), stackLabel(card));
-  fill(article.querySelector(".issue-title"), card.origin.title);
+  // The item's reference is the heading, its title the line under it (#637).
   issueLink(article.querySelector(".issue-link"), card.origin);
+  fill(article.querySelector(".issue-title"), card.origin.title === card.origin.id ? "" : card.origin.title);
   // The session's pane as a live, shared terminal (#563), offered only where
   // this server and the factory let the page type into it.
   const terminal = `terminal.html?session=${encodeURIComponent(card.owner || card.origin.id)}`;
@@ -156,21 +212,9 @@ function cardNode(card) {
   // The card, not just its time: with no time to show, the model's own reason
   // for that is what belongs in the row (#439).
   fill(article.querySelector(".activity"), activityLabel(card));
-  fill(article.querySelector(".message"), card.last_assistant_message || "No message reported.");
-  const section = article.querySelector(".additional");
-  const list = section.querySelector("ul");
-  // A card's additional issues are drawn in one order and rarely change; a row
-  // already at this place is written to, and only a new one is drawn.
-  const items = card.additional.map((issue, index) => {
-    const kept = list.children[index];
-    if (kept) {
-      issueLink(kept.querySelector("a"), issue, issue.title);
-      return kept;
-    }
-    return rowFor(issue);
-  });
-  show(section, items.length !== 0);
-  place(list, items);
+  const home = String(card.origin.id).split("#")[0];
+  relatedList(article.querySelector(".owns"), card.additional || [], home);
+  relatedList(article.querySelector(".following"), card.following || [], home);
   return article;
 }
 
