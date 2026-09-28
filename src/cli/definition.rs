@@ -120,6 +120,9 @@ pub(super) enum Command {
         /// Keep the connection open and emit one JSON snapshot per line.
         #[arg(long, requires = "json")]
         watch: bool,
+        /// Also list retired sessions whose workspace has been released.
+        #[arg(short, long)]
+        all: bool,
     },
     /// Show a live terminal dashboard (arrows/j/k, Enter to focus in Herdr, q to quit).
     Dashboard,

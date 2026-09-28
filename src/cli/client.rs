@@ -742,7 +742,9 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         let backend = vm.backend().to_string();
         match forwarding_gate(&probe, &cfg.vm.name, &backend, name, missing.as_deref()) {
             Gate::Refuse(why) => match cli.command {
-                Command::Status { json: true, watch } => {
+                Command::Status {
+                    json: true, watch, ..
+                } => {
                     if watch {
                         loop {
                             println!(
@@ -830,7 +832,8 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                     cli.command,
                     Command::Status {
                         json: true,
-                        watch: false
+                        watch: false,
+                        ..
                     }
                 ) {
                     let out = vm.capture_ssf(&args);
@@ -1001,7 +1004,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         Command::Config { command } => {
             config_cmd(command.unwrap_or(ConfigCommand::Show { json: false }))
         }
-        Command::Status { json, watch } => status(json, watch).await,
+        Command::Status { json, watch, all } => status(json, watch, all).await,
         Command::Dashboard => bail!("run `ssf dashboard` on the client computer"),
         Command::Peers { json, repo, all } => peers(json, repo, all).await,
         Command::Candidates { json, repo } => candidates(repo, json).await,

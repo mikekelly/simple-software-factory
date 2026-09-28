@@ -1135,7 +1135,9 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
 }
 
 /// The human `ssf status` report.
-pub fn render_status(snap: &Snapshot) -> String {
+/// `all` also lists retired sessions whose workspace was released; without
+/// it they are counted in one line per repository.
+pub fn render_status(snap: &Snapshot, all: bool) -> String {
     let st = &snap.state;
     let mut out = String::new();
     out.push_str(&format!(
@@ -1197,9 +1199,19 @@ pub fn render_status(snap: &Snapshot) -> String {
             out.push_str("  (not polled yet)\n");
             continue;
         }
-        let mine: Vec<&Session> = sessions.iter().filter(|s| s.repo == r.name).collect();
-        if mine.is_empty() {
+        let (mine, released): (Vec<&Session>, Vec<&Session>) = sessions
+            .iter()
+            .filter(|s| s.repo == r.name)
+            .partition(|s| all || s.active || s.workspace_state.as_deref() != Some("released"));
+        if mine.is_empty() && released.is_empty() {
             out.push_str("  no issues tracked\n");
+        }
+        if !released.is_empty() {
+            out.push_str(&format!(
+                "  ({} released session{} hidden; `ssf status --all` lists them)\n",
+                released.len(),
+                if released.len() == 1 { "" } else { "s" }
+            ));
         }
         for s in mine {
             out.push_str(&format!(
