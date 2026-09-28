@@ -58,12 +58,15 @@ impl Engine {
             if let Err(e) = self.tick_repo(&repo).await {
                 warn!(repo = repo.name, "pass failed: {e:#}");
                 self.state.last_error = Some(format!("{}: {e:#}", repo.name));
+                if state_not_saved(&e) {
+                    return;
+                }
             }
             // Until the first full listing snapshot succeeds, retained state
             // must not resume, hand over, deliver, conflict-check or clean up.
             if self.enrollment_pending(&repo) {
-                if let Err(e) = self.state.save() {
-                    error!("saving state: {e:#}");
+                if !self.save_or_stop(&repo) {
+                    return;
                 }
                 continue;
             }
@@ -76,10 +79,32 @@ impl Engine {
             self.run_cleanups(&repo).await;
             self.run_scratch_cleanups(&repo).await;
             self.drop_released_scratch(&repo);
-            if let Err(e) = self.state.save() {
-                error!("saving state: {e:#}");
+            self.state.compact();
+            if !self.save_or_stop(&repo) {
+                return;
             }
         }
+    }
+
+    /// Save at the end of a repository's pass. A failure ends the whole
+    /// pass: the next repository's deliveries would be as unrecorded as
+    /// this one's. The error is kept for `ssf status` (in memory: the
+    /// file is what could not be written).
+    fn save_or_stop(&mut self, repo: &RepoConfig) -> bool {
+        match self.persist() {
+            Ok(()) => true,
+            Err(e) => {
+                error!(repo = repo.name, "{e:#}");
+                self.state.last_error = Some(format!("{}: {e:#}", repo.name));
+                false
+            }
+        }
+    }
+
+    /// Save now, with a failure marked so the pass that asked stops
+    /// (see [`StateNotSaved`]).
+    pub(in crate::engine) fn persist(&self) -> Result<()> {
+        self.state.save().map_err(|e| e.context(StateNotSaved))
     }
 
     /// The startup pass. A daemon restart is invisible to agents, but after a
@@ -288,7 +313,7 @@ impl Engine {
             && matches!(created, Conditional::NotModified)
         {
             debug!(repo = repo.name, "nothing changed");
-            self.watch_reactions(repo, owner, name).await;
+            self.watch_reactions(repo, owner, name).await?;
             return self.watch_subscribed(repo, owner, name).await;
         }
 
@@ -490,6 +515,9 @@ impl Engine {
                     self.note_failure(repo, issue.number, &e).await;
                 }
             }
+            // Each delivery is on disk before the next one is made, so a
+            // crash or a failed save repeats at most this one.
+            self.persist()?;
         }
 
         let stale: Vec<u64> = self
@@ -520,6 +548,7 @@ impl Engine {
                     warn!(repo = repo.name, issue = number, "retiring failed: {e:#}");
                 }
             }
+            self.persist()?;
         }
 
         self.forget_abandoned(repo, &present);
@@ -551,7 +580,7 @@ impl Engine {
             rs.pulls_etag = None;
             rs.created_etag = None;
         }
-        self.watch_reactions(repo, owner, name).await;
+        self.watch_reactions(repo, owner, name).await?;
         self.watch_subscribed(repo, owner, name).await
     }
 

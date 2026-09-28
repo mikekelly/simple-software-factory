@@ -125,6 +125,25 @@ fn is_blocked(e: &anyhow::Error) -> bool {
         .any(|c| c.downcast_ref::<SessionBlocked>().is_some())
 }
 
+/// The state file could not be written. Whatever the pass delivers after
+/// this would be delivered again after a restart (its events never made it
+/// into `seen` on disk), so the pass stops here instead of going on.
+#[derive(Debug)]
+struct StateNotSaved;
+
+impl std::fmt::Display for StateNotSaved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("saving state failed; the rest of this pass is skipped")
+    }
+}
+
+impl std::error::Error for StateNotSaved {}
+
+fn state_not_saved(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| c.downcast_ref::<StateNotSaved>().is_some())
+}
+
 /// Held, not failed: the session is blocked, or its mailbox holds a delivery
 /// back -- an event it has not recorded yet, or a bridge that is not there to
 /// take one.  Nothing is lost in any of those, so the item keeps its place,

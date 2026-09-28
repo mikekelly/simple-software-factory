@@ -532,6 +532,7 @@ async fn an_unblock_after_the_listings_were_read_makes_the_next_pass_full() {
 }
 #[tokio::test]
 async fn a_rejected_bot_opened_item_is_not_onboarded_again() {
+    let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
     let d = crate::driver::StubDriver::new(DriverKind::Herdr);
@@ -575,6 +576,7 @@ async fn a_rejected_bot_opened_item_is_not_onboarded_again() {
 }
 #[tokio::test]
 async fn a_short_listing_does_not_throw_away_ignore_records() {
+    let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
     let d = crate::driver::StubDriver::new(DriverKind::Herdr);
@@ -606,6 +608,7 @@ async fn a_short_listing_does_not_throw_away_ignore_records() {
 }
 #[tokio::test]
 async fn an_ignored_item_is_asked_about_once_and_forgotten_when_it_is_gone() {
+    let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
     let d = crate::driver::StubDriver::new(DriverKind::Herdr);

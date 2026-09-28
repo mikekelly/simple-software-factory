@@ -152,6 +152,50 @@ async fn an_item_assigned_again_is_told_its_own_posts() {
     );
 }
 
+/// A compacted record (`seen` dropped once the item was closed and
+/// released) that is assigned again hears what came after its retirement,
+/// not its whole history as news.
+#[tokio::test]
+async fn a_compacted_item_assigned_again_hears_only_what_is_new() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = repo();
+    let at = |id: u64, body: &str, when: &str| {
+        json!({"event":"commented","id":id,"user":{"login":"alice"},"body":body,
+               "html_url":format!("u{id}"),"created_at":when,"updated_at":when})
+    };
+    stub.set_timeline(
+        5,
+        vec![
+            at(2, "an old request, long dealt with", "2026-01-01T00:00:00Z"),
+            at(3, "reopened: it broke again", "2026-03-01T00:00:00Z"),
+        ],
+    );
+    let issue: Issue = serde_json::from_value(assigned_item(5, "alice", "u2")).unwrap();
+    let mut st = e.entry(&r, 5).clone();
+    st.triggers = vec!["assigned".into()];
+    st.active = false;
+    st.seen.clear();
+    st.compacted = true;
+    st.retired_at = Some("2026-02-01T00:00:00Z".into());
+    e.reactivate(&r, "o", "r", &issue, st).await.unwrap();
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].contains("reopened: it broke again"),
+        "{}",
+        prompts[0]
+    );
+    assert!(
+        !prompts[0].contains("an old request"),
+        "history from before the retirement is not news: {}",
+        prompts[0]
+    );
+    let after = e.entry(&r, 5);
+    assert!(!after.compacted && after.seen.contains_key("commented:2"));
+}
+
 /// Onboarding's first prompt is the same catch-up: an item whose history
 /// carries posts from this session id is shown them from its first message
 /// on.

@@ -197,7 +197,15 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
             format!("{key} in config.toml no longer does anything: {why}; remove the line"),
         );
     }
-    let state = state::State::load().unwrap_or_default();
+    // An unreadable state file (one a newer ssf wrote, say) stops the
+    // daemon from starting, so it is a failure here too, not an empty state.
+    let state = match state::State::load() {
+        Ok(state) => state,
+        Err(e) => {
+            record(Level::Fail, format!("{e:#}"));
+            state::State::default()
+        }
+    };
     // Harnesses no repository is configured with, because an item was
     // put on one. The item does not have to be active yet: an item an
     // assignment has just pinned has no session until the next pass

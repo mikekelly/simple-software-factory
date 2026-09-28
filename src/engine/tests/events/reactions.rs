@@ -293,7 +293,7 @@ async fn a_held_mailbox_is_not_swept() {
         ],
     );
     // The sweep on its own: a listing that changed would settle the hold.
-    e.watch_reactions(&r, "o", "r").await;
+    e.watch_reactions(&r, "o", "r").await.unwrap();
     assert!(d.prompts().is_empty());
     let hits = stub.hits();
     assert!(!hits.iter().any(|h| h.contains("/timeline")), "{hits:?}");
