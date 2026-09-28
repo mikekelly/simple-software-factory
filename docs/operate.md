@@ -239,7 +239,7 @@ Upgrade both sides to the same release:
    standalone binaries). Ask before running `sudo`. The Arch, `.deb` and
    `.rpm` packages restart each logged-in user's running `ssf.service` and
    `ssf@NAME.service` on the new version; Homebrew cannot, so run
-   `brew services restart ssf`. An upgrade never stops or restarts a VM or
+   `launchctl kickstart -k gui/$(id -u)/dev.ssf.server.NAME`. An upgrade never stops or restarts a VM or
    an agent: VMs and host mode's herdr run in scopes of their own, and the
    new daemon reattaches to them. A service started by ssf 0.19 or earlier
    still holds its VM (or herdr) inside it, so the upgrade leaves it running
@@ -274,7 +274,7 @@ they are; their workspaces and everything on GitHub are untouched, and
 enabling the service again resumes delivery.
 
 A VM has a lifetime of its own. `systemctl --user stop|restart
-ssf@NAME.service` (or `brew services` on macOS) stops or restarts only the
+ssf@NAME.service` (or `launchctl kickstart -k` on macOS) stops or restarts only the
 host supervisor and leaves the guest, its daemon and its sessions running;
 the next supervisor reattaches to it. Only `ssf vm stop`, `ssf vm restart`
 and `ssf ui service disable` stop the guest, and while the service is

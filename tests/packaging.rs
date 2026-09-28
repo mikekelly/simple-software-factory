@@ -256,7 +256,7 @@ fn packages_leave_service_enablement_to_explicit_setup() {
     let nfpm = read(NFPM);
     assert!(nfpm.contains("dst: /usr/lib/ssf/package-post-upgrade"));
     assert!(nfpm.contains("posttrans: packaging/linux/posttrans.sh"));
-    assert!(read("packaging/homebrew/ssf.rb").contains("brew services restart ssf"));
+    assert!(read("packaging/homebrew/ssf.rb").contains("launchctl kickstart -k"));
 }
 
 /// Runs the upgrade helper against a fake user manager with `ssf.service`

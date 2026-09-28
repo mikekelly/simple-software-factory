@@ -480,13 +480,42 @@ fn xml_escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// The PATH the launchd agent runs with. launchd's own is
+/// `/usr/bin:/bin:/usr/sbin:/sbin`, where Homebrew's `limactl` and `gh`
+/// are not, so the daemon could not start the VM (#603). The directory
+/// holding `ssf-server` comes first, then Homebrew's prefixes, as the
+/// formula's own `service` block has them.
+#[cfg(any(target_os = "macos", test))]
+fn launchd_path(server: &Path) -> String {
+    let mut dirs: Vec<String> = Vec::new();
+    let own = server.parent().map(|d| d.to_string_lossy().into_owned());
+    for d in own.into_iter().chain(
+        [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ]
+        .map(String::from),
+    ) {
+        if !d.is_empty() && !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    dirs.join(":")
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn target_launchd_plist_body(label: &str, server: &Path, target: &str, log: &Path) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{}</string>\n<key>ProgramArguments</key><array><string>{}</string><string>--target</string><string>{}</string></array>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n<key>StandardOutPath</key><string>{}</string><key>StandardErrorPath</key><string>{}</string>\n</dict></plist>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{}</string>\n<key>ProgramArguments</key><array><string>{}</string><string>--target</string><string>{}</string></array>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>{}</string></dict>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n<key>StandardOutPath</key><string>{}</string><key>StandardErrorPath</key><string>{}</string>\n</dict></plist>\n",
         xml_escape(label),
         xml_escape(&server.to_string_lossy()),
         xml_escape(target),
+        xml_escape(&launchd_path(server)),
         xml_escape(&log.to_string_lossy()),
         xml_escape(&log.to_string_lossy()),
     )
@@ -551,13 +580,27 @@ fn target_launchd_action(action: &str) -> Result<()> {
     let log = logs.join(format!("{target}.log"));
     let body = target_launchd_plist_body(&launchd_label(), &server, &target, &log);
     crate::config::write_atomic(&plist, body.as_bytes(), 0o600)?;
-    let mut command = Command::new("launchctl");
+    // launchd keeps the plist it loaded, so a registered agent is booted
+    // out and in again: a kickstart would restart it on the old one, and
+    // an agent written without a PATH ([`launchd_path`]) would keep failing to find
+    // limactl. The VM is not in the job's process group (lima's host agent
+    // detaches), so this leaves the guest running (#603).
     if registered()? {
-        command.args(["kickstart", "-k", &launchd_target()]);
-    } else {
-        command.args(["bootstrap", &domain]).arg(&plist);
+        let _ = Command::new("launchctl")
+            .args(["bootout", &launchd_target()])
+            .output();
+        // bootout can return before launchd has let go of the job, and a
+        // bootstrap in that window is undone when it does.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while registered()? && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     }
-    let out = command.output().context("running launchctl")?;
+    let out = Command::new("launchctl")
+        .args(["bootstrap", &domain])
+        .arg(&plist)
+        .output()
+        .context("running launchctl")?;
     if !out.status.success() {
         bail!(
             "launching the target service failed: {}",
@@ -579,7 +622,7 @@ pub fn systemctl_user(args: &[&str]) -> Result<std::process::Output> {
 }
 
 /// `systemctl args`, bounded like [`systemctl_user`].
-fn systemctl(args: &[&str]) -> Result<std::process::Output> {
+pub(crate) fn systemctl(args: &[&str]) -> Result<std::process::Output> {
     use std::io::Read;
     let mut child = Command::new("systemctl")
         .args(args)
@@ -885,5 +928,13 @@ mod tests {
         assert!(body.contains("/opt/a&amp;b/ssf-server"));
         assert_eq!(body.matches("<key>Label</key>").count(), 1);
         assert_eq!(body.matches("one.log").count(), 2);
+        // launchd's default PATH has no Homebrew, so limactl must be named.
+        assert!(body.contains(
+            "<key>PATH</key><string>/opt/a&amp;b:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>"
+        ));
+        assert!(
+            launchd_path(Path::new("/opt/homebrew/bin/ssf-server"))
+                .starts_with("/opt/homebrew/bin:/opt/homebrew/sbin:")
+        );
     }
 }

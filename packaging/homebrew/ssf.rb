@@ -52,14 +52,13 @@ class Ssf < Formula
       Setup, step by step (also for your coding agent to follow):
         #{HOMEBREW_PREFIX}/share/doc/ssf/docs/install.md
 
-      On macOS the factory runs in a lima VM: build it once with
+      On macOS the factory runs in a lima VM. `ssf setup` enables a launchd
+      agent per server (dev.ssf.server.NAME), then build the VM once with
         ssf vm build
-      then start the service, which supervises the VM and the daemon:
-        brew services start ssf
-      The log is #{var}/log/ssf.log.
+      Do not use `brew services`: that is an older, separate service.
 
-      After `brew upgrade ssf`, restart the service to run the new version:
-        brew services restart ssf
+      After `brew upgrade ssf`, restart the agent to run the new version:
+        launchctl kickstart -k gui/$(id -u)/dev.ssf.server.NAME
       The VM and its agent sessions keep running; the new service reattaches.
 
       To run the factory on this machine instead of in a VM (driver = "herdr"
