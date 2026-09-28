@@ -13,7 +13,9 @@ use crate::config::DriverKind;
 use crate::config::{Config, RepoConfig};
 use crate::driver::{Delivery, Driver, Drivers, Relaunch, WorkspaceInfo, Worktree};
 use crate::events::{self, Attach, Conversation, Event};
-use crate::github::{Conditional, GitHub, Issue, PrInfo, RepositoryIdentity};
+use crate::github::{
+    Conditional, GitHub, Issue, PrInfo, RateLimited, RepositoryIdentity, RepositoryInvitation,
+};
 #[cfg(test)]
 use crate::ipc::Request;
 use crate::login::{self, LoginState, Probe};
@@ -143,6 +145,20 @@ impl std::fmt::Display for StateNotSaved {
 
 impl std::error::Error for StateNotSaved {}
 
+/// Some subscribed-only item could not be polled (each is warned about):
+/// an item's trouble, not the repository's, so it does not back the
+/// repository off.
+#[derive(Debug)]
+struct SubscribedFailed;
+
+impl std::fmt::Display for SubscribedFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("polling a subscribed item failed")
+    }
+}
+
+impl std::error::Error for SubscribedFailed {}
+
 fn state_not_saved(e: &anyhow::Error) -> bool {
     e.chain()
         .any(|c| c.downcast_ref::<StateNotSaved>().is_some())
@@ -212,6 +228,14 @@ pub struct Engine {
     /// that it survives from the pass that arms it to the one that spends
     /// it, so it must never be cleared at the top of a pass.
     refetch: BTreeSet<String>,
+    /// The pending repository invitations as last listed, with that
+    /// listing's ETag, so an unchanged list costs a 304. In memory only.
+    invitations: Option<(String, Vec<RepositoryInvitation>)>,
+    /// Per repository, passes that failed in a row and passes still to
+    /// skip before the next try (exponential backoff). In memory only.
+    backoff: BTreeMap<String, (u32, u32)>,
+    /// The rate-limit pause already logged, so it is said once.
+    pause_logged: Option<SystemTime>,
     /// Items whose session's mailbox was found with no live bridge behind it
     /// (`Hold::Unavailable`), so the warning is one line per incident rather
     /// than one per pass. Cleared for an item whose delivery goes through

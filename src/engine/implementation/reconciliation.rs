@@ -4,10 +4,12 @@ use tracing::{debug, error, info, warn};
 impl Engine {
     pub async fn tick(&mut self) {
         self.reload_config();
-        if let Err(e) = self.accept_repository_invitations().await {
+        // A rate-limit pause skips GitHub work only; local work goes on.
+        let paused = self.rate_limit_paused();
+        if !paused && let Err(e) = self.accept_repository_invitations().await {
             warn!("repository invitations could not be processed: {e:#}");
         }
-        if !self.reconcile_repo_identities(false).await {
+        if !paused && !self.reconcile_repo_identities(false).await {
             warn!("skipping this pass until repository identity repair is durable");
             return;
         }
@@ -55,16 +57,49 @@ impl Engine {
             if self.driver_down(&repo) {
                 continue;
             }
+            let paused = self.rate_limit_paused();
+            if !paused
+                && let Some((failed, skip)) = self.backoff.get_mut(&repo.name)
+                && *skip > 0
+            {
+                *skip -= 1;
+                debug!(
+                    repo = repo.name,
+                    failed = *failed,
+                    remaining = *skip,
+                    "backing off after failed passes"
+                );
+                continue;
+            }
             // Before anything is delivered or resumed: a session that has
             // been handed over is replaced first.
-            if !self.enrollment_pending(&repo) {
+            if !paused && !self.enrollment_pending(&repo) {
                 self.run_handovers(&repo).await;
             }
-            if let Err(e) = self.tick_repo(&repo).await {
-                warn!(repo = repo.name, "pass failed: {e:#}");
-                self.state.last_error = Some(format!("{}: {e:#}", repo.name));
-                if state_not_saved(&e) {
-                    return;
+            let polled = if paused {
+                Ok(())
+            } else {
+                self.tick_repo(&repo).await
+            };
+            match polled {
+                Ok(()) if paused => {}
+                Ok(()) => {
+                    self.backoff.remove(&repo.name);
+                }
+                Err(e) => {
+                    warn!(repo = repo.name, "pass failed: {e:#}");
+                    self.state.last_error = Some(format!("{}: {e:#}", repo.name));
+                    if state_not_saved(&e) {
+                        return;
+                    }
+                    // A rate limit pauses every repository instead, and
+                    // one subscribed item's trouble is not the repository's.
+                    if rate_limited(&e).is_none() && !e.chain().any(|c| c.is::<SubscribedFailed>())
+                    {
+                        let (failed, skip) = self.backoff.entry(repo.name.clone()).or_default();
+                        *failed += 1;
+                        *skip = backoff_passes(*failed);
+                    }
                 }
             }
             // Until the first full listing snapshot succeeds, retained state
@@ -89,6 +124,23 @@ impl Engine {
                 return;
             }
         }
+    }
+
+    /// Whether GitHub asked for a pause that has not run out; the first
+    /// time a given pause is seen it is logged.
+    fn rate_limit_paused(&mut self) -> bool {
+        let Some(until) = self.gh.paused_until() else {
+            return false;
+        };
+        if self.pause_logged != Some(until) {
+            self.pause_logged = Some(until);
+            let secs = until
+                .duration_since(SystemTime::now())
+                .unwrap_or_default()
+                .as_secs();
+            warn!("GitHub rate limit reached; pausing all polling for {secs}s");
+        }
+        true
     }
 
     /// Save at the end of a repository's pass. A failure ends the whole
@@ -477,7 +529,10 @@ impl Engine {
             self.check_logins(repo).await;
         }
 
-        let mut all_ok = true;
+        // The listings an item that failed came from: only their ETags are
+        // dropped, so the next pass sees them in full again and the rest
+        // stay cheap.
+        let mut failed: BTreeSet<&'static str> = BTreeSet::new();
         let present: BTreeSet<u64> = items.keys().copied().collect();
         // An item on a listing again settles whatever a hiccup held, even
         // when nothing else about it needs looking at this pass, so a
@@ -497,6 +552,7 @@ impl Engine {
             if !self.needs_look(repo, number, fresh.as_ref(), &triggers) {
                 continue;
             }
+            let from = listings_of(&triggers);
             let issue = match fresh {
                 Some(i) => i,
                 // Not on a listing that changed, and not handled by a
@@ -504,7 +560,7 @@ impl Engine {
                 None => match self.gh.issue(owner, name, number).await {
                     Ok(i) => i,
                     Err(e) => {
-                        all_ok = false;
+                        failed.extend(&from);
                         self.note_failure(repo, number, &e).await;
                         continue;
                     }
@@ -524,7 +580,7 @@ impl Engine {
                 // `note_mailbox_hold`).
                 Err(e) if is_held(&e) => self.note_mailbox_hold(repo, issue.number, &e),
                 Err(e) => {
-                    all_ok = false;
+                    failed.extend(&from);
                     self.note_failure(repo, issue.number, &e).await;
                 }
             }
@@ -562,7 +618,9 @@ impl Engine {
                 Ok(()) => {}
                 Err(e) if is_held(&e) => self.note_mailbox_hold(repo, number, &e),
                 Err(e) => {
-                    all_ok = false;
+                    // Gone from every listing now: the ones it was last on
+                    // are the ones to see in full again.
+                    failed.extend(listings_holding(&rs, number));
                     warn!(repo = repo.name, issue = number, "retiring failed: {e:#}");
                 }
             }
@@ -574,31 +632,32 @@ impl Engine {
         self.forget_abandoned(repo, &present);
         self.prune_ignored(repo, owner, name, &present).await;
 
-        // Only trust the ETags when every item was handled; otherwise the next
-        // pass must see the full listings again to retry.
+        // Only trust a listing's ETag when every item on it was handled;
+        // otherwise the next pass must see that listing in full to retry.
         let rs = self.state.repo_mut(&repo.name);
-        if all_ok {
-            if let Some(t) = issues_etag {
-                rs.issues_etag = t;
-                rs.assigned_numbers = assigned_numbers;
-            }
-            if let Some(t) = mentioned_etag {
-                rs.mentioned_etag = t;
-                rs.mentioned_numbers = mentioned_numbers;
-            }
-            if let Some(t) = pulls_etag {
-                rs.pulls_etag = t;
-                rs.review_numbers = review_numbers;
-            }
-            if let Some(t) = created_etag {
-                rs.created_etag = t;
-                rs.created_numbers = created_numbers;
-            }
-        } else {
+        if failed.contains(ASSIGNED) {
             rs.issues_etag = None;
+        } else if let Some(t) = issues_etag {
+            rs.issues_etag = t;
+            rs.assigned_numbers = assigned_numbers;
+        }
+        if failed.contains(MENTIONED) {
             rs.mentioned_etag = None;
+        } else if let Some(t) = mentioned_etag {
+            rs.mentioned_etag = t;
+            rs.mentioned_numbers = mentioned_numbers;
+        }
+        if failed.contains(REVIEWS) {
             rs.pulls_etag = None;
+        } else if let Some(t) = pulls_etag {
+            rs.pulls_etag = t;
+            rs.review_numbers = review_numbers;
+        }
+        if failed.contains(CREATED) {
             rs.created_etag = None;
+        } else if let Some(t) = created_etag {
+            rs.created_etag = t;
+            rs.created_numbers = created_numbers;
         }
         self.watch_reactions(repo, owner, name).await?;
         self.watch_subscribed(repo, owner, name).await
@@ -839,5 +898,85 @@ impl Engine {
                 at.asked_at = Some(now_iso());
             }
         }
+    }
+}
+
+/// The rate limit behind an error, if that is what it was.
+pub(in crate::engine) fn rate_limited(e: &anyhow::Error) -> Option<&RateLimited> {
+    e.chain().find_map(|c| c.downcast_ref::<RateLimited>())
+}
+
+/// Passes a repository sits out after `failed` failed passes in a row:
+/// 1, 2, 4 ... up to 32.
+pub(in crate::engine) fn backoff_passes(failed: u32) -> u32 {
+    1u32 << failed.saturating_sub(1).min(5)
+}
+
+const ASSIGNED: &str = "assigned";
+const MENTIONED: &str = "mentioned";
+const REVIEWS: &str = "review_requested";
+const CREATED: &str = "created";
+
+/// The listings an item's triggers name (each trigger is its listing).
+pub(in crate::engine) fn listings_of(triggers: &[String]) -> BTreeSet<&'static str> {
+    [ASSIGNED, MENTIONED, REVIEWS, CREATED]
+        .into_iter()
+        .filter(|l| triggers.iter().any(|t| t == l))
+        .collect()
+}
+
+/// The listings whose last snapshot held `number`; every listing when
+/// none did, since nothing says where it came from.
+pub(in crate::engine) fn listings_holding(
+    rs: &crate::state::RepoState,
+    number: u64,
+) -> BTreeSet<&'static str> {
+    let held: BTreeSet<&'static str> = [
+        (ASSIGNED, &rs.assigned_numbers),
+        (MENTIONED, &rs.mentioned_numbers),
+        (REVIEWS, &rs.review_numbers),
+        (CREATED, &rs.created_numbers),
+    ]
+    .into_iter()
+    .filter(|(_, nums)| nums.contains(&number))
+    .map(|(l, _)| l)
+    .collect();
+    if held.is_empty() {
+        [ASSIGNED, MENTIONED, REVIEWS, CREATED]
+            .into_iter()
+            .collect()
+    } else {
+        held
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_up_to_thirty_two_passes() {
+        let got: Vec<u32> = (1..=8).map(backoff_passes).collect();
+        assert_eq!(got, vec![1, 2, 4, 8, 16, 32, 32, 32]);
+    }
+
+    #[test]
+    fn a_failed_item_names_only_its_own_listings() {
+        let got = listings_of(&["mentioned".into(), "created".into()]);
+        assert_eq!(got, BTreeSet::from([MENTIONED, CREATED]));
+        assert!(listings_of(&[]).is_empty());
+
+        let mut rs = crate::state::RepoState {
+            review_numbers: vec![7],
+            ..Default::default()
+        };
+        assert_eq!(listings_holding(&rs, 7), BTreeSet::from([REVIEWS]));
+        rs.assigned_numbers = vec![7];
+        assert_eq!(
+            listings_holding(&rs, 7),
+            BTreeSet::from([ASSIGNED, REVIEWS])
+        );
+        // Known to no listing: every listing is looked at again.
+        assert_eq!(listings_holding(&rs, 9).len(), 4);
     }
 }

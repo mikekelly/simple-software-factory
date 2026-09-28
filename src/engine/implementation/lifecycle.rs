@@ -6,13 +6,25 @@ impl Engine {
     /// Accept invitations from explicitly trusted inviters. This is deliberately
     /// account-wide and separate from repository enrollment: accepting access
     /// never adds a `[[repo]]` or selects/enables a server target.
-    pub(in crate::engine) async fn accept_repository_invitations(&self) -> Result<()> {
+    pub(in crate::engine) async fn accept_repository_invitations(&mut self) -> Result<()> {
         let allowed = &self.cfg.github.auto_accept_invitations_from;
         if allowed.is_empty() {
             return Ok(());
         }
+        let etag = self.invitations.as_ref().map(|(tag, _)| tag.as_str());
+        let listed = match self.gh.repository_invitations(etag).await? {
+            Conditional::NotModified => self
+                .invitations
+                .as_ref()
+                .map(|(_, list)| list.clone())
+                .unwrap_or_default(),
+            Conditional::Modified { value, etag } => {
+                self.invitations = etag.map(|tag| (tag, value.clone()));
+                value
+            }
+        };
         let mut failures = Vec::new();
-        for invitation in self.gh.repository_invitations().await? {
+        for invitation in listed {
             let Some(inviter) = invitation.inviter else {
                 debug!(
                     repository = invitation.repository.full_name,
@@ -339,6 +351,9 @@ impl Engine {
             workspaces: BTreeMap::new(),
             workspaces_read: BTreeSet::new(),
             refetch: BTreeSet::new(),
+            invitations: None,
+            backoff: BTreeMap::new(),
+            pause_logged: None,
             channel_lost: BTreeSet::new(),
             startup_pass: false,
             onboarding: None,
