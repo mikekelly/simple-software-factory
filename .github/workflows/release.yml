@@ -172,6 +172,7 @@ jobs:
           - { format: arch, runner: ubuntu-latest, image: 'archlinux:base', artifact: arch-package }
           - { format: static, runner: ubuntu-latest, image: 'ubuntu:24.04', artifact: linux-packages }
           - { format: deb, runner: ubuntu-24.04-arm, image: 'ubuntu:24.04', artifact: linux-aarch64-binary }
+          - { format: rpm, runner: ubuntu-24.04-arm, image: 'fedora:latest', artifact: linux-aarch64-binary }
           - { format: static, runner: ubuntu-24.04-arm, image: 'ubuntu:24.04', artifact: linux-aarch64-binary }
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.image }}
