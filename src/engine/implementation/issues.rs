@@ -114,6 +114,7 @@ impl Engine {
         e.terminal_handle = o.terminal_handle;
         e.agent_session_id = o.agent_session_id;
         e.launched_at = o.launched_at;
+        e.launched_stack = o.launched_stack;
         e.cleanup_pending = false;
         e.release_pending = false;
         e.release_forced = false;

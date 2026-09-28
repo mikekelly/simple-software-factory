@@ -95,6 +95,53 @@ impl Engine {
         repo.with_overrides(self.overrides_of(repo, number).as_ref())
     }
 
+    /// What the session that is live on an item was launched with (#658):
+    /// the stack recorded at its last launch or resume, else the harness
+    /// its pane reports, else `effective`. A delivery to a live pane goes
+    /// through this, so a config edit, and the daemon restart that forgets
+    /// the in-memory picture, leave that session on its own harness until
+    /// its next launch, resume or relaunch.
+    pub(in crate::engine) fn live_config(&self, repo: &RepoConfig, number: u64) -> RepoConfig {
+        let owner = self.owner_of(repo, number);
+        let launched = self
+            .peek(repo, owner)
+            .and_then(|s| s.launched_stack.clone());
+        let running = self.running_harness(repo, number);
+        match launched {
+            Some(l) if running.as_ref().is_none_or(|r| *r == l.harness) => {
+                repo.with_overrides(Some(&l))
+            }
+            _ => {
+                let eff = self.effective(repo, number);
+                match running.filter(|r| *r != eff.harness) {
+                    Some(harness) => repo.with_overrides(Some(&Overrides {
+                        harness,
+                        model: None,
+                        effort: None,
+                    })),
+                    None => eff,
+                }
+            }
+        }
+    }
+
+    /// Record that an item's session has just been launched or resumed
+    /// with `eff`, so `live_config` knows it after a daemon restart.
+    pub(in crate::engine) fn record_launch(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        eff: &RepoConfig,
+    ) {
+        let e = self.entry(repo, number);
+        e.launched_at = Some(now_iso());
+        e.launched_stack = Some(Overrides {
+            harness: eff.harness.clone(),
+            model: eff.model.clone(),
+            effort: eff.effort.clone(),
+        });
+    }
+
     /// The workspaces of a repository as the driver last reported them this
     /// pass (`Driver::ps`): the panes live in it, and the agent each one is
     /// running. Read once a pass, so the login check, the handover
@@ -181,29 +228,38 @@ impl Engine {
     /// needs and the guidance it reads all follow this; what a launch,
     /// resume or relaunch starts is `effective`, never this.
     pub(in crate::engine) fn live_harness(&self, repo: &RepoConfig, number: u64) -> String {
-        self.running_harness(repo, number)
-            .unwrap_or_else(|| self.effective(repo, number).harness)
+        match self.running_harness(repo, number) {
+            Some(_) => self.live_config(repo, number).harness,
+            None => self.effective(repo, number).harness,
+        }
     }
 
     /// What the item is on now, for the commands and posts that have to name
     /// it: the harness its pane is running when the driver reports one, with
     /// the record's model, effort and command. A session left on another
-    /// harness by a config edit (`ssf repo set`) keeps that harness, and
-    /// there its model, effort and command stay unset: only the harness is
-    /// the driver's to report, and what that session was launched with is
-    /// not on the record, so nothing is claimed about it.
+    /// harness by a config edit (`ssf repo set`) keeps that harness with
+    /// the model and effort recorded at its launch (#658); a session from
+    /// before that record has only its harness named, the driver's to
+    /// report, and nothing is claimed about the rest.
     pub(in crate::engine) fn current_stack(&self, repo: &RepoConfig, number: u64) -> Current {
-        let mut eff = self.effective(repo, number);
-        let mut unknown_stack = false;
-        if let Some(running) = self
-            .running_harness(repo, number)
-            .filter(|running| *running != eff.harness)
-        {
-            eff.harness = running;
+        let owner = self.owner_of(repo, number);
+        let recorded = self
+            .peek(repo, owner)
+            .and_then(|s| s.launched_stack.as_ref())
+            .map(|l| l.harness.clone());
+        let mut eff = match self.running_harness(repo, number) {
+            Some(_) => self.live_config(repo, number),
+            None => self.effective(repo, number),
+        };
+        // A pane on a harness neither the record nor the config names (a
+        // session from before #658 left behind by a config edit): only the
+        // harness is the driver's to report.
+        let unknown_stack = recorded.as_ref() != Some(&eff.harness)
+            && eff.harness != self.effective(repo, number).harness;
+        if unknown_stack {
             eff.model = None;
             eff.effort = None;
             eff.command = None;
-            unknown_stack = true;
         }
         Current {
             harness: eff.harness,
