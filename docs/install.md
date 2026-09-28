@@ -159,15 +159,14 @@ ssf --version && ssf-server --version
 
 Persist that `PATH` line for future shells. Supply the prerequisites yourself with the host's package manager: CA certificates, curl, Git, jq, GitHub CLI 2.40 or newer, an OpenSSH client, herdr, and the harness. The bare binaries carry no service units, no VM scripts and no configuration examples, so skip `ssf setup` on this path and leave the server catalog empty, so that the client and the foreground daemon share one configuration and state directory.
 
-Run the two processes under the same Unix user, HOME and PATH, each in its own persistent terminal or under the host's process supervisor:
+Run `ssf-server` in a persistent terminal or under the host's process supervisor:
 
 ```sh
-HERDR_CONFIG_PATH=~/.config/ssf/herdr.toml herdr --session ssf server   # terminal one
-ssf-server                                                           # terminal two
+ssf-server
 ```
 
-ssf runs its agents in its own herdr session, `ssf`, with a herdr config it writes
-(`ssf doctor` writes it and prints the command above with its path; see
+ssf runs its agents in its own herdr session, `ssf`, and starts that session's
+server itself, detached, with a herdr config it writes (see
 [drivers.md](drivers.md#host-or-guest)). Attach to it with `herdr session attach ssf`.
 
 With no service unit, `ssf status` and `ssf doctor` report the daemon itself
@@ -237,14 +236,13 @@ Re-running `ssf vm build` after a failure is safe; it keeps an existing image un
 
 Agents run as this Unix user and can reach this user's files and credentials, and the default launch commands bypass the harness's permission prompts because the terminals are unattended. Say this plainly to the person before choosing it.
 
-herdr provides the workspaces and terminals. ssf runs its agents in a herdr session of its own named `ssf`, never the person's own herdr session, with a herdr config ssf writes that turns herdr's own agent restore off. Run `ssf doctor` once (it writes that config), then start the session headless and keep it running (a persistent terminal, or the host's process supervisor):
+herdr provides the workspaces and terminals. ssf runs its agents in a herdr session of its own named `ssf`, never the person's own herdr session, with a herdr config ssf writes that turns herdr's own agent restore off. The daemon starts that session's server itself when it is not running, so there is nothing to start by hand. To watch and type in the agents' panes:
 
 ```sh
-HERDR_CONFIG_PATH=~/.config/ssf/herdr.toml herdr --session ssf server
-herdr session attach ssf       # watch and type in the agents' panes
+herdr session attach ssf
 ```
 
-`ssf status` and `ssf doctor` name the session and print both commands. An install from before #602 whose agents ran in the person's default herdr session: see [drivers.md](drivers.md#moving-an-existing-host-install-to-the-ssf-session). ssf clones under `herdr.projects_dir` (`~/ssf/projects`) and makes a worktree per item beside the clone.
+`ssf status` and `ssf doctor` name the session. An install from before #602 whose agents ran in the person's default herdr session: see [drivers.md](drivers.md#moving-an-existing-host-install-to-the-ssf-session). ssf clones under `herdr.projects_dir` (`~/ssf/projects`) and makes a worktree per item beside the clone.
 
 ```sh
 ssf doctor

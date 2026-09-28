@@ -26,6 +26,16 @@ pub(super) async fn run_factory(cfg: Config, once: bool) -> Result<()> {
     {
         tracing::warn!("{e:#}");
     }
+    // ssf's herdr session is ssf's to start, with that config (#602).
+    if !once
+        && !factory_vm::in_guest()
+        && cfg.drivers_in_use().contains(&config::DriverKind::Herdr)
+        && let Err(e) = crate::herdr::Herdr::new(cfg.herdr.clone())
+            .ensure_session()
+            .await
+    {
+        tracing::warn!("herdr session `{}`: {e:#}", crate::herdr::SESSION);
+    }
     let engine = engine::Engine::new(cfg).await?;
     if once {
         let mut engine = engine;

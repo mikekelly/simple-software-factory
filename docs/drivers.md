@@ -48,13 +48,30 @@ herdr command ssf runs drops the `HERDR_*` variables it inherited (a daemon star
 from a herdr pane would otherwise reach that pane's session through
 `HERDR_SOCKET_PATH`) and names the `ssf` session.
 
-The server has to be up before the daemon can open a workspace. On a host, start it
-headless under the user that runs `ssf-server`, with the config ssf wrote (`ssf-server`
-and `ssf doctor` write it; `ssf doctor` and `ssf status` print this exact command):
+On a host the daemon starts the `ssf` session's server itself: at startup, and again
+on any pass that finds herdr not answering, it asks `herdr session list --json` and,
+only when herdr says `ssf` is not running, starts
 
 ```sh
 HERDR_CONFIG_PATH=~/.config/ssf/herdr.toml herdr --session ssf server
 ```
+
+detached from the daemon, as the user that runs `ssf-server`. On Linux with a systemd
+user manager it runs in a user scope of its own, `ssf-herdr.scope`, so restarting or
+stopping the `ssf@NAME` service leaves the agents running; elsewhere (macOS, or no
+scope to be had) it is a process in a session of its own. Its output goes to
+`herdr-server.log` in ssf's state directory; herdr keeps its own log in the session's
+directory (`~/.config/herdr/sessions/ssf/herdr-server.log`). herdr refuses a second
+server on a running session, and the daemon starts one at a time. `ssf doctor` prints
+the command.
+
+herdr 0.9 cannot report the config a running server was started with (neither `herdr
+session list`, `herdr status server` nor the socket API names it), so ssf cannot check
+it. `herdr session attach ssf` starts a server itself when none is running, and that
+server has the attaching shell's `HERDR_CONFIG_PATH`, usually none, so herdr's own
+config and its agent restore. If the session was started that way (or any way but by
+ssf), stop it with `herdr session stop ssf`; the daemon starts it again with its config
+on its next pass (restart `ssf-server` to have it do so at once).
 
 Watch and type in the sessions with `herdr session attach ssf` on the host, or from
 another machine with `herdr --remote <host> --session ssf` (saved once with `herdr
@@ -70,9 +87,10 @@ no longer sees agents in the old one. To avoid two agents working in one worktre
 1. Stop `ssf-server`.
 2. In the old session (`herdr` attaches to the default one), close the panes of ssf's
    agents.
-3. Start the `ssf` session as above, then start `ssf-server`. With `resume_on_start` the
-   daemon relaunches each active item's session in the `ssf` session, continuing its
-   conversation.
+3. Start `ssf-server`. It starts the `ssf` session itself and, with `resume_on_start`,
+   relaunches each active item's session there, continuing its conversation. If you
+   started an `ssf` session by hand before this release, stop it first (`herdr session
+   stop ssf`) so ssf starts it with its config.
 
 ## Reading and driving an agent
 

@@ -81,7 +81,8 @@ pub fn write_config() -> Result<std::path::PathBuf> {
 }
 
 /// A herdr command aimed at ssf's session: [`SESSION`] on a host (its
-/// config is the server's, given by [`server_command`]), herdr's default session in the VM guest. Every inherited
+/// config is the server's, which [`Herdr::ensure_session`] starts), herdr's
+/// default session in the VM guest. Every inherited
 /// `HERDR_*` variable goes: ssf may itself run inside a herdr pane, whose
 /// workspace, pane and socket (`HERDR_SOCKET_PATH` wins over
 /// `HERDR_SESSION`) are the person's, not ssf's.
@@ -108,6 +109,53 @@ fn isolated(
     }
     command
 }
+
+/// The systemd user scope [`SESSION`]'s server runs in on Linux, apart
+/// from the ssf service's cgroup, so a restart of the service leaves the
+/// agents running (as the VM's scopes do, #600).
+const SERVER_SCOPE: &str = "ssf-herdr";
+
+/// The command that starts [`SESSION`]'s server with ssf's herdr config:
+/// [`server_command`] as ssf runs it.
+fn server_start(program: impl AsRef<std::ffi::OsStr>, config: &Path) -> std::process::Command {
+    let mut cmd = command(program);
+    cmd.args(["--session", SESSION, "server"])
+        .env("HERDR_CONFIG_PATH", config);
+    cmd
+}
+
+/// Is `name` running, by `herdr session list --json`? `None` when the
+/// listing does not say (not herdr 0.9's shape).
+pub fn session_running(list: &Value, name: &str) -> Option<bool> {
+    list.get("sessions")?
+        .as_array()?
+        .iter()
+        .find(|s| s.get("name").and_then(Value::as_str) == Some(name))
+        .map(|s| s.get("running").and_then(Value::as_bool).unwrap_or(false))
+        .or(Some(false))
+}
+
+/// What [`Herdr::ensure_session`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ensured {
+    /// The VM guest: herdr's default session is the guest's own.
+    NotOurs,
+    /// The server was up already.
+    Running,
+    /// ssf started it.
+    Started,
+}
+
+/// Should ssf start [`SESSION`]'s server, given what `session list` said?
+/// Only when herdr answered and says it is not running: a listing ssf
+/// cannot read is no licence to start a second server.
+pub fn should_start(in_guest: bool, listed: &Result<Option<bool>>) -> bool {
+    !in_guest && matches!(listed, Ok(Some(false)))
+}
+
+/// One start at a time from this process; herdr itself refuses a second
+/// server on a running session.
+static ENSURE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Human-readable label; checkout names remain the recovery key.
 fn workspace_label(repo: &str, number: u64) -> String {
@@ -657,6 +705,72 @@ impl Herdr {
             .await
             .map(|_| ())
             .map_err(|e| anyhow!("herdr is not answering in {}: {e:#}", session_summary()))
+    }
+
+    /// Start [`SESSION`]'s server with ssf's herdr config unless it is
+    /// running (#602). On a host only. Detached from ssf, in a systemd user
+    /// scope of its own where there is one; its output goes to
+    /// `herdr-server.log` in ssf's state directory.
+    pub async fn ensure_session(&self) -> Result<Ensured> {
+        if crate::vm::in_guest() {
+            return Ok(Ensured::NotOurs);
+        }
+        let _one = ENSURE.lock().await;
+        let listed = self.session_listed().await;
+        if !should_start(false, &listed) {
+            return match listed {
+                Ok(Some(true)) => Ok(Ensured::Running),
+                Ok(_) => {
+                    bail!("`herdr session list --json` did not list sessions as herdr 0.9 does")
+                }
+                Err(e) => Err(e),
+            };
+        }
+        let config = write_config()?;
+        let mut cmd = server_start(
+            crate::config::herdr_command_path(&self.cfg.command),
+            &config,
+        );
+        info!(session = SESSION, config = %config.display(), "starting the herdr server");
+        if cfg!(test) {
+            // Tests never start a server on the machine running them.
+            bail!("not starting a herdr server from a test");
+        }
+        let log = crate::config::state_dir().join("herdr-server.log");
+        if let Some(dir) = log.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let (program, pid) = tokio::task::spawn_blocking(move || {
+            let pid = crate::vm::spawn_detached(&mut cmd, Some(&log), Some(SERVER_SCOPE));
+            (cmd.get_program().to_owned(), pid)
+        })
+        .await?;
+        let pid =
+            pid.with_context(|| format!("starting {program:?} --session {SESSION} server"))?;
+        // The server stays this daemon's child: reap it when it exits
+        // (`herdr session stop ssf`, a crash) so none is left a zombie.
+        std::thread::spawn(move || unsafe {
+            libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), 0);
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if matches!(self.session_listed().await, Ok(Some(true))) {
+                info!(pid, session = SESSION, "herdr server started");
+                return Ok(Ensured::Started);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        bail!(
+            "started the herdr server (pid {pid}), but session `{SESSION}` is not running after 10s; see {}",
+            crate::config::state_dir()
+                .join("herdr-server.log")
+                .display()
+        )
+    }
+
+    async fn session_listed(&self) -> Result<Option<bool>> {
+        let list = self.run(&["session", "list", "--json"]).await?;
+        Ok(session_running(&list, SESSION))
     }
 
     async fn agents(&self) -> Result<Vec<Agent>> {

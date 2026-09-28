@@ -55,10 +55,12 @@ running; `ssf vm stop|restart` and `ssf ui service disable` stop it. `ssf vm
 build --force` and `ssf vm reset` discard anything installed in the guest
 root; don't use them to upgrade.
 A host-mode factory runs its agents in its own herdr session, `ssf`, never
-the person's own herdr session, with a herdr config ssf writes (`ssf doctor`
-and `ssf status` print the session and its commands). Start it with
-`HERDR_CONFIG_PATH=~/.config/ssf/herdr.toml herdr --session ssf server`;
-attach with `herdr session attach ssf` on the host, or
+the person's own herdr session, with a herdr config ssf writes. The daemon
+starts that session itself (in its own systemd user scope on Linux, so a
+service restart leaves the agents running); nobody starts it by hand. If it
+was started any other way (e.g. `herdr session attach ssf` while it was
+down, which uses herdr's own config), run `herdr session stop ssf` and let
+the daemon restart it. Attach with `herdr session attach ssf` on the host, or
 `herdr --remote HOST --session ssf` from elsewhere (saved once with
 `herdr machine add HOST --label factory --remote-session ssf`). A VM
 factory's agents are in the guest's default herdr session (`ssf vm attach`).
