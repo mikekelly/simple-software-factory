@@ -40,7 +40,8 @@ Changes are picked up on the next poll, with no restart, except
 In VM mode the guest owns the factory: repositories, `[github]`, `[git]`,
 `[daemon]` and driver settings live there, and repository commands,
 `ssf config get|set` and `ssf auth` run in the guest over SSH, so paths in
-their arguments are guest paths. The host keeps `vm.*` and `dashboard.*`.
+their arguments are guest paths. The host keeps `vm.*`; `dashboard.*` is the
+guest's, since the guest daemon serves the dashboard.
 Factory commands fail while the guest is stopped or unreachable; start it
 with `ssf vm start` and retry. They never fall back to editing a host
 copy. Guest config and credentials live in its persistent home on the data

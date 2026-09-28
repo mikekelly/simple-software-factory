@@ -376,7 +376,7 @@ impl Vm {
     }
 
     /// Run `incus` with this terminal, within `limit`.
-    fn incus_run_within(&self, args: &[&str], limit: Duration) -> Result<()> {
+    pub(in crate::vm) fn incus_run_within(&self, args: &[&str], limit: Duration) -> Result<()> {
         let label = Self::incus_label(args);
         let mut child = Command::new("incus")
             .args(args)

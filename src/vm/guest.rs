@@ -1,14 +1,15 @@
 use super::*;
 
 /// The host config sections that stay on a VM host once the guest owns the
-/// factory: the VM itself, and the web dashboard the host serves.
+/// factory: the VM itself, and a `[dashboard]` left from before the guest
+/// served the dashboard (#653). It is unused and `ssf doctor` says so, but
+/// it is the person's to remove, not adoption's.
 const HOST_SECTIONS: &[&str] = &["vm", "dashboard"];
 
 /// What the host config becomes once the guest owns the factory: its
 /// factory sections go (they live in the guest now), and [vm] and
-/// [dashboard] stay. [dashboard] is the supervising host's listener, not a
-/// factory setting (see `guest_config`); dropping it turned the dashboard
-/// off at the next host command. `None` when there is nothing to remove.
+/// [dashboard] stay (see [`HOST_SECTIONS`]). `None` when there is nothing to
+/// remove.
 pub(in crate::vm) fn host_config_after_adoption(
     existing: &toml::Table,
     vm: &VmConfig,

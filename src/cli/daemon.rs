@@ -2,7 +2,9 @@ use super::prelude::*;
 
 pub(super) async fn run(once: bool) -> Result<()> {
     let cfg = Config::load()?;
-    let listener = if once {
+    // A factory in a VM serves its dashboard from the guest daemon, with the
+    // guest's own `[dashboard]` (#653); a host `[dashboard]` is unused.
+    let listener = if once || cfg.vm.enabled {
         None
     } else {
         dashboard_web::bind(&cfg.dashboard).await?

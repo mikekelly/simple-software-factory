@@ -101,10 +101,7 @@ pub(super) fn forwarded_name(cmd: &Command) -> Option<&'static str> {
         Command::Usage { .. } => "usage",
         Command::Config { command } => match command {
             Some(ConfigCommand::Get { key } | ConfigCommand::Set { key, .. })
-                if key == "vm"
-                    || key.starts_with("vm.")
-                    || key == "dashboard"
-                    || key.starts_with("dashboard.") =>
+                if key == "vm" || key.starts_with("vm.") =>
             {
                 return None;
             }

@@ -788,6 +788,8 @@ impl Vm {
         let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         let every = supervise_interval(self.backend());
         let mut unanswered = 0u32;
+        let mut tunnel = dashboard_tunnel::DashboardTunnel::default();
+        tunnel.keep(self);
         loop {
             tokio::select! {
                 _ = term.recv() => break,
@@ -798,7 +800,10 @@ impl Vm {
                     // logged itself); ending on one killed the daemon
                     // with "the VM exited" over a live VM.
                     match self.running_state() {
-                        Some(true) => unanswered = 0,
+                        Some(true) => {
+                            unanswered = 0;
+                            tunnel.keep(self);
+                        }
                         None => {
                             unanswered += 1;
                             if unanswered >= MAX_UNANSWERED_PROBES {

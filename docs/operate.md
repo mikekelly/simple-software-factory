@@ -210,9 +210,9 @@ In VM mode the two sides own different things:
 
 | Host | Guest |
 |---|---|
-| VM administration settings (`vm.*`), the dashboard listener, the SSH key that reaches the guest | factory state, bot credentials, repositories, `[github]`, `[git]`, `[daemon]` and driver settings |
+| VM administration settings (`vm.*`), the SSH key that reaches the guest | factory state, bot credentials, repositories, `[github]`, `[git]`, `[daemon]`, `[dashboard]` (the web dashboard's listener) and driver settings |
 
-`ssf config get|set vm.<key>` and `dashboard.<key>` act on the host;
+`ssf config get|set vm.<key>` acts on the host;
 everything else runs in the guest over SSH, and paths in those arguments
 are guest paths.
 
@@ -230,8 +230,7 @@ forwarded command that fails against a server on another release names both
 releases and the remedy (for a VM, "the guest runs ssf X and this host Y:
 run `ssf vm upgrade`"). For a VM target, `ssf status` prints a `version:`
 line comparing the guest with the host (`host_vm.host_version`,
-`host_vm.guest_version` and `host_vm.version_note` in `--json`), and the
-browser dashboard shows the same note once the guest publishes its version.
+`host_vm.guest_version` and `host_vm.version_note` in `--json`).
 
 Upgrade both sides to the same release:
 

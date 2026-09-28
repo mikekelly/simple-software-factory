@@ -131,8 +131,10 @@ are covered in
 
 ## Optional server web dashboard
 
-The HTTP listener belongs to the factory's server process and is off by
-default. Enable it in that server's configuration and restart the server:
+The HTTP listener belongs to the factory's daemon, wherever the daemon runs,
+and is off by default: in host mode the machine's `ssf-server`, in VM mode the
+guest's daemon, with the guest's own `[dashboard]`. Enable it in that
+configuration and restart the daemon:
 
 ```toml
 [dashboard]
@@ -143,9 +145,28 @@ port = 8787
 
 The same keys can be set with `ssf config set dashboard.enabled true`,
 `ssf config set dashboard.bind 127.0.0.1` and
-`ssf config set dashboard.port 8787`. In VM mode the listener settings stay on
-the host, which forwards to read guest status. Changes to them require a
-restart. `--once` does not serve the UI.
+`ssf config set dashboard.port 8787`; in VM mode `ssf config` sets them in the
+guest like every other factory setting. Changes to them require a restart of
+the daemon (in VM mode, `ssf vm ssh -- sudo systemctl restart ssf`). `--once`
+does not serve the UI. A `[dashboard]` in a VM host's own config is unused;
+`ssf doctor` notes it.
+
+In VM mode the guest's listener is reached the same way under every backend:
+
+- **Tailscale:** after `ssf vm tailscale` the guest is on the tailnet; bind the
+  dashboard to the guest's tailnet address. That one step covers SSH, herdr
+  and the dashboard.
+- **Loopback:** a loopback-bound guest dashboard is also on the host's
+  loopback, at the same address and port. lima forwards it itself; for
+  Incus, the host supervisor adds a `proxy` device (`ssf-dashboard`) beside
+  the ssh one; for Firecracker, whose gvproxy network can only expose the
+  guest's network address, the supervisor keeps an ssh local forward open
+  over the guest's ssh port. The supervisor reads the guest's `[dashboard]`
+  about once a minute and follows changes.
+
+While the factory's daemon (or its VM) is down nothing listens: the page says
+**Factory unreachable** on its next refresh, and the extension marks the
+factory unreachable and keeps retrying.
 
 Setting it up, in order:
 
@@ -336,7 +357,7 @@ once; a seventeenth is `503`.
 
 A terminal is one viewer of the pane's shared stream: `ssf __pane control
 <session>` run over pipes, through the same client transport as the status
-stream (so a factory in a VM is reached in the guest), which runs `herdr
+stream, which runs `herdr
 terminal session control` on the pane (never `--takeover`). The server starts
 it for the pane's first viewer and stops it, releasing the pane, when the last
 one goes. Since it types at an agent, it is opened only for a request whose
@@ -450,13 +471,9 @@ The read endpoints accept an `Origin` of `http://<bind>:<port>` or any
 them; the `Host` header must still match the configured bind address and port.
 
 Everything above the status stream is answered by the factory, through the same
-client the TUI and the commands use. With `[vm] enabled` the listener is bound
-by the host that supervises the VM while the daemon, the harnesses and their
-model catalogues are in the guest, so the agent and model listings, and every
-write, are asked there and forwarded rather than answered from the host. A
-factory the host cannot reach (a VM that is not running, a stopped daemon) is a
-`502` naming what could not be reached, never a listing of the host's own
-harnesses.
+client the TUI and the commands use, run beside the daemon that serves the
+listener (in VM mode, in the guest). A factory daemon that does not answer is a
+`502` naming what could not be reached.
 
 ### Write endpoints
 

@@ -811,6 +811,11 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 {
                     eprintln!("note {note}");
                 }
+                if matches!(cli.command, Command::Doctor { .. })
+                    && let Some(note) = unused_host_dashboard_note(&cfg)
+                {
+                    eprintln!("note {note}");
+                }
                 let args = forwarded_args;
                 // `status --json` is answered even when the guest does
                 // not answer it: an ssh that fails -- the VM down behind
