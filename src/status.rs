@@ -104,6 +104,10 @@ pub struct Session {
     pub owner: String,
     /// Sessions that hear about this item without acting on it.
     pub subscribers: Vec<String>,
+    /// The level each subscriber follows at when it is not the default
+    /// (`state`): `all` for a follower that hears comments and reviews too.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub subscriber_events: BTreeMap<String, String>,
     /// Tracked only because sessions subscribed to it: no workspace, no
     /// owner, no session of its own.
     pub subscriber_only: bool,
@@ -954,6 +958,11 @@ fn join(
             session_id(&repo.name, owner)
         },
         subscribers: item.subscribers.clone(),
+        subscriber_events: item
+            .subscriber_events
+            .iter()
+            .map(|(session, events)| (session.clone(), events.id().to_owned()))
+            .collect(),
         subscriber_only: item.subscriber_only,
         shares_workspace_of: item.shares_workspace_of.map(|n| session_id(&repo.name, n)),
         delegated_by: item.delegated_by.clone(),
@@ -1312,6 +1321,34 @@ fn issue(row: &Value, fallback: &str) -> Value {
         "github_state":row["github_state"].as_str().unwrap_or("unknown")})
 }
 
+/// The items `owner`'s session follows (`ssf sub`) without owning, each with
+/// the level it follows at: `state` or `all` (#637).
+fn following(rows: &[Value], owner: &str) -> Vec<Value> {
+    rows.iter()
+        .filter(|row| !text(row, "owner").eq_ignore_ascii_case(owner))
+        .filter(|row| {
+            row["subscribers"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .any(|s| s.eq_ignore_ascii_case(owner))
+        })
+        .map(|row| {
+            let events = row["subscriber_events"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .find(|(s, _)| s.eq_ignore_ascii_case(owner))
+                .and_then(|(_, e)| e.as_str())
+                .unwrap_or("state");
+            let mut item = issue(row, owner);
+            item["events"] = Value::String(events.to_owned());
+            item
+        })
+        .collect()
+}
+
 /// Why a card carries no `last_activity_at`, when it carries none: ssf dates a
 /// session from the local transcript its harness keeps, and every way that can
 /// be absent is a fact about the session rather than a silence. A client that
@@ -1479,7 +1516,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
         } else {
             None
         };
-        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"activity_note":activity_note,"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"effort":metadata("effort"),"tool":optional("tool"),"branch":optional("branch"),"worktree_path":optional("worktree_path"),"factory":factory,"next_launch":next_launch,"handover":handover,"agent_session_id":metadata("agent_session_id"),"owner_login":primary["owner_login"],"pane_input":primary["pane_input"] == true}));
+        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"following":following(rows,owner),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"activity_note":activity_note,"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"effort":metadata("effort"),"tool":optional("tool"),"branch":optional("branch"),"worktree_path":optional("worktree_path"),"factory":factory,"next_launch":next_launch,"handover":handover,"agent_session_id":metadata("agent_session_id"),"owner_login":primary["owner_login"],"pane_input":primary["pane_input"] == true}));
     }
     let warning = if payload["factory_reachable"] == false {
         let state = text(&payload["host_vm"], "state");
@@ -1613,6 +1650,26 @@ mod dashboard_tests {
             cards[0]["last_assistant_message"],
             "<script>latest</script>"
         );
+    }
+
+    /// A card lists the items its session follows without owning, each at
+    /// its level: `all` where the row says so, `state` by default (#637).
+    #[test]
+    fn card_lists_followed_items_with_levels() {
+        let snapshot = dashboard_presentation(&json!({"sessions":[
+            {"id":"r#1","owner":"r#1","active":true,"agent_live":true,"subscribers":["r#1"]},
+            {"id":"r#2","owner":"r#2","active":true,"subscribers":["R#1"],"subscriber_events":{"r#1":"all"}},
+            {"id":"o/x#3","kind":"pull_request","subscriber_only":true,"active":true,"subscribers":["r#1","r#9"],"subscriber_events":{"r#9":"all"}},
+            {"id":"r#4","subscriber_only":true,"active":true,"subscribers":["r#9"]}
+        ]}))
+        .unwrap();
+        let following = snapshot["cards"][0]["following"].as_array().unwrap();
+        assert_eq!(following.len(), 2);
+        assert_eq!(following[0]["id"], "r#2");
+        assert_eq!(following[0]["events"], "all");
+        assert_eq!(following[1]["id"], "o/x#3");
+        assert_eq!(following[1]["kind"], "pull_request");
+        assert_eq!(following[1]["events"], "state");
     }
 
     /// A card with no activity time says why it has none, in the model rather

@@ -147,7 +147,7 @@ page rather than left out, since staying silent would read as "no agent".
 **An issue or pull request page gets a card in the right sidebar, above
 Assignees:**
 
-![An ssf agent card above Assignees: a yellow "Waiting on you · 23m ago" band marked SSF, the stack as omp, deepseek-flash and high chips, the branch, the last message, Show agent with a ••• menu, and a collapsed Details bar](docs/issue-card.png)
+![An ssf agent card above Assignees: a yellow "Waiting on you · 23m ago" band marked SSF, the stack as omp, deepseek-flash and high chips, Show agent TUI with a ••• menu, and a collapsed Details bar](docs/issue-card.png)
 
 The card leads with a **band tinted by the state** — green Working, yellow
 Waiting on you, grey Done or No agent, red Problem — carrying the state word,
@@ -155,10 +155,9 @@ the last activity time and SSF. The band is the only place the card uses a
 state colour. Under it, always visible: the stack the session is on as
 `harness`, `model` and `effort` chips (effort included because it is what the
 session's tokens cost and because it is a third of what the hand-over pickers
-move), the **branch** on one line with the full name in its tooltip, `on
-<factory>` when there is more than one factory to tell apart, why there is no
-activity time where there is none, and the last message trimmed to two lines
-behind a `more` toggle that appears only when the text is really clipped. Then:
+move), `on <factory>` when there is more than one factory to tell apart, and
+why there is no activity time where there is none. The branch is in Details.
+Then:
 
 - **also on: #a #b** — the other issues this agent has taken on;
 - **Details**, collapsed — every fact the card holds, one row each: what ssf
@@ -336,13 +335,13 @@ A refusal is the server's own words, with the form kept and nothing retried:
 
 An item whose state is **Working**, **Waiting on you**, **Done** or **Problem**
 carries an **Actions** row on the card of the factory that has it — **Show
-agent**, which opens the agent's terminal over the page, and a **•••** menu
+agent TUI**, which opens the agent's terminal over the page, and a **•••** menu
 holding Hand over… and Release, both sent from the service worker and never
 from the page. A second
 factory with an agent on the same item draws its own row, so each session is
 acted on through the factory that runs it:
 
-![An item's card with the ••• menu open under Show agent: Hand over… and Release](docs/actions.png)
+![An item's card with the ••• menu open under Show agent TUI: Hand over… and Release](docs/actions.png)
 
 The row starts, moves and frees sessions. It does not talk to them: **a person
 speaks to an agent by commenting on the item**, which is what the note under the
@@ -383,7 +382,7 @@ an item can be acted on without leaving the board:
   ![Release accepted, with the item and the daemon's next pass](docs/action-release-accepted.png)
 
 **Writes** switches on the options page, on by default, govern all of it.
-Turning one off hides the assign form, the Actions row and Show agent for that
+Turning one off hides the assign form, the Actions row and Show agent TUI for that
 factory and refuses every write in the service worker. It is the extension's
 own side of the rule the factory enforces: the server accepts a write only from
 an extension origin, so nothing else that can reach a capability URL can act on
@@ -457,7 +456,7 @@ find nothing uncommitted or unpushed, the session is killed at once; when they
 find work, the card shows what they found, warns that it will be lost, and only
 **Kill anyway** (a second request, forced) removes it.
 
-**Open** — **Show agent** at the head of an item's Actions row (on a factory
+**Open** — **Show agent TUI** at the head of an item's Actions row (on a factory
 whose Writes switch is on) and the terminal icon at the end of a scratch
 session's first line — opens
 the session's terminal in a window floating over the GitHub page. The window is
@@ -476,7 +475,7 @@ factory's `api/term/<session>` WebSocket (`ws://`, or `wss://` for an
 `https://` factory URL): one viewer of the agent's herdr pane (`herdr terminal
 session control`, shared by the factory among everyone watching; see
 [docs/dashboard.md](../docs/dashboard.md)). A scratch session's and an item's
-work the same way. An item's **Show agent** appears only where the snapshot
+work the same way. An item's **Show agent TUI** appears only where the snapshot
 says the pane takes typing (`pane_input`: where the factory's
 `item_pane_input` is on); a scratch session's pane always takes typing. The
 worker refuses to open a terminal while the factory's Writes switch is off,
@@ -524,7 +523,7 @@ forward, and keep tailnet ACLs restrictive.
   reconciled into what is already on the page: nodes that did not change are
   left where they are, so the stream repainting every couple of seconds does not
   replace what the reader is holding — a picker keeps its open list and a box
-  keeps its caret, and what the reader has opened (the full last message, the
+  keeps its caret, and what the reader has opened (the
   Details section, an open popover) stays open rather than collapsing. Every
   node is built with `textContent` and lives in a shadow root, so no factory
   text is ever parsed as HTML and no GitHub style leaks in.

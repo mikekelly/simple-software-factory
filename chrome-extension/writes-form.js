@@ -710,7 +710,11 @@
       // used to be here is gone: the row is the only place a person meets the
       // question.
       body.append(
-        element("p", "ssf-writes-note", "Comment on the item to talk to this agent."),
+        element(
+          "p",
+          "ssf-writes-note",
+          `Comment on the ${(state.item?.origin?.kind ?? state.item?.kind) === "pull_request" ? "PR" : "issue"} to talk to this agent.`,
+        ),
       );
     }
     return body;

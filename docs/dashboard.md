@@ -55,9 +55,13 @@ factory still monitors but which have no agent are listed separately as
 presence.
 
 Each card shows the originating issue, any additional active assigned issues,
-agent state, the stack the session runs (harness, model and effort), last
-activity and the latest message or summary, using the server's ownership
-model. Where there is no activity time the card says why (see
+agent state, the stack the session runs (harness, model and effort) and last
+activity, using the server's ownership model. The terminal dashboard also shows
+the latest message or summary. The web page's card leads with the item's
+reference (`owner/repo#N`) as a link and its title below, then lists the items
+the session **Owns** and the items it is **Following** (`ssf sub`) with the
+level each is followed at (`state` or `all`), each with an issue or pull
+request icon; a list with nothing in it is not shown. Where there is no activity time the card says why (see
 `activity_note` below) rather than "unknown". On a connection
 error the last successful cards are kept with an explicit stale-state warning.
 An unreachable VM, an unavailable driver, a daemon that is not answering and
@@ -182,7 +186,7 @@ the log line below carries the URL actually being served.
 ### Live terminal for an item's pane
 
 Where this page may type into an item's pane, its card has an **Open
-terminal** link. It opens the session's agent pane as a live terminal
+terminal** button. It opens the session's agent pane as a live terminal
 (xterm.js) in a panel beside the cards, streamed from herdr as the pane draws
 it. Panels can be tabbed, split and dragged, and the layout is kept per
 browser; the **Agents** panel of cards has no close control, so it keeps its
@@ -388,6 +392,7 @@ Besides the fields the TUI and the server's page render, each card carries:
 | `worktree_path` | the workspace the session runs in; `null` when the item has none |
 | `handover` | the hand-over waiting on the daemon for the item (`harness`, `model`, `effort`, `summary_chars`, `by`, `requested_at`), or `null` |
 | `pane_input` | whether the session's live terminal takes typing: always for a scratch session, for an item's as `item_pane_input` says for its repository. Clients offer an item's terminal only where it is `true` |
+| `following` | the items the session subscribes to without owning, each an item like `additional` plus `events`: `state` or `all`, the level it follows at |
 | `activity_note` | why `last_activity_at` is null: the harness keeps no local transcript ssf can read (`omp`; ssf reads Claude Code, Codex and Grok), the session's conversation is not identified yet, or ssf has not found its transcript yet. Clients show that sentence where the time would be |
 
 A client holding several factories can label a card without asking which stream
