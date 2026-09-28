@@ -10,8 +10,8 @@
 //!   container, so a loopback-bound listener answers it.
 //! * Firecracker: gvproxy user-mode networking can only expose a port on
 //!   the guest's network address, which a loopback-bound listener does not
-//!   answer on. So the supervisor keeps an ssh local forward open over the
-//!   port gvproxy already exposes for ssh (`-ssh-port`).
+//!   answer on. So the supervisor listens on the host address itself and
+//!   relays each connection over vsock (`crate::dashboard_relay`).
 use super::*;
 
 /// Where the guest keeps its own configuration, `[dashboard]` included.
@@ -73,10 +73,6 @@ pub(in crate::vm) fn incus_device_args(instance: &str, spec: &str) -> Vec<String
 /// How long one ssh read of the guest config or one `incus` call may take:
 /// the supervisor awaits them between its signal checks.
 const CALL_LIMIT: Duration = Duration::from_secs(20);
-/// A forward that ran this long before it ended was working: it is
-/// restarted at once rather than backed off.
-const HEALTHY_RUN: Duration = Duration::from_secs(30);
-
 /// What the forward should become after a read of the guest's config:
 /// `Some(new)` when it changes, `None` to keep it. A read that failed says
 /// nothing about the guest's `[dashboard]`, so it never tears a forward down.
@@ -90,28 +86,26 @@ pub(in crate::vm) fn after_read(
     }
 }
 
-/// How long to wait before starting the ssh forward again after `failures`
-/// ends in a row: none after one (a forward that had been working comes
-/// back on the next round), then doubling from 5s to a minute, so a
-/// forward that cannot start (its host port held) does not spin.
-pub(in crate::vm) fn restart_delay(failures: u32) -> Duration {
-    match failures {
-        0 | 1 => Duration::ZERO,
-        n => (Duration::from_secs(5) * 2u32.saturating_pow(n.min(8) - 2)).min(RETRY_EVERY),
+/// A task aborted when dropped: the Firecracker relay lives exactly as long
+/// as the [`DashboardTunnel`] holding it, that is the VM run.
+struct Relay(tokio::task::JoinHandle<()>);
+
+impl Drop for Relay {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
-/// The supervisor's forward of the guest's dashboard: an ssh child for
-/// Firecracker, or the Incus proxy device. The guest's `[dashboard]` is
+/// The supervisor's forward of the guest's dashboard: the Firecracker
+/// vsock relay, or the Incus proxy device. The guest's `[dashboard]` is
 /// read again every [`RETRY_EVERY`], and `applied` is the forward set up
 /// for the last successful read.
 #[derive(Default)]
 pub(in crate::vm) struct DashboardTunnel {
-    child: Option<(tokio::process::Child, Instant)>,
+    relay: Option<Relay>,
     next_read: Option<Instant>,
     applied: Option<Option<String>>,
-    failures: u32,
-    restart_at: Option<Instant>,
+    next_bind: Option<Instant>,
 }
 
 impl DashboardTunnel {
@@ -121,7 +115,7 @@ impl DashboardTunnel {
     /// stop supervising the VM.
     pub(in crate::vm) async fn keep(&mut self, vm: &Vm) {
         match vm.backend() {
-            BackendKind::Firecracker => self.keep_ssh(vm).await,
+            BackendKind::Firecracker => self.keep_vsock(vm).await,
             BackendKind::Incus => self.keep_incus(vm).await,
             BackendKind::Lima => {}
         }
@@ -162,60 +156,33 @@ impl DashboardTunnel {
         self.applied = Some(spec);
     }
 
-    async fn keep_ssh(&mut self, vm: &Vm) {
-        if let Some((child, started)) = &mut self.child {
-            let ended = match child.try_wait() {
-                Ok(None) => false,
-                Ok(Some(status)) => {
-                    warn!("the dashboard forward ended ({status})");
-                    true
-                }
-                Err(e) => {
-                    warn!("the dashboard forward: {e}");
-                    true
-                }
-            };
-            if ended {
-                self.failures = if started.elapsed() >= HEALTHY_RUN {
-                    1
-                } else {
-                    self.failures + 1
-                };
-                self.restart_at = Some(Instant::now() + restart_delay(self.failures));
-                self.child = None;
-            }
-        }
-        // Read again while it runs, so a changed `[dashboard]` moves it.
+    async fn keep_vsock(&mut self, vm: &Vm) {
         if let Some(spec) = self.read(vm).await {
-            self.child = None;
+            self.relay = None;
             self.applied = Some(spec);
-            self.failures = 0;
-            self.restart_at = None;
+            self.next_bind = None;
         }
-        if self.child.is_some() || self.restart_at.is_some_and(|at| Instant::now() < at) {
+        if self.relay.is_some() || self.next_bind.is_some_and(|at| Instant::now() < at) {
             return;
         }
         let Some(Some(spec)) = &self.applied else {
             return;
         };
-        let mut command = Command::new("ssh");
-        command
-            .args(vm.ssh_args(true))
-            .args(["-N", "-o", "ExitOnForwardFailure=yes", "-L", spec])
-            .arg(vm.target())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null());
-        let mut command = tokio::process::Command::from(command);
-        command.kill_on_drop(true);
-        match command.spawn() {
-            Ok(child) => {
-                info!("forwarding the guest's web dashboard to host {spec}");
-                self.child = Some((child, Instant::now()));
+        let address: std::net::SocketAddr = spec[..spec.len() / 2]
+            .parse()
+            .expect("a forward spec starts with its address and port");
+        match crate::dashboard_relay::bind_host(address).await {
+            Ok(listener) => {
+                info!("relaying the guest's web dashboard to host {address} over vsock");
+                self.relay = Some(Relay(tokio::spawn(crate::dashboard_relay::serve_host(
+                    listener,
+                    vm.boot_files(&vm.dir).vsock,
+                    crate::dashboard_relay::VSOCK_PORT,
+                ))));
             }
             Err(e) => {
-                warn!("could not start the dashboard forward: {e}");
-                self.failures += 1;
-                self.restart_at = Some(Instant::now() + restart_delay(self.failures));
+                tracing::error!("{e:#}; trying again in a minute");
+                self.next_bind = Some(Instant::now() + RETRY_EVERY);
             }
         }
     }
@@ -322,15 +289,5 @@ mod tests {
             None
         );
         assert_eq!(after_read(&None, &Ok(None)), Some(None));
-    }
-
-    #[test]
-    fn an_ended_forward_restarts_at_once_then_backs_off() {
-        assert_eq!(restart_delay(1), Duration::ZERO);
-        assert_eq!(restart_delay(2), Duration::from_secs(5));
-        assert_eq!(restart_delay(3), Duration::from_secs(10));
-        assert_eq!(restart_delay(5), Duration::from_secs(40));
-        assert_eq!(restart_delay(6), RETRY_EVERY);
-        assert_eq!(restart_delay(u32::MAX), RETRY_EVERY);
     }
 }

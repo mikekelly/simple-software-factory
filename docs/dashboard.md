@@ -160,9 +160,15 @@ In VM mode the guest's listener is reached the same way under every backend:
   loopback, at the same address and port. lima forwards it itself; for
   Incus, the host supervisor adds a `proxy` device (`ssf-dashboard`) beside
   the ssh one; for Firecracker, whose gvproxy network can only expose the
-  guest's network address, the supervisor keeps an ssh local forward open
-  over the guest's ssh port. The supervisor reads the guest's `[dashboard]`
-  about once a minute and follows changes.
+  guest's network address, the host supervisor itself listens on that
+  address and port for as long as the VM runs and relays each connection
+  over vsock (guest port 1026) to the guest daemon, which relays it to its
+  own loopback listener. A guest that is down or restarting closes that one
+  connection, and the next one works once it is back. A host port that is
+  already taken is logged as an error by the supervisor
+  (`could not listen on ...`) and tried again each minute. The supervisor
+  reads the guest's `[dashboard]` about once a minute and follows changes;
+  a read that fails leaves the forward as it is.
 
 While the factory's daemon (or its VM) is down nothing listens: the page says
 **Factory unreachable** on its next refresh, and the extension marks the

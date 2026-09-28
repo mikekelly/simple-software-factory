@@ -66,12 +66,30 @@ pub(crate) async fn bind(config: &crate::config::DashboardConfig) -> Result<Opti
 /// The listener and daemon share a lifetime. Dropping either future closes the
 /// listener, and every connection it accepted ends with the status stream the
 /// handler reads; there is no browser idle expiration.
-pub(crate) async fn with_daemon<F>(listener: Option<TcpListener>, daemon: F) -> Result<()>
+///
+/// `relay` is the dashboard's loopback address in a VM guest: it is also
+/// relayed from vsock, so a Firecracker host can reach it
+/// (`crate::dashboard_relay`).
+pub(crate) async fn with_daemon<F>(
+    listener: Option<TcpListener>,
+    relay: Option<std::net::SocketAddr>,
+    daemon: F,
+) -> Result<()>
 where
     F: Future<Output = Result<()>>,
 {
     let Some(listener) = listener else {
         return daemon.await;
+    };
+    let relay = async move {
+        if let Some(target) = relay
+            && let Err(e) = crate::dashboard_relay::serve_guest(target).await
+        {
+            // No vsock device: a lima or Incus guest, which is reached
+            // another way.
+            tracing::debug!("no vsock dashboard relay: {e:#}");
+        }
+        std::future::pending::<Result<()>>().await
     };
     let token = capability()?;
     // The factory this listener answers for is asked through its own client,
@@ -114,6 +132,7 @@ where
     tokio::select! {
         result = daemon => result,
         result = stream => result,
+        result = relay => result,
         result = serve(listener, token, latest_rx, client) => result.context("server web dashboard stopped"),
     }
 }
@@ -2622,7 +2641,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             .unwrap();
         let address = listener.local_addr().unwrap();
         let (finish, done) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(with_daemon(Some(listener), async move {
+        let task = tokio::spawn(with_daemon(Some(listener), None, async move {
             done.await.unwrap();
             Ok(())
         }));
@@ -2644,7 +2663,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             .await
             .unwrap();
         let address = listener.local_addr().unwrap();
-        let result = with_daemon(Some(listener), async { bail!("daemon failed") }).await;
+        let result = with_daemon(Some(listener), None, async { bail!("daemon failed") }).await;
         assert!(result.unwrap_err().to_string().contains("daemon failed"));
         assert_listener_closed(address).await;
     }

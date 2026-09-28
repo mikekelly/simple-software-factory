@@ -536,7 +536,7 @@ Two lines are expected to fail before the first issue and need no action: the re
 
 Ask one yes/no question: "Do you want the web dashboard and the Chrome extension, which shows each agent's state on the GitHub issue and pull request pages?" If no, move on.
 
-If yes, the factory's daemon serves it wherever the daemon runs: the guest in VM mode, the machine itself in host mode. The setup is the same in every mode, and `ssf config` reaches the right config. Bind it to the factory's Tailscale address when it is on the tailnet (in VM mode, the guest's, after `ssf vm tailscale`), so only tailnet devices can reach it; otherwise keep the loopback default. A loopback dashboard in a VM is also on the host's loopback at the same port (lima forwards it; ssf forwards it for Firecracker and Incus). Never bind anything else; [dashboard.md](dashboard.md#bind-rules) has the rules.
+If yes, the factory's daemon serves it wherever the daemon runs: the guest in VM mode, the machine itself in host mode. The setup is the same in every mode, and `ssf config` reaches the right config. Bind it to the factory's Tailscale address when it is on the tailnet (in VM mode, the guest's, after `ssf vm tailscale`), so only tailnet devices can reach it; otherwise keep the loopback default. A loopback dashboard in a VM is also on the host's loopback at the same port (lima forwards it; for Firecracker and Incus the ssf supervisor does, see [dashboard.md](dashboard.md#optional-server-web-dashboard)). Never bind anything else; [dashboard.md](dashboard.md#bind-rules) has the rules.
 
 ```sh
 ssf config set dashboard.enabled true
