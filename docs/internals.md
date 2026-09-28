@@ -12,7 +12,13 @@ to the driver. The top level carries `server`, `bot_login`,
 `anyone_allowed` (the
 wildcard allow-list is in effect somewhere; the dashboards warn while it is),
 `blocked_sessions` (the ids of sessions whose harness is not signed in),
-`driver`, `doctor`, `sessions`, `repos` and the derived `dashboard` presentation.
+`driver`, `doctor`, `host`, `sessions`, `repos` and the derived `dashboard` presentation.
+
+`host` is the factory host's load in percent: `cpu_percent` (averaged since
+the previous status, from `/proc/stat`), `mem_percent` (`/proc/meminfo`
+MemTotal less MemAvailable) and `disk_percent` (the filesystem holding the
+state directory). Each is `null` where it cannot be read: off Linux, and
+`cpu_percent` on the first status after the daemon starts.
 
 `doctor` is the daemon's latest cached `ssf doctor --json` run (about 30
 seconds after the daemon starts, then every 15 minutes, in a child process

@@ -567,6 +567,9 @@ impl Snapshot {
                     .and_then(|b| serde_json::from_slice(&b).ok())
                     .as_ref()
             ),
+            // The factory host's CPU, memory and disk use in percent (#632);
+            // a field is null where it cannot be read.
+            "host": crate::host::host_json(),
             "sessions": sessions,
             "repos": repos,
         });
@@ -1569,7 +1572,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
         })
         .collect();
     Ok(
-        json!({"cards":cards,"monitored_items":unattached,"scratch":scratch,"blocked":blocked,"released":released,"last_error":payload["last_error"],"doctor":payload["doctor"],"repositories":watched_repositories(payload),"repository_projects":repository_projects(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
+        json!({"cards":cards,"monitored_items":unattached,"scratch":scratch,"blocked":blocked,"released":released,"last_error":payload["last_error"],"doctor":payload["doctor"],"host":payload["host"],"repositories":watched_repositories(payload),"repository_projects":repository_projects(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
     )
 }
 
@@ -1645,6 +1648,7 @@ mod dashboard_tests {
     fn lists_blocked_and_released_items_and_the_last_error() {
         let snapshot = dashboard_presentation(&json!({"last_error":"poll failed",
             "doctor":{"checked_at":"t","problems":0,"warnings":[{"level":"warn","message":"odd"}]},
+            "host":{"cpu_percent":12.5,"mem_percent":61.0,"disk_percent":null},
             "sessions":[
             {"id":"o/r#1","repo":"o/r","owner":"o/r#1","active":true,"agent_live":true,
                 "agent_state":"blocked","github_state":"open",
@@ -1659,6 +1663,8 @@ mod dashboard_tests {
         .unwrap();
         assert_eq!(snapshot["last_error"], "poll failed");
         assert_eq!(snapshot["doctor"]["warnings"][0]["message"], "odd");
+        assert_eq!(snapshot["host"]["cpu_percent"], 12.5);
+        assert!(snapshot["host"]["disk_percent"].is_null());
         let blocked = snapshot["blocked"].as_array().unwrap();
         assert_eq!(blocked.len(), 1);
         assert_eq!(blocked[0]["id"], "o/r#1");
