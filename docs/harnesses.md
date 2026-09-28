@@ -55,7 +55,7 @@ until the harness runs again. Answers are kept for five minutes.
 For `omp`, `pi` and `opencode`, an Anthropic or ChatGPT (`openai-codex`,
 `openai`) sign-in gives that plan's windows, and a DeepSeek or OpenRouter key
 the account balance. API keys for Anthropic or OpenAI and every other
-provider show nothing. The HUD's Harnesses card in the [Chrome
+provider show nothing. The HUD's Harnesses tab in the [Chrome
 extension](dashboard.md#chrome-extension) shows the same words.
 
 ## Models and effort

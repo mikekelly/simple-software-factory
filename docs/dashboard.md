@@ -407,8 +407,13 @@ whose workspace `ssf release` or `ssf purge` removed, each an item as above
 plus `repo` and `released_at`; scratch sessions are in `dashboard.scratch`
 instead. `dashboard.last_error` is the daemon's last recorded error, or
 `null`. `dashboard.doctor` is the top-level `doctor` (the cached doctor run's
-failures and warnings, see [internals](internals.md)), or `null`. The
-extension's top-bar HUD reads all four.
+failures and warnings, see [internals](internals.md)), or `null`.
+`dashboard.host` is the top-level `host`: the factory host's `cpu_percent`
+(averaged since the previous status), `mem_percent` (MemTotal less
+MemAvailable) and `disk_percent` (the filesystem holding the factory's state),
+each a number or `null` where it cannot be read (off Linux, and `cpu_percent`
+on the first status after the daemon starts). The extension's top-bar HUD
+reads all five.
 
 `dashboard.repositories` lists the repositories the factory watches, as
 `owner/name`. A factory watches a repository rather than the items in it, so

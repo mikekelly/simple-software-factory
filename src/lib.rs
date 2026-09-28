@@ -22,6 +22,7 @@ mod ghcli;
 mod github;
 mod harness;
 mod herdr;
+mod host;
 mod ipc;
 mod keys;
 mod login;

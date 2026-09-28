@@ -394,24 +394,32 @@ a session through it.
 On any page of a repository a factory watches, GitHub's top bar gets an
 **SSF · N active** button next to the repository's name, N being its live
 scratch sessions (`ssf scratch`) and its item sessions with an agent, with a
-⚠ mark while any warning applies. A click opens the SSF HUD, a popover with,
-in order:
+⚠ mark while any warning applies. A click opens the SSF HUD, a popover about
+720px wide (narrower windows get the viewport's width, and one column), with:
 
-- **Warnings**: the factory's own warning (unreachable, driver down, stale),
-  the daemon's last error, a factory the extension cannot reach, a compact
-  **N doctor warnings** line (from the daemon's cached `ssf doctor` run; hover
-  it for the messages), and each item
-  in the repository whose harness is not signed in. Left out when there is
-  none.
+- **A gauge row per factory**: CPU, RAM and disk use of the factory's host
+  (the status payload's `host`), amber from 80% and red from 90%, a dash where
+  the factory does not report one, and its doctor count, which opens the
+  Doctor tab.
+- **Attention**: the factory's own warning (unreachable, driver down, stale),
+  the daemon's last error, a factory the extension cannot reach, each failing
+  check of the daemon's cached `ssf doctor` run, a **N doctor warnings** line
+  pointing at the Doctor tab, and each item in the repository whose harness is
+  not signed in, with its fix. Left out when there is none.
 - **Active sessions**: each issue or pull request with an agent, linked, with
   its GitHub state, agent state and harness.
-- **Scratch sessions**: a card per factory, described below.
-- **Recently released**: items and scratch sessions released and still in the
-  factory's record, newest first. Left out when there is none.
-- **Harnesses**: the factory's installed harnesses (`ssf agents`), those with
-  a session not signed in marked so, each with what is left of its provider
-  allowance (`ssf usage`): `claude · 5h 42% (resets 16:10) · week 18%`
-  (the share of each window used), `omp · $12.40`, or `no usage data`.
+- **Quick actions**, beside it: **New scratch session**, and each installed
+  harness marked signed in (✓, with its first usage window) or not (✗).
+- **Tabs**, the one last chosen remembered in this browser:
+  - **Scratch**: a Scratch sessions card per factory, described below.
+  - **Released**: items and scratch sessions released and still in the
+    factory's record, newest first.
+  - **Doctor**: every failing or warning check of the cached doctor run, with
+    its level and message, and when the run was made.
+  - **Harnesses**: the factory's installed harnesses (`ssf agents`), those
+    with a session not signed in marked so, each with what is left of its
+    provider allowance (`ssf usage`): `claude · 5h 42% (resets 16:10) · week
+    18%` (the share of each window used), `omp · $12.40`, or `no usage data`.
 
 In the Scratch sessions card, **New scratch** offers the harness,
 model and effort pickers and whose session it is: **Shared**, or **Mine**
