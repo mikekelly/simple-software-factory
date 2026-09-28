@@ -424,10 +424,16 @@ pub const CI_STARTED: &str = "started";
 /// CI on a pull request's head commit `sha`, as one event (#641): started,
 /// while any check is still running; else passed, or failed with each
 /// failing check and a link to its run. `None` when the commit has no
-/// checks at all. The key is `ci:<sha>:` then [`CI_STARTED`], `pass`, or
+/// checks at all. `suites_running` (a suite with runs not completed, such
+/// as a workflow whose `needs:` jobs have no run yet) keeps it started even
+/// when every run so far has finished. The key is `ci:<sha>:` then [`CI_STARTED`], `pass`, or
 /// `fail:` and the failing checks' names, so a re-run that ends the same
 /// way has the same key.
-pub fn render_ci(sha: &str, checks: &[crate::github::Check]) -> Option<Rendered> {
+pub fn render_ci(
+    sha: &str,
+    checks: &[crate::github::Check],
+    suites_running: bool,
+) -> Option<Rendered> {
     if checks.is_empty() {
         return None;
     }
@@ -442,7 +448,12 @@ pub fn render_ci(sha: &str, checks: &[crate::github::Check]) -> Option<Rendered>
     let total = checks.len();
     let plural = |n: usize| if n == 1 { "check" } else { "checks" };
     let running: Vec<&crate::github::Check> = checks.iter().filter(|c| !c.done).collect();
-    let (outcome, text) = if !running.is_empty() {
+    let (outcome, text) = if running.is_empty() && suites_running {
+        (
+            CI_STARTED.to_string(),
+            format!("{lead} CI started on commit `{commit}`: workflows still running"),
+        )
+    } else if !running.is_empty() {
         let mut names: Vec<String> = running.iter().take(10).map(|c| inline(&c.name)).collect();
         if running.len() > names.len() {
             names.push("…".into());

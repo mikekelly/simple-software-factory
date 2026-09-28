@@ -493,7 +493,9 @@ impl GitHubStub {
                 } else if let Some(on) = path.strip_prefix("/repos/o/r/commits/") {
                     // CI of a commit, with an ETag that follows the content.
                     let body = cx.lock().unwrap().get(on).cloned().unwrap_or_else(|| {
-                        if on.ends_with("/status") {
+                        if on.ends_with("/check-suites") {
+                            json!({"total_count": 0, "check_suites": []})
+                        } else if on.ends_with("/status") {
                             json!({"state": "pending", "statuses": []})
                         } else {
                             json!({"total_count": 0, "check_runs": []})
@@ -596,6 +598,18 @@ impl GitHubStub {
             review_comments,
             ci,
         }
+    }
+
+    /// Serve check suites for commit `sha`, as `(status, runs so far)`.
+    fn set_suites(&self, sha: &str, suites: &[(&str, u64)]) {
+        let suites: Vec<Value> = suites
+            .iter()
+            .map(|(st, n)| json!({"status": st, "latest_check_runs_count": n}))
+            .collect();
+        self.ci.lock().unwrap().insert(
+            format!("{sha}/check-suites"),
+            json!({"total_count": suites.len(), "check_suites": suites}),
+        );
     }
 
     /// Serve CI for commit `sha`: its check runs, as

@@ -132,9 +132,11 @@ See [Session dashboard](dashboard.md).
   `daemon.ignored_events` naming `reacted` silences all of them.
 - **CI.** For each open pull request an active session owns, every pass
   reads the pull request's head commit, its check runs
-  (`commits/<sha>/check-runs`) and its combined status (`commits/<sha>/status`),
-  all conditionally against ETags kept in memory, so a quiet pull request
-  costs three 304s. The session hears `CI started on commit <sha>: N checks
+  (`commits/<sha>/check-runs`), its check suites (`commits/<sha>/check-suites`)
+  and its combined status (`commits/<sha>/status`), all conditionally against
+  ETags kept in memory, so a quiet pull request costs four 304s. A suite
+  with runs that has not completed (a workflow whose `needs:` jobs have no
+  run yet) keeps CI unsettled; suites with no runs are ignored. The session hears `CI started on commit <sha>: N checks
   running (...)` the first time any check is seen running, unless the first
   look finds them all finished, and then, once every check run and status
   has finished, `CI passed on commit <sha>: all N checks passed` or `CI

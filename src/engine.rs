@@ -308,6 +308,8 @@ struct CiPoll {
     runs_etag: Option<String>,
     status: Option<Value>,
     status_etag: Option<String>,
+    suites: Option<Value>,
+    suites_etag: Option<String>,
 }
 
 #[derive(Debug, Clone)]

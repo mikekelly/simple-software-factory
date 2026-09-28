@@ -219,3 +219,39 @@ async fn a_new_push_starts_afresh_and_no_checks_says_nothing() {
         prompts[0]
     );
 }
+
+#[tokio::test]
+async fn a_workflow_waiting_on_needs_jobs_is_not_passed_early() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = on_pr(&stub, SHA);
+    // The first job passed; the job that `needs:` it has no run yet.
+    stub.set_ci(SHA, &[("build", "completed", Some("success"))], &[]);
+    stub.set_suites(SHA, &[("in_progress", 1), ("queued", 0)]);
+    poll(&mut e).await;
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].contains("CI started"), "{}", prompts[0]);
+    assert!(!prompts[0].contains("CI passed"), "{}", prompts[0]);
+
+    // The dependent job runs and fails; the suite completes. A suite with
+    // no runs never blocks.
+    stub.set_ci(
+        SHA,
+        &[
+            ("build", "completed", Some("success")),
+            ("deploy", "completed", Some("failure")),
+        ],
+        &[],
+    );
+    stub.set_suites(SHA, &[("completed", 2), ("queued", 0)]);
+    poll(&mut e).await;
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].contains("1 of 2 checks failed:\n  - deploy"),
+        "{}",
+        prompts[0]
+    );
+    assert!(!prompts[0].contains("CI passed"), "{}", prompts[0]);
+}

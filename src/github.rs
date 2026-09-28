@@ -440,6 +440,24 @@ pub fn ci_checks(runs: Option<&Value>, status: Option<&Value>) -> Vec<Check> {
     out
 }
 
+/// Whether a `check-suites` answer has a suite with check runs that has
+/// not completed: a workflow whose `needs:` jobs have no run yet. Suites
+/// with no runs are left out, since some apps create suites they never run.
+pub fn ci_suites_running(suites: Option<&Value>) -> bool {
+    suites
+        .and_then(|v| v.get("check_suites"))
+        .and_then(Value::as_array)
+        .is_some_and(|a| {
+            a.iter().any(|s| {
+                s.get("latest_check_runs_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    > 0
+                    && value_str(s, &["status"]) != Some("completed")
+            })
+        })
+}
+
 /// Result of a conditional GET.
 pub enum Conditional<T> {
     NotModified,
@@ -913,8 +931,8 @@ impl GitHub {
         })
     }
 
-    /// The check runs (`check-runs`) or the combined commit status
-    /// (`status`) of a commit, asked against `etag` (#641); read with
+    /// The check runs (`check-runs`), check suites (`check-suites`) or the
+    /// combined commit status (`status`) of a commit, asked against `etag` (#641); read with
     /// [`ci_checks`]. Only the first hundred of either are read.
     pub async fn commit_ci(
         &self,

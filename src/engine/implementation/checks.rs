@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 impl Engine {
     /// Read CI on every open pull request an active session owns, and tell
     /// the session what is new. Each read is conditional, so a quiet pull
-    /// request costs three 304s. A rate limit stops the pass (it pauses
+    /// request costs four 304s. A rate limit stops the pass (it pauses
     /// every repository); anything else is logged and tried next pass.
     pub(in crate::engine) async fn watch_checks(
         &mut self,
@@ -113,10 +113,26 @@ impl Engine {
         {
             poll.status = Some(value);
             poll.status_etag = etag;
+            self.ci_polls.insert(key.clone(), poll.clone());
+        }
+        if let Conditional::Modified { value, etag } = self
+            .gh
+            .commit_ci(
+                owner,
+                name,
+                &poll.sha,
+                "check-suites",
+                poll.suites_etag.as_deref(),
+            )
+            .await?
+        {
+            poll.suites = Some(value);
+            poll.suites_etag = etag;
             self.ci_polls.insert(key, poll.clone());
         }
         let checks = crate::github::ci_checks(poll.runs.as_ref(), poll.status.as_ref());
-        let Some(event) = prompt::render_ci(&poll.sha, &checks) else {
+        let suites_running = crate::github::ci_suites_running(poll.suites.as_ref());
+        let Some(event) = prompt::render_ci(&poll.sha, &checks, suites_running) else {
             return Ok(false);
         };
         let outcome = event
