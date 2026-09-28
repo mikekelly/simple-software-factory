@@ -99,7 +99,12 @@ and run herdr as the user the sessions run as.
 
 The background service is a launchd agent per target, `dev.ssf.server.NAME`,
 managed with `ssf --server NAME ui service enable|disable|status`. Its log
-is `~/Library/Logs/ssf/NAME.log`.
+is `~/Library/Logs/ssf/NAME.log`. launchd starts it with a PATH of its own
+that has no Homebrew in it, so the agent names one: the directory of
+`ssf-server`, then `/opt/homebrew/bin` and `/usr/local/bin`, where
+`limactl` and `gh` are. An agent written by ssf 0.21 or earlier has no PATH
+and cannot find `limactl`; `ssf --server NAME ui service enable` rewrites
+and reloads it.
 
 The VM backend on macOS is lima. lima's own default there is Apple's
 Virtualization framework (`vz`), which needs no qemu and no nested
@@ -362,8 +367,12 @@ restarts of the service end only the supervisor.
 The separate lifetime needs a systemd user manager: ssf starts the VM's
 processes with `systemd-run --user --scope`. On Linux without one (no
 `systemd --user` session), and on macOS, where the service is a launchd
-agent, ssf falls back to starting them in a session of their own. That
-fallback is untested across a service restart (#603 tracks macOS), so there
+agent, ssf falls back to starting them in a session of their own. On
+macOS that is enough: `limactl` leaves its host agent (which holds the VM)
+in a session and process group of its own, parented to launchd itself, so
+`launchctl kickstart -k`, a `brew upgrade` and `ssf ui service enable`
+replace the agent without touching the guest or its sessions (tested for
+#603). On Linux without a user manager the fallback is untested, so there
 treat a service restart as one that may reboot the guest.
 
 **A guest package older than 0.19 is shadowed at boot.** Its boot script

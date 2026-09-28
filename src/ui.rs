@@ -396,8 +396,14 @@ pub fn service_enabled() -> bool {
         return service_active();
     }
     let unit = platform::service_unit();
-    platform::systemctl_user(&["is-enabled", "--quiet", &unit])
-        .is_ok_and(|output| output.status.success())
+    let probe = ["is-enabled", "--quiet", &unit];
+    // The guest's ssf.service is a system unit, as in service_active.
+    if crate::vm::in_guest() {
+        platform::systemctl(&probe)
+    } else {
+        platform::systemctl_user(&probe)
+    }
+    .is_ok_and(|output| output.status.success())
 }
 
 pub fn service_failed() -> bool {

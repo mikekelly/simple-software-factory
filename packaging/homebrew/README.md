@@ -68,7 +68,8 @@ brew install mikekelly/tap/ssf
 (`mikekelly/tap/ssf` is Homebrew's short name for `Formula/ssf.rb` in the
 `mikekelly/homebrew-tap` repository; `brew tap mikekelly/tap` first is
 equivalent.) The formula's caveats say what comes next: setup document,
-`ssf vm build`, `brew services start ssf`.
+`ssf setup` (which enables the launchd agent `dev.ssf.server.NAME`), then
+`ssf vm build`.
 
 ## The tap, once
 
@@ -119,7 +120,7 @@ On a Mac with Homebrew, from the repository root:
 brew install --build-from-source ./packaging/homebrew/ssf.rb
 brew audit --strict --new ssf
 brew test ssf
-brew services start ssf   # the launchd agent; `brew services stop ssf` to stop it
+ssf setup                 # enables the launchd agent; `ssf ui service disable` stops it
 ```
 
 `brew install` from a local file checks the `url` download against the
