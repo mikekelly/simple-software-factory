@@ -112,6 +112,11 @@ pub async fn report() -> Report {
             .into_iter()
             .map(|d| cfg.projects_dir(d))
             .collect();
+        // Where a guest keeps its clones, whatever its config says: a
+        // guest whose config file is gone loads the defaults, which point
+        // elsewhere, and an empty scan there is no inventory at all.
+        dirs.push(PathBuf::from(vm::GUEST_PROJECTS_DIR));
+        dirs.sort();
         dirs.dedup();
         dirs
     });
