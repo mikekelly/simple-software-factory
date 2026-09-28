@@ -31,7 +31,6 @@ jobs:
   # removes continue-on-error as part of its acceptance.
   macos:
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable

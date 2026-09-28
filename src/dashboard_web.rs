@@ -315,6 +315,29 @@ async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Late
         respond_with(&mut stream, status, kind, "", security, body.as_bytes()),
     )
     .await;
+    linger(&mut stream).await;
+}
+
+/// Close after an answer without resetting it: a refused write leaves its
+/// body unread, and closing a socket with unread input sends RST, which on
+/// macOS discards the answer before the client reads it. So the write side is
+/// shut first and what is left of the request (at most [`MAX_BODY`]) read and
+/// dropped, until the client closes or a short wait runs out.
+async fn linger(stream: &mut TcpStream) {
+    if stream.shutdown().await.is_err() {
+        return;
+    }
+    let mut left = [0; MAX_BODY + 1];
+    let _ = timeout(Duration::from_secs(1), async {
+        let mut read = 0;
+        while read < left.len() {
+            match stream.read(&mut left[read..]).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => read += n,
+            }
+        }
+    })
+    .await;
 }
 
 /// What a request refused before anything was read is told. Most of these are

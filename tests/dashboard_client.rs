@@ -145,6 +145,12 @@ impl Pty {
     fn finished(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
+            // Keep reading as a terminal would: a full pty (small on macOS)
+            // would block the client's last writes and so its exit.
+            let mut buffer = [0; 16384];
+            if let Ok(n) = self.master.read(&mut buffer) {
+                self.output.push_str(&String::from_utf8_lossy(&buffer[..n]));
+            }
             if let Some(status) = self.child.try_wait().unwrap() {
                 assert!(status.success());
                 break;

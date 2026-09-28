@@ -152,7 +152,7 @@ fn ancestor_environ() -> Option<Vec<u8>> {
         if pid <= 1 {
             break;
         }
-        if let Ok(environ) = std::fs::read(format!("/proc/{pid}/environ"))
+        if let Some(environ) = environ_of(pid)
             && carries_marker(&environ)
         {
             return Some(environ);
@@ -171,15 +171,84 @@ fn carries_marker(environ: &[u8]) -> bool {
     })
 }
 
+/// `/proc/<pid>/environ`: the environment a process was started with.
+#[cfg(not(target_os = "macos"))]
+fn environ_of(pid: u32) -> Option<Vec<u8>> {
+    std::fs::read(format!("/proc/{pid}/environ")).ok()
+}
+
+/// macOS has no `/proc`: the environment is the tail of `KERN_PROCARGS2`, in
+/// the same NUL-separated form.
+#[cfg(target_os = "macos")]
+fn environ_of(pid: u32) -> Option<Vec<u8>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    let mut call = |buf: *mut libc::c_void, size: &mut libc::size_t| unsafe {
+        libc::sysctl(mib.as_mut_ptr(), 3, buf, size, std::ptr::null_mut(), 0)
+    };
+    if call(std::ptr::null_mut(), &mut size) != 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    if call(buf.as_mut_ptr().cast(), &mut size) != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    environ_of_procargs(&buf)
+}
+
+/// The environment out of a `KERN_PROCARGS2` buffer: `argc`, the executable
+/// path and its NUL padding, `argc` arguments, then the environment up to the
+/// first empty string.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn environ_of_procargs(buf: &[u8]) -> Option<Vec<u8>> {
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
+    let rest = &buf[4..];
+    let path = rest.iter().position(|b| *b == 0)?;
+    let mut rest = &rest[path..];
+    while let [0, tail @ ..] = rest {
+        rest = tail;
+    }
+    for _ in 0..argc {
+        let end = rest.iter().position(|b| *b == 0)?;
+        rest = &rest[end + 1..];
+    }
+    let mut environ = Vec::new();
+    for entry in rest.split(|b| *b == 0).take_while(|e| !e.is_empty()) {
+        environ.extend_from_slice(entry);
+        environ.push(0);
+    }
+    Some(environ)
+}
+
 /// `/proc/<pid>/stat` field 4: the parent, read after the parenthesized
 /// command name, which can itself contain spaces and parentheses.
+#[cfg(not(target_os = "macos"))]
 fn parent_of(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     parent_of_stat(&stat)
 }
 
+/// macOS has no `/proc`: the parent comes from `proc_pidinfo`.
+#[cfg(target_os = "macos")]
+fn parent_of(pid: u32) -> Option<u32> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    (read == size).then_some(info.pbi_ppid)
+}
+
 /// The parent out of a `/proc/<pid>/stat` line: field 4, the one after the
 /// state letter that follows the command name.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn parent_of_stat(stat: &str) -> Option<u32> {
     stat.rsplit_once(") ")?
         .1
