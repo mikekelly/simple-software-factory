@@ -19,8 +19,8 @@ and that decides what it needs before it can do anything for them:
 | GitHub | The liaison's own integration or account, never the factory bot's credentials | The same, on the liaison machine, alongside the SSH access it needs |
 
 Complete the factory first: [Install](install.md), or
-[Rented hosts](platform-specifics.md#rented-hosts) when it runs on a machine
-the person rents. Then set up the side the liaison runs on (the "Setup"
+[Dedicated servers](platform-specifics.md#dedicated-servers) when it runs on
+a server of its own. Then set up the side the liaison runs on (the "Setup"
 sections below), and configure its monitoring last.
 
 ## Keep factory and liaison access separate

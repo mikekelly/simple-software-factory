@@ -69,8 +69,9 @@ command -v gh herdr
 | Linux, `/dev/kvm` readable and writable, `systemctl --user` answers, resources allow a VM | **Local VM** (the default). Section 3.1, then 4 and 5. |
 | macOS, resources allow a VM | **Homebrew + lima VM**. Section 3.2, then 4 and 5. |
 | Linux without KVM or a systemd user session, or a Mac too small for a VM, with enough CPU/RAM for the sessions, and the person accepts that agents see this user's files | **Host mode on this machine**. Section 3.1, 3.2 or 3.3, then 5 (host mode). |
-| This machine is a dedicated server or VPS (you are its resident agent), or the factory should go on one | **A guest on a server** (Firecracker, else Incus; host mode only as the fallback). [A server: guest first](#a-server-guest-first), then [5.1](#51-a-guest-on-a-server-access-for-the-resident-agent-and-the-laptop). |
-| Too few resources here, or the person does not want agents on this machine | **A server** runs the factory; this machine only drives it. [A server: guest first](#a-server-guest-first); section 3.4 here. |
+| This machine is a server or VPS dedicated to the factory, running nothing else | **Host mode on a dedicated server**. [A server](#a-server), then [Dedicated servers](platform-specifics.md#dedicated-servers). |
+| This machine is a server or VPS that also runs something else (you are its resident agent, or other services) | **A guest on the server** (Firecracker, else Incus). [A server](#a-server), then [5.1](#51-a-guest-on-a-server-access-for-the-resident-agent-and-the-laptop). |
+| Too few resources here, or the person does not want agents on this machine | **A server** runs the factory; this machine only drives it. [A server](#a-server); section 3.4 here. |
 | A factory already runs somewhere else | **Client only**. Section 3.4. |
 
 ### Is a VM reasonable here
@@ -85,23 +86,31 @@ Rule of thumb for judging "reasonable": each parallel agent session wants about 
 
 Say to the person, in one line each, what the options cost them: the VM keeps agents away from their files but takes half the machine; host mode takes only what the sessions use but the agents run as their user with permission prompts bypassed; a rented host costs money and puts the factory on a machine they administer over SSH.
 
-### A server: guest first
+### A server
 
-The most common real deployment is a person's laptop, a dedicated server or VPS that already runs a long-lived agent (Hermes, OpenClaw, Grok Bot, Meta Muse, …), and the factory in a guest on that server:
+Suitable servers include the dedicated server that comes with a Grok Bot account, or a VPS from Hetzner, Linode, OVH or a similar provider. Requirements: Linux, a non-root user, outbound HTTPS, and enough RAM for the sessions by the rule above. Renting costs money: get explicit consent before proposing a specific product, and do not create the account for them.
+
+Ask the person one question: **is this server dedicated to the factory, or does it also run something else** (a resident agent such as Hermes, OpenClaw, Grok Bot or Meta Muse, or other services)?
+
+**Dedicated: host mode.** A guest keeps the agents away from a resident agent and its files; on a server that exists only for the factory there is nothing to keep them from, and the server itself is the isolation boundary. A guest there only costs memory, setup (Incus, a second Tailscale enrolment) and failure modes of its own. Run the factory in host mode under a dedicated factory account with passwordless sudo, from the distribution package where one fits (it brings `gh` and `ssf@.service`) or the standalone binaries (3.3), with herdr and linger: follow [platform-specifics.md#dedicated-servers](platform-specifics.md#dedicated-servers).
+
+```
+laptop  ──ssh──▶  server (factory account, host mode)
+```
+
+**Shared: a guest.** Put the agents in a guest, so they are kept away from the resident agent and its files:
 
 ```
 laptop  ──ssh──▶  server (resident agent)  ──▶  ssf guest (Firecracker, or Incus without KVM)
 ```
 
-Suitable servers include the dedicated server that comes with a Grok Bot account, or a VPS from Hetzner, Linode, OVH or a similar provider. Requirements: Linux, a non-root user, outbound HTTPS, and enough RAM for the sessions by the rule above. Renting costs money: get explicit consent before proposing a specific product, and do not create the account for them.
-
-On a server, put the agents in a guest, so they are kept away from the resident agent and its files. Run the probes of this section on the server, then:
+Run the probes of this section on the server, then:
 
 | On the server | Path |
 |---|---|
 | `/dev/kvm` usable (bare-metal servers usually; some VPSes offer nested virtualisation) | **Firecracker guest**: section 3.1, 4, then 5 (the VM). |
 | No usable `/dev/kvm` | **Incus guest**: set Incus up first ([platform-specifics.md#incus](platform-specifics.md#incus)), then 3.1, 4 and 5. Tell the person in one line: an Incus guest is a system container sharing the server's kernel, weaker isolation than a VM but still separate from the resident agent's files. |
-| No KVM and Incus cannot be set up (no root at all, or an unsupported kernel), or no distribution package fits | **Host mode**, the fallback: a dedicated factory account, standalone binaries (3.3), [platform-specifics.md#rented-hosts](platform-specifics.md#rented-hosts). |
+| No KVM and Incus cannot be set up (no root at all, or an unsupported kernel), or no distribution package fits | **Host mode**, the fallback: a factory account of its own, kept apart from the resident agent's, then [platform-specifics.md#dedicated-servers](platform-specifics.md#dedicated-servers). Tell the person the agents are then separated from the resident agent only by Unix permissions. |
 
 Incus, and the package install in 3.1, need root once. Give the person the exact commands from [platform-specifics.md#incus](platform-specifics.md#incus) to run over SSH on the server, or, when the installing agent already has non-interactive root there (`sudo -n true` succeeds), run them yourself. Then `ssf config set vm.backend incus` before `ssf vm build`.
 
@@ -290,11 +299,11 @@ herdr machine list
 
 Expect `Remote server is ready.` If it stops at a prompt instead (a version mismatch, or an offer to install or update the remote herdr), hand the same command, without `</dev/null`, to the person to run interactively, answering No to replacing a running server unless they ask: its panes are live sessions. `herdr --remote ssf-default` then attaches (for a rented host, `herdr --remote user@host --session ssf`). Details and the limits of what a local herdr command reaches are in [liaison.md](liaison.md#inspect-the-factorys-herdr-server).
 
-Root: agents in a VM or on a rented server should be able to `sudo` without a password, so they can install what their work needs without stopping. The guest's `ssf` user already has it. On a rented host the person grants it to the factory account; give them the exact commands ([Rented hosts](platform-specifics.md#rented-hosts)). Never grant it on the person's own machine in host mode: there, the agents are already running as the person.
+Root: agents in a VM or on a rented server should be able to `sudo` without a password, so they can install what their work needs without stopping. The guest's `ssf` user already has it. On a dedicated server the person grants it to the factory account; give them the exact commands ([Dedicated servers](platform-specifics.md#dedicated-servers)). Never grant it on the person's own machine in host mode: there, the agents are already running as the person.
 
 ### 5.1 A guest on a server: access for the resident agent and the laptop
 
-Only when the guest runs on a server ([A server: guest first](#a-server-guest-first)). The guest's SSH listens on the server's loopback (`127.0.0.1:<vm.ssh_port>`, 2222 by default), so nothing is published on the internet: the laptop reaches it with `ProxyJump` through the server, and the server's own user reaches it directly.
+Only when the guest runs on a shared server ([A server](#a-server)). The guest's SSH listens on the server's loopback (`127.0.0.1:<vm.ssh_port>`, 2222 by default), so nothing is published on the internet: the laptop reaches it with `ProxyJump` through the server, and the server's own user reaches it directly.
 
 **Step 1. The server's user (the resident agent).** On the server, as the user that ran `ssf setup`:
 
