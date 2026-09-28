@@ -12,8 +12,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy,rustfmt
       - name: Format
@@ -22,14 +22,16 @@ jobs:
         run: cargo clippy --locked --all-targets
       - name: Test
         run: cargo test --locked --all-targets
+      - name: Vendored JavaScript matches vendor-js.lock
+        run: scripts/fetch-vendored-js.sh --check
 
   # The Homebrew formula builds from source on the user's Mac, so this is
   # the only place a macOS break shows up before a release.
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy
       - name: Lint
