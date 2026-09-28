@@ -145,6 +145,20 @@ impl std::fmt::Display for StateNotSaved {
 
 impl std::error::Error for StateNotSaved {}
 
+/// Some subscribed-only item could not be polled (each is warned about):
+/// an item's trouble, not the repository's, so it does not back the
+/// repository off.
+#[derive(Debug)]
+struct SubscribedFailed;
+
+impl std::fmt::Display for SubscribedFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("polling a subscribed item failed")
+    }
+}
+
+impl std::error::Error for SubscribedFailed {}
+
 fn state_not_saved(e: &anyhow::Error) -> bool {
     e.chain()
         .any(|c| c.downcast_ref::<StateNotSaved>().is_some())

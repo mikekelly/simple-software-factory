@@ -4,13 +4,12 @@ use tracing::{debug, error, info, warn};
 impl Engine {
     pub async fn tick(&mut self) {
         self.reload_config();
-        if self.rate_limit_paused() {
-            return;
-        }
-        if let Err(e) = self.accept_repository_invitations().await {
+        // A rate-limit pause skips GitHub work only; local work goes on.
+        let paused = self.rate_limit_paused();
+        if !paused && let Err(e) = self.accept_repository_invitations().await {
             warn!("repository invitations could not be processed: {e:#}");
         }
-        if !self.reconcile_repo_identities(false).await {
+        if !paused && !self.reconcile_repo_identities(false).await {
             warn!("skipping this pass until repository identity repair is durable");
             return;
         }
@@ -58,10 +57,9 @@ impl Engine {
             if self.driver_down(&repo) {
                 continue;
             }
-            if self.rate_limit_paused() {
-                break;
-            }
-            if let Some((failed, skip)) = self.backoff.get_mut(&repo.name)
+            let paused = self.rate_limit_paused();
+            if !paused
+                && let Some((failed, skip)) = self.backoff.get_mut(&repo.name)
                 && *skip > 0
             {
                 *skip -= 1;
@@ -75,10 +73,16 @@ impl Engine {
             }
             // Before anything is delivered or resumed: a session that has
             // been handed over is replaced first.
-            if !self.enrollment_pending(&repo) {
+            if !paused && !self.enrollment_pending(&repo) {
                 self.run_handovers(&repo).await;
             }
-            match self.tick_repo(&repo).await {
+            let polled = if paused {
+                Ok(())
+            } else {
+                self.tick_repo(&repo).await
+            };
+            match polled {
+                Ok(()) if paused => {}
                 Ok(()) => {
                     self.backoff.remove(&repo.name);
                 }
@@ -88,8 +92,10 @@ impl Engine {
                     if state_not_saved(&e) {
                         return;
                     }
-                    // A rate limit pauses every repository instead.
-                    if rate_limited(&e).is_none() {
+                    // A rate limit pauses every repository instead, and
+                    // one subscribed item's trouble is not the repository's.
+                    if rate_limited(&e).is_none() && !e.chain().any(|c| c.is::<SubscribedFailed>())
+                    {
                         let (failed, skip) = self.backoff.entry(repo.name.clone()).or_default();
                         *failed += 1;
                         *skip = backoff_passes(*failed);

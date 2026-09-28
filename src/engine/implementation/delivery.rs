@@ -1,4 +1,5 @@
 use super::super::*;
+use super::reconciliation::rate_limited;
 use tracing::{debug, error, info, warn};
 
 impl Engine {
@@ -35,6 +36,10 @@ impl Engine {
                 Ok(Conditional::Modified { value, etag }) => (Some(value), etag),
                 Ok(Conditional::NotModified) => (None, st.issue_etag.clone()),
                 Err(e) => {
+                    // A rate limit pauses everything: say so as it is.
+                    if rate_limited(&e).is_some() {
+                        return Err(e);
+                    }
                     failed = true;
                     warn!(
                         repo = repo.name,
@@ -64,6 +69,10 @@ impl Engine {
                     }
                     Ok(true) => {}
                     Err(e) => {
+                        // A rate limit pauses everything: say so as it is.
+                        if rate_limited(&e).is_some() {
+                            return Err(e);
+                        }
                         failed = true;
                         warn!(
                             repo = repo.name,
@@ -91,6 +100,10 @@ impl Engine {
                         continue;
                     }
                     Err(e) => {
+                        // A rate limit pauses everything: say so as it is.
+                        if rate_limited(&e).is_some() {
+                            return Err(e);
+                        }
                         failed = true;
                         warn!(
                             repo = repo.name,
@@ -111,6 +124,10 @@ impl Engine {
             let (timeline, etags, reacted) = match reacted {
                 Ok(t) => t,
                 Err(e) => {
+                    // A rate limit pauses everything: say so as it is.
+                    if rate_limited(&e).is_some() {
+                        return Err(e);
+                    }
                     failed = true;
                     warn!(
                         repo = repo.name,
@@ -167,7 +184,7 @@ impl Engine {
             self.persist()?;
         }
         if failed {
-            anyhow::bail!("polling a subscribed item failed");
+            return Err(SubscribedFailed.into());
         }
         Ok(())
     }
