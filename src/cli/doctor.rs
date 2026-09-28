@@ -233,6 +233,24 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
     harnesses.extend(pinned.keys().cloned());
     harnesses.sort();
     harnesses.dedup();
+    // Before any repository is watched (a fresh install signs the harness
+    // in first), report the installed harnesses instead, without failing
+    // on one nobody uses yet.
+    let unused = harnesses.is_empty();
+    if unused {
+        harnesses = agents::list()
+            .into_iter()
+            .filter(|a| a.installed)
+            .map(|a| a.id)
+            .collect();
+    }
+    let used_by = |h: &str| {
+        if unused {
+            "; no repository uses it yet".to_string()
+        } else {
+            used_by(h)
+        }
+    };
     let place = if factory_vm::in_guest() {
         "inside the VM"
     } else {
@@ -245,6 +263,15 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
             login::LoginState::SignedIn => check(
                 true,
                 format!("{name} signed in {place} ({}{})", probe.detail, used_by(h)),
+            ),
+            login::LoginState::SignedOut if unused => record(
+                Level::Note,
+                format!(
+                    "{name} not signed in {place} ({}{}); sign in with {} before a repository uses it",
+                    probe.detail,
+                    used_by(h),
+                    login::how_to_sign_in(h)
+                ),
             ),
             login::LoginState::SignedOut => check(
                 false,
@@ -540,19 +567,29 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
                             Some(handle) => herdr.codex_channel_available(handle, &mailbox).await,
                             None => Err(anyhow::anyhow!("no saved Codex pane")),
                         };
-                        let available = matches!(result, Ok(true));
-                        let detail = match result {
-                            Ok(true) => "experimental native Unix channel".to_owned(),
-                            Ok(false) => "standalone TUI: terminal fallback; native delivery requires explicit --remote unix://PATH".to_owned(),
-                            Err(error) => format!("unavailable: {error:#}; explicit native launches are held, not pasted"),
-                        };
-                        check(
-                            available,
+                        let msg = |detail: &str| {
                             format!(
                                 "{}#{}: Codex item-activity channel; {detail}",
                                 r.name, session.number
+                            )
+                        };
+                        match result {
+                            Ok(true) => check(true, msg("experimental native Unix channel")),
+                            // The default launch: a standalone TUI, which
+                            // is served by the terminal. Normal, not a fault.
+                            Ok(false) => record(
+                                Level::Note,
+                                msg(
+                                    "standalone TUI: terminal fallback (the default); native delivery requires explicit --remote unix://PATH",
+                                ),
                             ),
-                        );
+                            Err(error) => check(
+                                false,
+                                msg(&format!(
+                                    "unavailable: {error:#}; explicit native launches are held, not pasted"
+                                )),
+                            ),
+                        }
                         continue;
                     }
                     if harness == "claude" {

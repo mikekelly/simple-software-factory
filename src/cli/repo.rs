@@ -112,6 +112,9 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             };
             entry.validate_launch_prefs()?;
             entry.require_launch_prefs()?;
+            if let Some(m) = &entry.model {
+                check_model_listed(&entry.harness, m)?;
+            }
             // herdr runs only the agents it recognises, so warn for a
             // repository that ends up there, by its own choice or the default.
             if cfg.driver_for(&entry) == config::DriverKind::Herdr {
@@ -181,6 +184,7 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             // stack a session is started with changed at all.
             let was = cfg.repos[pos].clone();
             let entry = &mut cfg.repos[pos];
+            let mut model_changed = false;
             if let Some(h) = harness {
                 check_harness(&h);
                 if h != entry.harness {
@@ -214,6 +218,7 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             }
             if let Some(m) = model {
                 entry.model = Some(m.trim().to_string());
+                model_changed = true;
             }
             if let Some(e) = effort {
                 entry.effort = Some(e.trim().to_string());
@@ -272,6 +277,9 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             }
             entry.validate_launch_prefs()?;
             entry.require_launch_prefs()?;
+            if model_changed && let Some(m) = &entry.model {
+                check_model_listed(&entry.harness, m)?;
+            }
             let updated = entry.name.clone();
             let stack_changed = was.harness != entry.harness
                 || was.model != entry.model
@@ -682,4 +690,15 @@ pub(super) fn parse_toml_scalar(value: &str) -> toml::Value {
         return x.clone();
     }
     toml::Value::String(value.to_string())
+}
+
+/// A model a harness will not run is refused before it is written (#652):
+/// otherwise the session stops at the harness's sign-in prompt and is
+/// blocked as "not signed in". Tests do not ask the harnesses installed
+/// here, which could start Claude Code to refresh its catalogue.
+fn check_model_listed(harness: &str, model: &str) -> Result<()> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    crate::models::check_model_listed(harness, model)
 }

@@ -25,7 +25,10 @@ fn sizing_rule_follows_the_machine_down_to_the_floors() {
     assert_eq!(sizes_for(&facts(4, 31922, 160)).data_gib, 80);
     // A small machine never goes under the old fixed sizes.
     assert_eq!(sizes_for(&facts(2, 4096, 30)), Sizes::MIN);
-    assert_eq!(sizes_for(&facts(1, 1024, 0)), Sizes::MIN);
+    // Memory never exceeds the host's: 3819 MiB gives 3584, not 4096.
+    assert_eq!(sizes_for(&facts(2, 3819, 30)).mem_mib, 3584);
+    assert_eq!(sizes_for(&facts(1, 1024, 0)).mem_mib, 1024);
+    assert_eq!(sizes_for(&facts(1, 1024, 0)).vcpus, Sizes::MIN.vcpus);
     assert_eq!(sizes_for(&facts(3, 8192, 41)).vcpus, 2);
     assert_eq!(sizes_for(&facts(3, 8192, 41)).data_gib, 20);
     assert_eq!(sizes_for(&facts(3, 8192, 42)).data_gib, 21);
@@ -300,4 +303,19 @@ fn the_doctor_line_names_the_backend_tooling_and_what_to_install() {
     let (ok, msg) = backend_tooling_line(&fc, &[Some("/dev/kvm".into())]);
     assert!(ok);
     assert_eq!(msg, "/dev/kvm usable");
+}
+
+#[test]
+fn a_listed_incus_admin_missing_from_the_process_is_stale() {
+    let text = "root:x:0:\nincus-admin:x:990:ssf,alice\n";
+    let g = group_entry(text, "incus-admin");
+    assert_eq!(g, Some((990, vec!["ssf".into(), "alice".into()])));
+    assert!(stale_group(g.clone(), "ssf", &[1000]));
+    assert!(!stale_group(g.clone(), "ssf", &[1000, 990]));
+    assert!(!stale_group(g, "bob", &[1000]));
+    assert!(!stale_group(group_entry(text, "nope"), "ssf", &[]));
+    assert_eq!(
+        proc_groups("Name:\tsystemd\nGroups:\t1000 990 \n"),
+        Some(vec![1000, 990])
+    );
 }

@@ -740,6 +740,18 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             .filter(|t| !t.ok)
             .map(|t| t.detail);
         let backend = vm.backend().to_string();
+        // Added to `incus-admin` after the systemd user manager started:
+        // linger keeps it, and the service it runs, on the old groups, so
+        // the service cannot reach Incus. Said before the guest is asked,
+        // since the guest may be down because of it.
+        if matches!(cli.command, Command::Doctor { .. })
+            && vm.backend() == factory_vm::BackendKind::Incus
+            && factory_vm::incus_group_stale()
+        {
+            eprintln!(
+                "FAIL this user is in `incus-admin` but the systemd user manager (or this shell) does not have the group, so the service cannot reach the Incus daemon; linger keeps the groups it started with: run `sudo systemctl restart user@$(id -u).service`"
+            );
+        }
         match forwarding_gate(&probe, &cfg.vm.name, &backend, name, missing.as_deref()) {
             Gate::Refuse(why) => match cli.command {
                 Command::Status {

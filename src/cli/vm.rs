@@ -343,8 +343,15 @@ pub(super) fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) ->
         facts.mount,
         dir.display(),
     );
+    // An Incus container shares the host's CPUs and memory; its sizes
+    // are limits, not a reservation.
+    let limit = if backend == factory_vm::BackendKind::Incus {
+        " limit"
+    } else {
+        ""
+    };
     println!(
-        "VM size: {} vCPUs ({}), {} MiB RAM ({}), {} GiB data disk ({}; sparse, so it takes host space only as the guest writes)",
+        "VM size: {} vCPUs{limit} ({}), {} MiB RAM{limit} ({}), {} GiB data disk ({}; sparse, so it takes host space only as the guest writes)",
         chosen.sizes.vcpus,
         chosen.sources[0],
         chosen.sizes.mem_mib,
