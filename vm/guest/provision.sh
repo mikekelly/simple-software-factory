@@ -258,7 +258,8 @@ for a in claude codex copilot pi omp opencode grok; do
 done
 # The working-with-ssf skill, for the ssf user's harnesses (after their
 # config directories exist, so the skills CLI links it into each).
-su ssf -c "npx -y skills add mikekelly/simple-software-factory -g -y" \
+# From its home: su keeps root's working directory, where npx cannot spawn.
+su ssf -c "cd && npx -y skills add mikekelly/simple-software-factory -g -y" \
     || echo "provision: working-with-ssf skill install failed" >&2
 # Services: seed, sshd, herdr, ssf; under Firecracker also the network
 # (gvforwarder over vsock, instead of the systemd network stack), under
