@@ -31,17 +31,31 @@ pub fn unattended(command: &mut tokio::process::Command) -> &mut tokio::process:
         .env("GCM_INTERACTIVE", "never")
 }
 
+/// How long one git command may run before it is killed: a hung fetch
+/// must not freeze the daemon (#611).
+pub const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Run git in `path` and return its trimmed stdout.
 pub async fn git(path: &str, args: &[&str]) -> Result<String> {
     let out = unattended(
         tokio::process::Command::new("git")
             .arg("-C")
             .arg(path)
-            .args(args),
+            .args(args)
+            .kill_on_drop(true),
     )
-    .output()
-    .await
-    .context("running git")?;
+    .output();
+    let out = tokio::time::timeout(GIT_TIMEOUT, out)
+        .await
+        .map_err(|_| {
+            tracing::warn!(path, "git {} timed out; killed", args.join(" "));
+            anyhow::anyhow!(
+                "git {} timed out after {}s",
+                args.join(" "),
+                GIT_TIMEOUT.as_secs()
+            )
+        })?
+        .context("running git")?;
     if !out.status.success() {
         anyhow::bail!(
             "git {} failed: {}",

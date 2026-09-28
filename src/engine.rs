@@ -64,6 +64,10 @@ const ABSENT_LOOKS_PER_PASS: usize = 20;
 
 const IDENTITY_CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
+/// How long a pass runs before it answers the CLI between repositories,
+/// so slow calls piling up in one pass do not lock operators out (#611).
+const PASS_BUDGET: Duration = Duration::from_secs(30);
+
 /// How long a blocked session waits before starting its harness again
 /// when the login check cannot tell whether the login is back (or claims
 /// it is while the harness disagrees); doubled after every restart that
@@ -152,6 +156,9 @@ pub struct Engine {
     /// gone) has not run yet; each runs on the first pass that finds that
     /// driver ready.
     startup_pending: Vec<DriverKind>,
+    /// The CLI socket, once the daemon serves it: a pass that runs past
+    /// [`PASS_BUDGET`] answers waiting commands between repositories.
+    listener: Option<std::sync::Arc<tokio::net::UnixListener>>,
     /// Per repository, the collaborators with push access: the allow-list
     /// when the config sets none (see `allow`). Refreshed once per pass
     /// against an ETag; a repository that has never been fetched is not

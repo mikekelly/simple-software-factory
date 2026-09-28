@@ -107,6 +107,11 @@ Herdr can only launch agents it recognises; `herdr agent start --help` lists the
 repo add` warns about a harness herdr does not know, and a start that never produces an
 agent gives up after `herdr.tui_idle_timeout_ms`.
 
+A herdr or git command that hangs is killed after a bounded wait (a minute for herdr,
+beyond any wait the command was given; two minutes for git) and fails like any other
+error, so the delivery is held and retried on a later pass. A pass that runs past 30
+seconds answers waiting `ssf` commands between repositories.
+
 ## Item activity delivery
 
 Activity on an item reaches its running session through the harness's own channel where

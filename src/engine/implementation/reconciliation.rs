@@ -46,7 +46,11 @@ impl Engine {
             self.startup_pending.retain(|k| !ready.contains(k));
             self.resume_interrupted(&ready).await;
         }
+        let started = tokio::time::Instant::now();
         for repo in self.cfg.repos.clone() {
+            if started.elapsed() >= PASS_BUDGET {
+                self.serve_waiting().await;
+            }
             if self.driver_down(&repo) {
                 continue;
             }

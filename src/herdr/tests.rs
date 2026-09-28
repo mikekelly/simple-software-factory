@@ -2173,3 +2173,49 @@ fn should_start_only_when_herdr_says_it_is_down() {
     assert!(!should_start(false, &Err(anyhow!("no herdr"))));
     assert!(!should_start(true, &Ok(Some(false))));
 }
+
+/// A wedged herdr server leaves its client hanging: the call gives up at its
+/// limit, kills the child and fails like any other herdr error (#611).
+#[tokio::test]
+async fn a_herdr_that_never_exits_is_killed_at_the_limit() {
+    let sandbox = crate::config::test_support::sandbox();
+    let pid = sandbox.root().join("pid");
+    let fake = sandbox.root().join("herdr");
+    crate::test_support::write_executable(
+        &fake,
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nexec sleep 1000\n",
+            pid.display()
+        ),
+    );
+    let herdr = Herdr::new(crate::config::HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..Default::default()
+    });
+    let started = Instant::now();
+    let err = herdr
+        .run_raw_within(&["agent", "list"], Duration::from_millis(300))
+        .await
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(format!("{err:#}").contains("timed out"), "{err:#}");
+    let pid = std::fs::read_to_string(&pid).unwrap().trim().to_string();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::path::Path::new(&format!("/proc/{pid}")).exists()
+        && std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .map(|s| !s.contains(") Z "))
+            .unwrap_or(false)
+    {
+        assert!(Instant::now() < deadline, "the hung herdr was not killed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[test]
+fn a_command_with_its_own_timeout_gets_it_plus_the_margin() {
+    assert_eq!(run_timeout(&["agent", "list"]), RUN_TIMEOUT);
+    assert_eq!(
+        run_timeout(&["agent", "wait", "p", "--timeout", "5000"]),
+        RUN_TIMEOUT + Duration::from_secs(5)
+    );
+}

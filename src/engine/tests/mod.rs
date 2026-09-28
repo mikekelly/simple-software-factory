@@ -29,6 +29,7 @@ pub(super) fn engine() -> Engine {
         state: State::default(),
         failures: BTreeMap::new(),
         startup_pending: Vec::new(),
+        listener: None,
         collaborators: BTreeMap::new(),
         dropped_logged: std::sync::Mutex::new(BTreeSet::new()),
         probe: std::sync::Arc::new(|_| Probe {

@@ -530,6 +530,21 @@ pub fn resume_verdict(
     })
 }
 
+/// How long a herdr command may run before it is killed, so a wedged
+/// server cannot freeze the daemon (#611). A command given its own
+/// `--timeout` (milliseconds) gets that long plus the same margin.
+const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn run_timeout(args: &[&str]) -> Duration {
+    let own = args
+        .windows(2)
+        .find(|w| w[0] == "--timeout")
+        .and_then(|w| w[1].parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_default();
+    RUN_TIMEOUT + own
+}
+
 /// Why `herdr agent prompt` refused or gave up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptFailure {
@@ -661,13 +676,22 @@ impl Herdr {
     /// prints the screen as it is).
     pub async fn run_raw(&self, args: &[&str]) -> Result<String> {
         debug!(cmd = %self.cfg.command, args = ?driver::redacted_args(args), "herdr");
-        let out = Command::from(command(crate::config::herdr_command_path(
+        self.run_raw_within(args, run_timeout(args)).await
+    }
+
+    async fn run_raw_within(&self, args: &[&str], limit: Duration) -> Result<String> {
+        let mut child = Command::from(command(crate::config::herdr_command_path(
             &self.cfg.command,
-        )))
-        .args(args)
-        .output()
-        .await
-        .with_context(|| format!("spawning {} (is herdr installed?)", self.cfg.command))?;
+        )));
+        child.args(args).kill_on_drop(true);
+        let out = tokio::time::timeout(limit, child.output())
+            .await
+            .map_err(|_| {
+                let shown = driver::redacted_args(args).join(" ");
+                warn!(cmd = %self.cfg.command, "herdr {shown} timed out; killed");
+                anyhow!("herdr {shown} timed out after {}s", limit.as_secs())
+            })?
+            .with_context(|| format!("spawning {} (is herdr installed?)", self.cfg.command))?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         if !out.status.success() {
