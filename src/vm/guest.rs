@@ -1119,49 +1119,95 @@ fi
     }
 }
 
-/// Download release asset `asset` of `v{version}` into `dir` with `gh`, and
-/// check it against the release's `SHA256SUMS` (#617). A release that
-/// publishes `SHA256SUMS` must list the asset with a matching digest, or the
-/// download is removed and this fails. Releases made before `SHA256SUMS`
-/// existed have none; their asset is accepted with a warning, since failing
-/// would strand every guest of those versions.
-fn download_release_asset(version: &str, asset: &str, dir: &Path) -> Result<PathBuf> {
-    let gh = |pattern: &str| -> Result<std::process::Output> {
-        Command::new("gh")
-            .args(["release", "download", &format!("v{version}")])
-            .args(["-R", RELEASE_REPO, "--clobber", "--pattern", pattern, "-D"])
-            .arg(dir)
-            .stdin(Stdio::null())
-            .output()
-            .context("running gh (is the GitHub CLI installed?)")
+/// How fetching one release file went.
+enum Fetched {
+    Done,
+    /// The release has no file of that name.
+    Missing,
+    Failed(String),
+}
+
+/// Fetch release file `name` of `v{version}` into `dir`: with `gh`, then,
+/// when that fails for any other reason than the file being absent, with a
+/// plain HTTPS download. The releases are public, and on a server the host's
+/// `gh` is usually not signed in (the bot's token lives in the guest), where
+/// `gh release download` refuses to run at all.
+fn fetch_release_file(version: &str, name: &str, dir: &Path) -> Fetched {
+    let path = dir.join(name);
+    let gh = Command::new("gh")
+        .args(["release", "download", &format!("v{version}")])
+        .args(["-R", RELEASE_REPO, "--clobber", "--pattern", name, "-D"])
+        .arg(dir)
+        .stdin(Stdio::null())
+        .output();
+    let gh_err = match gh {
+        Ok(o) if o.status.success() && path.is_file() => return Fetched::Done,
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            if err.contains("no assets match") {
+                return Fetched::Missing;
+            }
+            format!("`gh release download` failed ({err})")
+        }
+        Err(e) => format!("running gh failed ({e})"),
     };
+    let url = format!("https://github.com/{RELEASE_REPO}/releases/download/v{version}/{name}");
+    let curl = Command::new("curl")
+        .args(["-sSL", "--retry", "2", "-w", "%{http_code}", "-o"])
+        .arg(&path)
+        .arg(&url)
+        .stdin(Stdio::null())
+        .output();
+    match curl {
+        Ok(o) => {
+            let code = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if o.status.success() && code == "200" && path.is_file() {
+                return Fetched::Done;
+            }
+            let _ = std::fs::remove_file(&path);
+            if code == "404" {
+                return Fetched::Missing;
+            }
+            Fetched::Failed(format!(
+                "{gh_err}; and downloading {url} failed (HTTP {code}: {})",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ))
+        }
+        Err(e) => Fetched::Failed(format!("{gh_err}; and running curl failed ({e})")),
+    }
+}
+
+/// Download release asset `asset` of `v{version}` into `dir` (see
+/// [`fetch_release_file`]), and check it against the release's
+/// `SHA256SUMS` (#617). A release that publishes `SHA256SUMS` must list the
+/// asset with a matching digest, or the download is removed and this fails.
+/// Releases made before `SHA256SUMS` existed have none; their asset is
+/// accepted with a warning, since failing would strand every guest of those
+/// versions.
+fn download_release_asset(version: &str, asset: &str, dir: &Path) -> Result<PathBuf> {
     let path = dir.join(asset);
-    let out = gh(asset)?;
-    if !out.status.success() || !path.is_file() {
-        bail!(
-            "`gh release download v{version} -R {RELEASE_REPO} --pattern {asset}` failed ({})",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+    match fetch_release_file(version, asset, dir) {
+        Fetched::Done => {}
+        Fetched::Missing => bail!("release v{version} of {RELEASE_REPO} has no asset {asset}"),
+        Fetched::Failed(e) => bail!("could not download {asset} of v{version}: {e}"),
     }
     let sums = dir.join("SHA256SUMS");
     let _ = std::fs::remove_file(&sums);
-    let out = gh("SHA256SUMS")?;
-    if !out.status.success() || !sums.is_file() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        // Only a release without the asset is "old"; any other failure
-        // (network, auth, rate limit) must not skip verification.
-        if !err.contains("no assets match") {
-            let _ = std::fs::remove_file(&path);
-            bail!(
-                "could not fetch SHA256SUMS for v{version} to verify {asset} ({})",
-                err.trim()
+    match fetch_release_file(version, "SHA256SUMS", dir) {
+        Fetched::Done => {}
+        Fetched::Missing => {
+            warn!(
+                asset,
+                "release v{version} publishes no SHA256SUMS (made before #617?); the asset is unverified"
             );
+            return Ok(path);
         }
-        warn!(
-            asset,
-            "release v{version} publishes no SHA256SUMS (made before #617?); the asset is unverified"
-        );
-        return Ok(path);
+        // Only a release without the file is "old"; any other failure
+        // (network, auth, rate limit) must not skip verification.
+        Fetched::Failed(e) => {
+            let _ = std::fs::remove_file(&path);
+            bail!("could not fetch SHA256SUMS for v{version} to verify {asset} ({e})");
+        }
     }
     let listed = std::fs::read_to_string(&sums)?;
     let _ = std::fs::remove_file(&sums);
@@ -1194,5 +1240,26 @@ mod sha256sums_tests {
         assert_eq!(sha256_listed(sums, "ssf_1.0.0-1_amd64.deb"), Some("aaa"));
         assert_eq!(sha256_listed(sums, "ssf-1.0.0-linux-x86_64"), Some("bbb"));
         assert_eq!(sha256_listed(sums, "ssf-1.0.0-linux"), None);
+    }
+}
+
+#[cfg(test)]
+mod release_download_tests {
+    /// With `gh` signed out, the public release still downloads and verifies
+    /// over plain HTTPS. Needs the network: `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn downloads_without_a_signed_in_gh() {
+        let sandbox = crate::config::test_support::sandbox();
+        let dir = sandbox.root().join("dl");
+        let empty = sandbox.root().join("gh");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&empty).unwrap();
+        // SAFETY: an ignored test run on its own.
+        unsafe { std::env::set_var("GH_CONFIG_DIR", &empty) };
+        unsafe { std::env::remove_var("GH_TOKEN") };
+        let path = super::download_release_asset("0.21.0", "ssf_0.21.0-1_amd64.deb", &dir).unwrap();
+        assert!(path.is_file());
+        assert!(super::download_release_asset("0.21.0", "no-such-asset", &dir).is_err());
     }
 }

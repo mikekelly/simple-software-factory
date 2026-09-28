@@ -64,7 +64,19 @@ seed_from() {
         cat /home/ssf/.config/ssf/migration-error >&2
     fi
     systemctl daemon-reload
-    install -m600 -o ssf -g ssf "$seed/authorized_keys" /home/ssf/.ssh/authorized_keys
+    # The host's key goes in a file of ssf's own, rewritten every boot;
+    # ~/.ssh/authorized_keys stays the person's, for keys added to reach the
+    # guest directly (install.md 5.1), which a rewrite used to drop (#652).
+    install -m600 -o ssf -g ssf "$seed/authorized_keys" /home/ssf/.ssh/authorized_keys.ssf
+    touch /home/ssf/.ssh/authorized_keys
+    chown ssf:ssf /home/ssf/.ssh/authorized_keys
+    chmod 600 /home/ssf/.ssh/authorized_keys
+    keys_conf=/etc/ssh/sshd_config.d/ssf-keys.conf
+    keys_line='AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys.ssf'
+    if [ "$(cat "$keys_conf" 2>/dev/null)" != "$keys_line" ]; then
+        printf '%s\n' "$keys_line" > "$keys_conf"
+        systemctl reload ssh.service 2>/dev/null || systemctl reload sshd.service 2>/dev/null || true
+    fi
     # Files the host chose to share ([vm] files): <seed>/files/<n> -> the path in files.list.
     if [ -f "$seed/files.list" ]; then
         n=0
