@@ -19,6 +19,13 @@ pub(super) async fn run_factory(cfg: Config, once: bool) -> Result<()> {
         bail!("no repositories configured; run `ssf repo add owner/name --harness claude` first");
     }
     crate::engine::forget_stale_launch_token();
+    // The config the ssf herdr session is started with, in place before
+    // anything starts it (#602).
+    if !factory_vm::in_guest()
+        && let Err(e) = crate::herdr::write_config()
+    {
+        tracing::warn!("{e:#}");
+    }
     let engine = engine::Engine::new(cfg).await?;
     if once {
         let mut engine = engine;

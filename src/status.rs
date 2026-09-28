@@ -1147,6 +1147,7 @@ pub fn render_status(snap: &Snapshot) -> String {
             snap.workspaces.len()
         )),
     }
+    out.push_str(&format!("herdr:   {}\n", crate::herdr::session_summary()));
     out.push_str(&format!(
         "config:  {}\n",
         crate::config::config_path().display()

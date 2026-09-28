@@ -28,6 +28,93 @@ use crate::driver::{
 mod channel;
 pub(crate) use channel::{Channel, Journal, Terminal};
 
+/// The herdr session ssf runs its agents in on a host. It is ssf's alone: a
+/// person's own herdr session keeps its config and its
+/// `resume_agents_on_restore`, and ssf's agents never land in it (#602).
+/// Not configurable. The VM guest keeps herdr's default session: the guest
+/// user and its herdr are ssf's already, its seed turns the restore off
+/// (#593), and a guest image cannot be moved to another session by the ssf
+/// binary it is handed.
+pub const SESSION: &str = "ssf";
+
+/// The session ssf's herdr commands go to, and how a person reaches it here.
+pub fn session_summary() -> String {
+    if crate::vm::in_guest() {
+        "herdr's default session in the VM (attach: `ssf vm attach`)".to_string()
+    } else {
+        format!(
+            "herdr session `{SESSION}` (attach: `herdr session attach {SESSION}`; start: `{}`)",
+            server_command()
+        )
+    }
+}
+
+/// The command that starts [`SESSION`]'s headless server with ssf's herdr
+/// config.
+pub fn server_command() -> String {
+    format!(
+        "HERDR_CONFIG_PATH={} herdr --session {SESSION} server",
+        config_path().display()
+    )
+}
+
+/// herdr's config for [`SESSION`], owned and written by ssf.
+pub fn config_path() -> std::path::PathBuf {
+    crate::config::config_dir().join("herdr.toml")
+}
+
+/// herdr restoring its panes after a restart must not start agents itself:
+/// it runs a bare `claude --resume`, without the environment and inbox
+/// channel `ssf launch` gives a session, and the daemon then takes that
+/// agent for a live one. The daemon's resume_on_start does it (#593, #602).
+const CONFIG: &str = "# Written by ssf for its herdr session; ssf rewrites it.\n\
+                      [session]\n\
+                      resume_agents_on_restore = false\n";
+
+/// Write [`config_path`] unless it already says [`CONFIG`].
+pub fn write_config() -> Result<std::path::PathBuf> {
+    let path = config_path();
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(CONFIG) {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        std::fs::write(&path, CONFIG).with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(path)
+}
+
+/// A herdr command aimed at ssf's session: [`SESSION`] with ssf's config on
+/// a host, herdr's default session in the VM guest. Every inherited
+/// `HERDR_*` variable goes: ssf may itself run inside a herdr pane, whose
+/// workspace, pane and socket (`HERDR_SOCKET_PATH` wins over
+/// `HERDR_SESSION`) are the person's, not ssf's.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let session = (!crate::vm::in_guest()).then(|| (SESSION, config_path()));
+    isolated(
+        std::process::Command::new(program),
+        std::env::vars_os().map(|(name, _)| name),
+        session.as_ref().map(|(s, c)| (*s, c.as_path())),
+    )
+}
+
+fn isolated(
+    mut command: std::process::Command,
+    inherited: impl IntoIterator<Item = std::ffi::OsString>,
+    session: Option<(&str, &Path)>,
+) -> std::process::Command {
+    for name in inherited {
+        if name.to_string_lossy().starts_with("HERDR_") {
+            command.env_remove(name);
+        }
+    }
+    if let Some((session, config)) = session {
+        command
+            .env("HERDR_SESSION", session)
+            .env("HERDR_CONFIG_PATH", config);
+    }
+    command
+}
+
 /// Human-readable label; checkout names remain the recovery key.
 fn workspace_label(repo: &str, number: u64) -> String {
     let name = repo.rsplit('/').next().unwrap_or(repo);
@@ -532,17 +619,13 @@ impl Herdr {
     /// prints the screen as it is).
     pub async fn run_raw(&self, args: &[&str]) -> Result<String> {
         debug!(cmd = %self.cfg.command, args = ?driver::redacted_args(args), "herdr");
-        let out = Command::new(crate::config::herdr_command_path(&self.cfg.command))
-            .args(args)
-            // The daemon may itself run inside a herdr pane; commands must
-            // not default to it.
-            .env_remove("HERDR_WORKSPACE_ID")
-            .env_remove("HERDR_TAB_ID")
-            .env_remove("HERDR_PANE_ID")
-            .env_remove("HERDR_ENV")
-            .output()
-            .await
-            .with_context(|| format!("spawning {} (is herdr installed?)", self.cfg.command))?;
+        let out = Command::from(command(crate::config::herdr_command_path(
+            &self.cfg.command,
+        )))
+        .args(args)
+        .output()
+        .await
+        .with_context(|| format!("spawning {} (is herdr installed?)", self.cfg.command))?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         if !out.status.success() {
@@ -579,7 +662,7 @@ impl Herdr {
         self.run(&["workspace", "list"])
             .await
             .map(|_| ())
-            .map_err(|e| anyhow!("herdr is not answering (is a herdr session running?): {e:#}"))
+            .map_err(|e| anyhow!("herdr is not answering in {}: {e:#}", session_summary()))
     }
 
     async fn agents(&self) -> Result<Vec<Agent>> {

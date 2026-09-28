@@ -164,6 +164,14 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
                 format!("{} driver: CLI at {}", d.label(), cmd)
             },
         );
+        if herdr {
+            if !factory_vm::in_guest()
+                && let Err(e) = crate::herdr::write_config()
+            {
+                check(false, format!("herdr config: {e:#}"));
+            }
+            record(Level::Note, crate::herdr::session_summary());
+        }
         if cli_present {
             match d.status().await {
                 Ok(()) => check(true, format!("{} reachable and ready", d.label())),

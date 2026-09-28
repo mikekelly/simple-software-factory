@@ -32,13 +32,47 @@ clones go. `ssf doctor` checks both the CLI and the running server.
 
 Herdr must be installed, and its server running, wherever the agents run. With the
 factory in a [microVM](vm.md), that is inside the guest: the VM image installs and
-starts herdr there, and the host only talks to it. In host mode, herdr is installed on
-the host and the factory drives the host's own herdr server.
+starts herdr there, and the host only talks to it; the guest's herdr belongs to ssf, and
+ssf uses its default session. In host mode, herdr is installed on the host and ssf
+runs its agents in a herdr session of its own, named `ssf`, never in the person's own
+herdr session. The name is fixed.
 
-Either way the server has to be up before the daemon can open a workspace. `herdr
-server` runs it headless, which is what a VM guest or a remote host uses; an interactive
-`herdr` left running serves the same purpose on a desktop, and is what lets a person
-watch the sessions and type in them. `ssf doctor` reports a herdr that is not answering.
+The `ssf` session runs with a herdr config ssf writes, `~/.config/ssf/herdr.toml`
+(under `$SSF_CONFIG_DIR` when that is set), passed as `HERDR_CONFIG_PATH`. It sets
+`[session] resume_agents_on_restore = false`: after a herdr restart, herdr's own restore
+would relaunch each agent as a bare `claude --resume`, without the token, git identity,
+`SSF_*` variables and inbox channel `ssf launch` gives it, and the daemon would take it
+for a live agent. With the restore off, the daemon's `resume_on_start` brings the
+sessions back itself. The person's own herdr config is never read or changed. Every
+herdr command ssf runs drops the `HERDR_*` variables it inherited (a daemon started
+from a herdr pane would otherwise reach that pane's session through
+`HERDR_SOCKET_PATH`) and names the `ssf` session.
+
+The server has to be up before the daemon can open a workspace. On a host, start it
+headless under the user that runs `ssf-server`, with the config ssf wrote (`ssf-server`
+and `ssf doctor` write it; `ssf doctor` and `ssf status` print this exact command):
+
+```sh
+HERDR_CONFIG_PATH=~/.config/ssf/herdr.toml herdr --session ssf server
+```
+
+Watch and type in the sessions with `herdr session attach ssf` on the host, or from
+another machine with `herdr --remote <host> --session ssf` (saved once with `herdr
+machine add <host> --label factory --remote-session ssf`). `ssf doctor` reports a
+herdr that is not answering.
+
+### Moving an existing host install to the `ssf` session
+
+Before #602 a host factory drove whichever herdr session the daemon reached, usually
+the person's default one. After upgrading, the daemon looks only in the `ssf` session and
+no longer sees agents in the old one. To avoid two agents working in one worktree:
+
+1. Stop `ssf-server`.
+2. In the old session (`herdr` attaches to the default one), close the panes of ssf's
+   agents.
+3. Start the `ssf` session as above, then start `ssf-server`. With `resume_on_start` the
+   daemon relaunches each active item's session in the `ssf` session, continuing its
+   conversation.
 
 ## Reading and driving an agent
 
