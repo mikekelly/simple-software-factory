@@ -2,6 +2,19 @@ use super::super::*;
 use tracing::{debug, info, warn};
 
 impl Engine {
+    /// Leave an item the bot only opened unbound until it changes.
+    fn ignore_created(&mut self, repo: &RepoConfig, issue: &Issue, triggers: &[String]) {
+        info!(
+            repo = repo.name,
+            issue = issue.number,
+            "opened by the bot without an action trigger; ignoring until it changes"
+        );
+        self.state
+            .repo_mut(&repo.name)
+            .ignored
+            .insert(issue.number, Ignored::new(issue, triggers));
+    }
+
     pub(in crate::engine) async fn onboard(
         &mut self,
         repo: &RepoConfig,
@@ -32,6 +45,28 @@ impl Engine {
             .repo_mut(&repo.name)
             .ignored
             .remove(&issue.number);
+        // An item the bot only opened waits for the session it belongs to;
+        // with none seeded (an unadopted origin, say) it is ignored before
+        // any checkout is cloned for it (#673).
+        let pr = match (is_pr, pr) {
+            (true, Some(p)) => Some(p),
+            (true, None) => Some(self.gh.pull(owner, name, issue.number).await?),
+            (false, _) => None,
+        };
+        if triggers.iter().all(|t| t == "created") {
+            let scan = self.record_origins(repo, issue, &timeline);
+            if self.find_owner(repo, issue, pr.as_ref(), &scan).is_none() {
+                let e = self.entry(repo, issue.number);
+                e.title = issue.title.clone();
+                e.html_url = issue.html_url.clone();
+                e.kind = Some(if is_pr { "pull_request" } else { "issue" }.into());
+                e.triggers = triggers.clone();
+                e.github_state = Some(github_state(issue, pr.as_ref(), false));
+                e.pr = pr.clone();
+                self.ignore_created(repo, issue, &triggers);
+                return Ok(());
+            }
+        }
         let setup = self
             .driver(repo)
             .ensure_project(
@@ -42,11 +77,6 @@ impl Engine {
                 &self.cfg.projects_dir(self.cfg.driver_for(repo)),
             )
             .await?;
-        let pr = match (is_pr, pr) {
-            (true, Some(p)) => Some(p),
-            (true, None) => Some(self.gh.pull(owner, name, issue.number).await?),
-            (false, _) => None,
-        };
         let diff = self.diff(repo, &BTreeMap::new(), &timeline);
 
         let prior = self
@@ -99,15 +129,7 @@ impl Engine {
                     .bind_to(repo, issue, owner, diff, triggers, since_prior)
                     .await;
             }
-            info!(
-                repo = repo.name,
-                issue = issue.number,
-                "opened by the bot without an action trigger; ignoring until it changes"
-            );
-            self.state
-                .repo_mut(&repo.name)
-                .ignored
-                .insert(issue.number, Ignored::new(issue, &triggers));
+            self.ignore_created(repo, issue, &triggers);
             // Still polled for whoever subscribed to it.
             if prior.as_ref().is_some_and(|p| p.subscriber_only) {
                 self.entry(repo, issue.number).subscriber_only = true;

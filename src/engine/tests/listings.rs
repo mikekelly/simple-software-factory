@@ -1121,3 +1121,44 @@ async fn assigning_an_ignored_bot_opened_issue_onboards_it_before_the_assignee_l
     assert_eq!(rs.issues[&18].triggers, vec!["assigned", "created"]);
     assert_eq!(d.launches().len(), 1, "no session started");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_new_repo_enrollment_starts_nothing_for_bot_authored_pull_requests() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let mut r = repo();
+    r.enrolled_at = Some("generation-1".into());
+    e.cfg.repos = vec![r.clone()];
+    let mut pull = assigned_item(5, "alice", "u1");
+    pull["assignees"] = json!([]);
+    pull["user"]["login"] = json!("bot");
+    pull["body"] = json!("🤖#3 says: <!-- ssf: origin=o/r#3 -->\n\nImplementation");
+    pull["pull_request"] = json!({"url": "https://api.github.test/pulls/5"});
+    *stub.created.lock().unwrap() = vec![pull.clone()];
+    stub.set_issue(5, pull);
+    stub.set_timeline(5, vec![]);
+    stub.set_pull(
+        5,
+        json!({
+            "head": {"ref": "bot/issue-3-x", "repo": {"full_name": "o/r"}},
+            "base": {"ref": "main"},
+            "requested_reviewers": []
+        }),
+    );
+    stub.set_assigned(vec![assigned_item(3, "alice", "u1")]);
+
+    e.tick_repo(&r).await.unwrap();
+    e.tick_repo(&r).await.unwrap();
+
+    let rs = &e.state.repos[&r.name];
+    assert!(d.launches().is_empty(), "discovery must not start an agent");
+    assert_eq!(d.with(|s| s.projects), 0, "nothing may be cloned for it");
+    assert!(d.with(|s| s.worktrees.is_empty()));
+    assert!(rs.ignored.contains_key(&5));
+    assert_eq!(rs.issues[&5].kind.as_deref(), Some("pull_request"));
+    assert!(!rs.issues[&5].title.is_empty() && rs.issues[&5].github_state.is_some());
+    assert!(!rs.issues.get(&5).is_some_and(|s| s.seeded));
+}
