@@ -79,7 +79,7 @@ Install the `.rpm` from the release assets with `dnf install ./ssf-*.rpm`,
 and remove it with `sudo dnf remove ssf`. The rpm depends on `gh`, `git`,
 `jq`, `systemd` and `openssh-clients`, and recommends `fakeroot`, `bsdtar`,
 `e2fsprogs` and `curl` for building a VM image. Packages are built for
-x86_64; on another architecture use the standalone binaries. herdr is not
+x86_64 and aarch64. herdr is not
 packaged here either: install it by hand as for Debian, unless the factory
 runs in a VM.
 
@@ -240,20 +240,21 @@ agents on their machine, can oversee the sessions.
    images.
 4. Install herdr, and the harness CLIs the repositories will use, as the
    same Unix user that will run the factory.
-5. Install ssf **as a distribution package where one fits** (x86_64 Arch,
-   Debian/Ubuntu or Fedora/RHEL; install.md section 3.1): it brings `gh`
+5. Install ssf **as a distribution package where one fits** (Debian/Ubuntu or
+   Fedora/RHEL on x86_64 or aarch64, Arch on x86_64; install.md section 3.1): it brings `gh`
    and the `ssf@.service` unit. Enable linger for the factory account
    (`sudo loginctl enable-linger ssf`), then as that account run
    `ssf server add local --local` and `ssf setup` (install.md section 4);
    the service then survives logout and starts at boot.
-6. Otherwise (aarch64, or no package fits), put `ssf` and `ssf-server`
+6. Otherwise (no package fits), put `ssf` and `ssf-server`
    **from the same release** into `~/.local/bin` on that account, keep the
    two together, and persist that directory on `PATH` (install.md section
    3.3). Leave the server catalog empty, so the client and a foreground
    `ssf-server` share one configuration and state, do not set `SSF_SERVER`,
    and run `ssf-server` under whatever keeps processes alive on that host.
 7. Sign the bot in (`ssf auth login`) and watch a repository
-   (`ssf repo add owner/repo --harness ID`).
+   (`ssf repo add owner/repo --harness ID --model MODEL --effort EFFORT`,
+   install.md section 9).
 8. From the person's own machine, reach it as a client:
    `ssf --server user@host status`, or give it a catalog name with
    `ssf server add NAME --ssh user@host`. SSH starts the same command

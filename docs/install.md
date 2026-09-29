@@ -135,7 +135,7 @@ Download the matching asset from [GitHub Releases](https://github.com/mikekelly/
 |---|---|
 | Arch | `sudo pacman -U ssf-*.pkg.tar.zst` |
 | Debian / Ubuntu | `sudo apt install ./ssf_*_$(dpkg --print-architecture).deb` |
-| Fedora / RHEL | `sudo dnf install ./ssf-*.x86_64.rpm` |
+| Fedora / RHEL | `sudo dnf install ./ssf-*.$(uname -m).rpm` |
 
 On a fresh server `gh` is not there yet (the package brings it) and is not signed in, so download the public asset with `curl`:
 
@@ -146,7 +146,7 @@ curl -fsSLO "https://github.com/mikekelly/simple-software-factory/releases/downl
 
 Where `gh` is already installed, `gh release download --repo mikekelly/simple-software-factory --pattern PATTERN` does the same.
 
-One package holds both the `ssf` client and the `ssf-server` daemon. Packages are x86_64.
+One package holds both the `ssf` client and the `ssf-server` daemon. The `.deb` and `.rpm` are built for x86_64 and aarch64; the Arch package for x86_64 only.
 
 Prerequisites the package does not always bring: GitHub CLI 2.40 or newer, Git, jq, an OpenSSH client (`ssh-keygen` enrolls the bot's key), and, for host mode, herdr, which only Omarchy's repositories carry as a package. The VM installs its own herdr in the guest. Where to get herdr and the other distro-specific commands and quirks are in [platform-specifics.md](platform-specifics.md). tmux is optional: scratch sessions run in herdr, and tmux is used only to reach one still running in tmux from an older ssf until it next starts ([sessions.md](sessions.md#scratch-sessions)).
 
@@ -477,7 +477,7 @@ ssf repo set OWNER/NAME --allowed-users alice,bob
 
 Ask now which harness the person already pays for, and whether any metered API spend is acceptable. Each harness is signed in once, where the agents run, with the harness's own sign-in. The credential lands in the home directory there (for example `~/.claude/.credentials.json` in the guest), and every later session uses it. ssf does not sign harnesses in.
 
-Do this step with the person, one harness at a time, through herdr. In VM mode run each `herdr` command below inside the guest with `ssf vm ssh herdr ...`; on a rented host, over SSH on that host; in host mode, on the host's own herdr as the Unix user that runs the sessions.
+Do this step with the person, one harness at a time, through herdr. In VM mode run each `herdr` command below inside the guest with `ssf vm ssh herdr ...`; in host mode, including on a dedicated server (over SSH there), as the Unix user that runs the sessions, against ssf's own herdr session: prefix each `herdr` command with `HERDR_SESSION=ssf` (only that session's server is running, so plain `herdr` answers `server_not_running`).
 
 1. **Open the harness** in a pane in the projects root (`/var/lib/ssf/projects` in the VM; `herdr.projects_dir` elsewhere). Folder trust given there does not cover the repositories under it; first-run screens that are global, such as sign-in and preference screens, are cleared once here:
 
@@ -486,7 +486,7 @@ Do this step with the person, one harness at a time, through herdr. In VM mode r
    herdr pane run PANE claude     # PANE: result.root_pane.pane_id in the JSON printed above
    ```
 
-2. **Clear the first-run screens.** Read the pane with `herdr pane read PANE` and answer with `herdr pane send-keys PANE KEY...`. Take the default on preference screens, or ask the person in one line if the choice matters; for Claude Code's "Try the new fullscreen renderer?" pick **Not now**; finish Oh My Pi's setup wizard here too, since it is kept per user and covers every later repository. Accept folder trust. Codex's first launch asks to review and trust hooks: the one listed is herdr's `SessionStart` agent-state hook, which provisioning installed and sessions rely on, so trust it. Read again after every key: screens change with every harness release.
+2. **Clear the first-run screens.** Read the pane with `herdr pane read PANE` and answer with `herdr pane send-keys PANE KEY...`. Take the default on preference screens, or ask the person in one line if the choice matters; for Claude Code's "Try the new fullscreen renderer?" pick **Not now**; finish Oh My Pi's setup wizard here too, since it is kept per user and covers every later repository. Grant folder trust explicitly: Claude Code's trust screen defaults to "No, exit", so select the trust option rather than pressing enter. Codex's first launch asks to review and trust hooks: the one listed is herdr's `SessionStart` agent-state hook, which provisioning installed and sessions rely on, so trust it. Read again after every key: screens change with every harness release.
 
 3. **Start the harness's own sign-in** (for example `/login`, typed with `herdr pane run PANE /login`) only when the person is ready for it; never run two sign-ins at once, since each code expires while the person is busy with the other.
    - **The link.** `herdr pane read` returns screen rows, so a long URL is split across lines. Rejoin it before handing it over, for example `herdr pane read PANE | tr -d '\n' | grep -o 'https://[^ ]*'`, and check it against the screen. The person's browser may be on another computer, so do not open it on the factory machine: give the URL as text, alone in a fenced code block so it copies whole even where the terminal wraps it.
