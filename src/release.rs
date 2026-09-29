@@ -25,10 +25,31 @@ use serde_json::{Value, json};
 /// credential helper, a stored key — still works; only the prompt is
 /// refused (`GCM_INTERACTIVE=never` is for Git Credential Manager, which
 /// prompts through a UI of its own rather than the terminal).
+///
+/// It also appends `ssf git-credential` to the credential helpers, after any
+/// the machine configures, so ssf's own clones and fetches of a private
+/// repository over HTTPS use the bot's token even where nobody ran
+/// `gh auth setup-git` (#672). The helper answers only for the GitHub host.
 pub fn unattended(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
     command
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
+        .env("GCM_INTERACTIVE", "never");
+    // Unit tests run as the test binary, which is no credential helper.
+    if !cfg!(test)
+        && std::env::var_os("GIT_CONFIG_COUNT").is_none()
+        && let Ok(me) = std::env::current_exe()
+    {
+        // After a package upgrade the running daemon's binary reads as
+        // "<path> (deleted)"; the new one is at the same path.
+        let me = me.to_string_lossy();
+        let me = me.strip_suffix(" (deleted)").unwrap_or(&me);
+        let me = me.replace('\'', "'\\''");
+        command
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "credential.helper")
+            .env("GIT_CONFIG_VALUE_0", format!("!'{me}' git-credential"));
+    }
+    command
 }
 
 /// How long one git command may run before it is killed: a hung fetch
