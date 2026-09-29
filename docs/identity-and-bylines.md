@@ -22,6 +22,10 @@ shims](internals.md#the-gh-and-git-shims). The initial prompt tells the agent
 that plain `gh` and `git push` act as the bot, or who `git push` acts as
 instead. `ssf token` prints the token for any other use.
 
+The daemon's own git commands (cloning a repository on onboarding, fetches)
+get the same helper, appended after any the machine configures, so a private
+repository clones over HTTPS with the bot's token without `gh auth setup-git`.
+
 The bot's own commits and cross-references are filtered out of follow-up
 messages, and its comments are sorted per session by their byline, so an agent's
 own posts are not echoed back to it (`daemon.include_own_events` turns both
