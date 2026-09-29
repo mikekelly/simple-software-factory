@@ -85,8 +85,8 @@ async fn stop_supervised_vm() -> Result<()> {
 /// is not in use: nothing is broken by its absence, it is what turning
 /// `[vm] enabled` on would need. The ok/FAIL judgement on it belongs to
 /// the two places that do depend on it, `ssf vm status` and that bail.
-pub(super) fn reports_backend_tooling(in_guest: bool) -> bool {
-    !in_guest
+pub(super) fn reports_backend_tooling(in_guest: bool, vm_enabled: bool) -> bool {
+    !in_guest && vm_enabled
 }
 
 /// What `ssf doctor` says on a VM host about a `[dashboard]` of its own: the

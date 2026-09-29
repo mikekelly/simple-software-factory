@@ -381,6 +381,59 @@ pub fn service_active() -> bool {
     .is_ok_and(|output| output.status.success())
 }
 
+/// A daemon the unit keeps restarting (#674): systemd's `NRestarts` for the
+/// unit, and the last error its journal holds. `None` where the unit has not
+/// restarted, on macOS, or where systemd cannot say.
+pub fn service_restarts() -> Option<(u32, Option<String>)> {
+    if is_macos() {
+        return None;
+    }
+    let unit = service_unit();
+    let show = ["show", "-p", "NRestarts,ActiveState", &unit];
+    let out = if crate::vm::in_guest() {
+        systemctl(&show)
+    } else {
+        systemctl_user(&show)
+    }
+    .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let prop = |k: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(k)?.strip_prefix('='))
+            .map(str::trim)
+    };
+    // A unit stopped by hand keeps its count; only one still up counts.
+    if matches!(prop("ActiveState"), None | Some("inactive")) {
+        return None;
+    }
+    let restarts: u32 = prop("NRestarts")?.parse().ok()?;
+    if restarts == 0 {
+        return None;
+    }
+    let mut journal = Command::new("journalctl");
+    if !crate::vm::in_guest() {
+        journal.arg("--user");
+    }
+    let last_error = journal
+        .args(["-u", &unit, "-n", "50", "-o", "cat", "--no-pager"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|o| last_journal_error(&String::from_utf8_lossy(&o.stdout)));
+    Some((restarts, last_error))
+}
+
+/// The last line of a unit's journal that reports an error.
+pub fn last_journal_error(journal: &str) -> Option<String> {
+    journal
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| l.to_ascii_lowercase().contains("error"))
+        .map(str::to_string)
+}
+
 /// `launchctl print` output for a service that runs has `state = running`.
 pub fn launchctl_says_running(text: &str) -> bool {
     text.lines()
@@ -399,6 +452,15 @@ pub fn service_start() -> Result<()> {
 /// being equated with it (#463). Where they agree, the wording is the
 /// unit's own, as it always was.
 pub fn service_state(daemon: bool, unit_active: bool, unit_enabled: bool) -> String {
+    if !daemon && let Some((n, last_error)) = service_restarts() {
+        return format!(
+            "daemon not answering ({} is restarting: {n} restart(s){})",
+            service_instance(),
+            last_error
+                .map(|e| format!("; last error: {e}"))
+                .unwrap_or_default()
+        );
+    }
     match (daemon, unit_active) {
         (true, true) => {
             if unit_enabled {
