@@ -57,7 +57,9 @@ Run `apt update` first, including on minimal images with stale lists. The
   releases supply a recent enough `gh` themselves.
 - **herdr** is not a package dependency here. For sessions on the host,
   install it by hand with `curl -fsSL https://herdr.dev/install.sh | sh`;
-  ssf also looks in `~/.local/bin`. A VM installs its own herdr, so a
+  ssf also looks in `~/.local/bin`, and ssf adds that directory
+  to its PATH, so a harness installed there per user (Claude Code's
+  installer, for one) is found by `ssf doctor`, the service and its panes. A VM installs its own herdr, so a
   VM-mode machine does not need one on the host.
 - **KVM access:** if `/dev/kvm` is not readable and writable by the account
   that will run the VM, `sudo usermod -aG kvm "$USER"` and a fresh login

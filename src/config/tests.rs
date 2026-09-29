@@ -1255,3 +1255,25 @@ fn dashboard_bind_accepts_loopback_and_tailscale_only() {
         );
     }
 }
+
+/// `~/.local/bin` is appended to PATH once, and only when it exists.
+#[test]
+fn local_bin_is_appended_to_path() {
+    let home = std::env::temp_dir().join(format!("ssf-localbin-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let path = std::ffi::OsString::from("/usr/bin:/bin");
+    assert_eq!(path_with_local_bin(Some(&path), Some(&home)), None);
+    let bin = home.join(".local/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let joined = path_with_local_bin(Some(&path), Some(&home)).unwrap();
+    assert_eq!(
+        joined,
+        std::ffi::OsString::from(format!("/usr/bin:/bin:{}", bin.display()))
+    );
+    assert_eq!(path_with_local_bin(Some(&joined), Some(&home)), None);
+    assert_eq!(
+        path_with_local_bin(None, Some(&home)),
+        Some(bin.clone().into())
+    );
+    std::fs::remove_dir_all(&home).unwrap();
+}
