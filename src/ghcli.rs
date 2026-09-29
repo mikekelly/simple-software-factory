@@ -69,6 +69,13 @@ fn gh() -> Command {
     Command::new(real_gh())
 }
 
+fn supports_skip_ssh_key() -> bool {
+    gh().args(["auth", "login", "--help"])
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("--skip-ssh-key"))
+}
+
 pub fn available() -> bool {
     gh().arg("--version")
         .stdout(Stdio::null())
@@ -155,21 +162,24 @@ fn git_protocol(host: &str) -> Option<String> {
 /// it, so the human's existing preference is put back.
 pub fn login_web(host: &str, scopes: &[&str]) -> Result<()> {
     let previous_protocol = git_protocol(host);
-    let status = gh()
-        .args([
-            "auth",
-            "login",
-            "--hostname",
-            host,
-            "--web",
-            "--git-protocol",
-            previous_protocol.as_deref().unwrap_or("https"),
-            "--skip-ssh-key",
-            "--scopes",
-            &scopes.join(","),
-        ])
-        .status()
-        .context("running gh auth login")?;
+    let mut command = gh();
+    command.args([
+        "auth",
+        "login",
+        "--hostname",
+        host,
+        "--web",
+        "--git-protocol",
+        previous_protocol.as_deref().unwrap_or("https"),
+        "--scopes",
+        &scopes.join(","),
+    ]);
+    // gh offers to upload an SSH key only for the ssh protocol; the flag
+    // that declines it arrived in gh 2.48, after Ubuntu 24.04's 2.45.
+    if supports_skip_ssh_key() {
+        command.arg("--skip-ssh-key");
+    }
+    let status = command.status().context("running gh auth login")?;
     if let Some(prev) = previous_protocol {
         let _ = gh()
             .args(["config", "set", "--host", host, "git_protocol", &prev])
@@ -248,7 +258,6 @@ fn login_device_using(host: &str, scopes: &[&str], root: &Path, program: &Path) 
             "--web",
             "--git-protocol",
             "https",
-            "--skip-ssh-key",
             "--insecure-storage",
             "--scopes",
             &scopes.join(","),
