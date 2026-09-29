@@ -196,6 +196,16 @@ pub(super) async fn doctor(json_out: bool) -> Result<()> {
         if cli_present {
             match d.status().await {
                 Ok(()) => check(true, format!("{} reachable and ready", d.label())),
+                // herdr's own error suggests `herdr session attach`, which
+                // starts the session with herdr's config, not ssf's (#674).
+                Err(e) if herdr => check(
+                    false,
+                    format!(
+                        "{}: {e:#}. Do not start it with `herdr session attach {s}`: the daemon starts it with ssf's config, so get the daemon running (`ssf status`, `ssf logs`)",
+                        d.label(),
+                        s = crate::herdr::SESSION
+                    ),
+                ),
                 Err(e) => check(false, format!("{}: {e:#}", d.label())),
             }
         }
@@ -1005,7 +1015,7 @@ session/grok-bridge.log)"
     // Nothing here uses it (see `reports_backend_tooling`), so a missing
     // limactl is not a failure: it is what to install before turning the
     // VM on.
-    if reports_backend_tooling(factory_vm::in_guest()) {
+    if reports_backend_tooling(factory_vm::in_guest(), cfg.vm.enabled) {
         let vm = factory_vm::Vm::new(&cfg);
         record(
             Level::Note,

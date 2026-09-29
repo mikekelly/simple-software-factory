@@ -381,6 +381,58 @@ pub fn service_active() -> bool {
     .is_ok_and(|output| output.status.success())
 }
 
+/// A daemon the unit keeps restarting (#674): systemd's `NRestarts` for the
+/// unit, and the last error its journal holds. `None` where the unit has not
+/// restarted, on macOS, or where systemd cannot say.
+pub fn service_restarts() -> Option<(&'static str, u32, Option<String>)> {
+    if is_macos() {
+        return None;
+    }
+    let unit = service_unit();
+    let show = ["show", "-p", "NRestarts,ActiveState,SubState", &unit];
+    let out = if crate::vm::in_guest() {
+        systemctl(&show)
+    } else {
+        systemctl_user(&show)
+    }
+    .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let prop = |k: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(k)?.strip_prefix('='))
+            .map(str::trim)
+    };
+    // The count outlives the loop, so the unit's state says whether it is
+    // in one now: waiting to restart, starting again, or given up on.
+    let state = match (prop("ActiveState"), prop("SubState")) {
+        (_, Some("auto-restart")) | (Some("activating"), _) => "is restarting",
+        (Some("failed"), _) => "failed",
+        _ => return None,
+    };
+    let restarts: u32 = prop("NRestarts")?.parse().ok()?;
+    if restarts == 0 {
+        return None;
+    }
+    let mut args = vec!["-u", unit.as_str(), "-n", "50", "-o", "cat", "--no-pager"];
+    if !crate::vm::in_guest() {
+        args.insert(0, "--user");
+    }
+    let last_error = bounded("journalctl", &args)
+        .ok()
+        .and_then(|o| last_journal_error(&String::from_utf8_lossy(&o.stdout)));
+    Some((state, restarts, last_error))
+}
+
+/// The last line of a unit's journal that reports an error.
+pub fn last_journal_error(journal: &str) -> Option<String> {
+    journal
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| l.to_ascii_lowercase().contains("error"))
+        .map(str::to_string)
+}
+
 /// `launchctl print` output for a service that runs has `state = running`.
 pub fn launchctl_says_running(text: &str) -> bool {
     text.lines()
@@ -399,6 +451,15 @@ pub fn service_start() -> Result<()> {
 /// being equated with it (#463). Where they agree, the wording is the
 /// unit's own, as it always was.
 pub fn service_state(daemon: bool, unit_active: bool, unit_enabled: bool) -> String {
+    if !daemon && let Some((state, n, last_error)) = service_restarts() {
+        return format!(
+            "daemon not answering ({} {state} after {n} restart(s){})",
+            service_instance(),
+            last_error
+                .map(|e| format!("; last error: {e}"))
+                .unwrap_or_default()
+        );
+    }
     match (daemon, unit_active) {
         (true, true) => {
             if unit_enabled {
@@ -632,14 +693,19 @@ pub fn systemctl_user(args: &[&str]) -> Result<std::process::Output> {
 
 /// `systemctl args`, bounded like [`systemctl_user`].
 pub(crate) fn systemctl(args: &[&str]) -> Result<std::process::Output> {
+    bounded("systemctl", args)
+}
+
+/// `program args`, killed after [`SYSTEMCTL_PROBE_TIMEOUT`].
+fn bounded(program: &str, args: &[&str]) -> Result<std::process::Output> {
     use std::io::Read;
-    let mut child = Command::new("systemctl")
+    let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("running systemctl {}", args.join(" ")))?;
+        .with_context(|| format!("running {program} {}", args.join(" ")))?;
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -661,7 +727,7 @@ pub(crate) fn systemctl(args: &[&str]) -> Result<std::process::Output> {
             let _ = child.wait();
             // The readers are not joined: they end when the pipes close.
             bail!(
-                "systemctl {} did not finish within {}s",
+                "{program} {} did not finish within {}s",
                 args.join(" "),
                 SYSTEMCTL_PROBE_TIMEOUT.as_secs()
             );

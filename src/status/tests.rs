@@ -720,3 +720,14 @@ fn status_hides_released_sessions_unless_all() {
     assert!(text.contains("Item 2"), "{text}");
     assert!(!text.contains("hidden"), "{text}");
 }
+
+#[test]
+fn the_last_journal_error_is_the_crash_reason() {
+    let journal =
+        "starting\nError: no bot account signed in\nssf@local.service: Main process exited\n";
+    assert_eq!(
+        crate::platform::last_journal_error(journal).as_deref(),
+        Some("Error: no bot account signed in")
+    );
+    assert_eq!(crate::platform::last_journal_error("fine\n"), None);
+}

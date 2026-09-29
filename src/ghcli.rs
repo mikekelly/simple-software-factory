@@ -100,7 +100,10 @@ pub fn accounts(host: &str) -> Result<Vec<Account>> {
     }
     let parsed: StatusJson =
         serde_json::from_slice(&out.stdout).context("decoding gh auth status")?;
-    Ok(parsed.hosts.get(host).cloned().unwrap_or_default())
+    // An entry gh cannot read an account from has no login (#674).
+    let mut accounts = parsed.hosts.get(host).cloned().unwrap_or_default();
+    accounts.retain(|a| !a.login.is_empty());
+    Ok(accounts)
 }
 
 /// The token gh's own store holds for `login`. Inside an agent session

@@ -125,13 +125,15 @@ fn the_backend_tooling_is_a_note_on_the_host_and_nothing_in_the_guest() {
         Some("doctor")
     );
     assert!(factory_vm::forwards("doctor"));
-    assert!(!reports_backend_tooling(true));
+    assert!(!reports_backend_tooling(true, true));
+    // Host mode: no VM configured, so its tooling is noise (#674).
+    assert!(!reports_backend_tooling(false, false));
     // ...and a factory in a stopped VM never gets here at all: `main`
     // bails on any forwarded command but `status`, and that bail is
     // itself what names the tooling a host has not got. So the doctor
     // that prints this line is one running the factory on this
     // machine, where the backend is not in use and cannot fail.
-    assert!(reports_backend_tooling(false));
+    assert!(reports_backend_tooling(false, true));
 }
 
 #[test]
