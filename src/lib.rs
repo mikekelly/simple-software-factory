@@ -54,6 +54,7 @@ pub use cli::{
     assign_recorded_text, auth_logout, client_main, handover_cancelled_text,
     handover_recorded_text, server_main, summary_quotes_a_sign_in_screen_text,
 };
+pub use config::path_with_local_bin;
 
 pub(crate) use cli::{
     client_executable, hostname, purge, remote_client_command, server_executable,

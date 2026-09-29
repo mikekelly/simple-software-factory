@@ -518,6 +518,29 @@ fn herdr_command_path_in(
     }
 }
 
+/// PATH with `~/.local/bin` appended when that directory exists and is not
+/// already on it. Per-user installers (Claude Code's, herdr's) put binaries
+/// there, and the systemd user manager's PATH does not include it, so the
+/// daemon, the herdr server and panes it starts, and the client's harness
+/// checks would not find them.
+pub fn path_with_local_bin(
+    path: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> Option<std::ffi::OsString> {
+    let local = home?.join(".local/bin");
+    if !local.is_dir() {
+        return None;
+    }
+    let mut dirs: Vec<PathBuf> = path
+        .map(|p| std::env::split_paths(p).collect())
+        .unwrap_or_default();
+    if dirs.contains(&local) {
+        return None;
+    }
+    dirs.push(local);
+    std::env::join_paths(dirs).ok()
+}
+
 /// A regular file with an execute bit set, which is what PATH lookup
 /// accepts.
 fn is_executable_file(path: &Path) -> bool {
