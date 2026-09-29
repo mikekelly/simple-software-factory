@@ -48,13 +48,21 @@ impl Engine {
         // An item the bot only opened waits for the session it belongs to;
         // with none seeded (an unadopted origin, say) it is ignored before
         // any checkout is cloned for it (#673).
+        let pr = match (is_pr, pr) {
+            (true, Some(p)) => Some(p),
+            (true, None) => Some(self.gh.pull(owner, name, issue.number).await?),
+            (false, _) => None,
+        };
         if triggers.iter().all(|t| t == "created") {
             let scan = self.record_origins(repo, issue, &timeline);
-            let pr = match (is_pr, &pr) {
-                (true, None) => Some(self.gh.pull(owner, name, issue.number).await?),
-                _ => pr.clone(),
-            };
             if self.find_owner(repo, issue, pr.as_ref(), &scan).is_none() {
+                let e = self.entry(repo, issue.number);
+                e.title = issue.title.clone();
+                e.html_url = issue.html_url.clone();
+                e.kind = Some(if is_pr { "pull_request" } else { "issue" }.into());
+                e.triggers = triggers.clone();
+                e.github_state = Some(github_state(issue, pr.as_ref(), false));
+                e.pr = pr.clone();
                 self.ignore_created(repo, issue, &triggers);
                 return Ok(());
             }
@@ -69,11 +77,6 @@ impl Engine {
                 &self.cfg.projects_dir(self.cfg.driver_for(repo)),
             )
             .await?;
-        let pr = match (is_pr, pr) {
-            (true, Some(p)) => Some(p),
-            (true, None) => Some(self.gh.pull(owner, name, issue.number).await?),
-            (false, _) => None,
-        };
         let diff = self.diff(repo, &BTreeMap::new(), &timeline);
 
         let prior = self

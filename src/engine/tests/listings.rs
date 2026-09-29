@@ -1158,5 +1158,7 @@ async fn a_new_repo_enrollment_starts_nothing_for_bot_authored_pull_requests() {
     assert_eq!(d.with(|s| s.projects), 0, "nothing may be cloned for it");
     assert!(d.with(|s| s.worktrees.is_empty()));
     assert!(rs.ignored.contains_key(&5));
+    assert_eq!(rs.issues[&5].kind.as_deref(), Some("pull_request"));
+    assert!(!rs.issues[&5].title.is_empty() && rs.issues[&5].github_state.is_some());
     assert!(!rs.issues.get(&5).is_some_and(|s| s.seeded));
 }
