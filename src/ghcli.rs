@@ -92,6 +92,16 @@ pub fn accounts(host: &str) -> Result<Vec<Account>> {
         .output()
         .context("running gh auth status (is github-cli installed?)")?;
     if !out.status.success() {
+        // gh before 2.50 has no `--json` here (#683): read its plain output.
+        if String::from_utf8_lossy(&out.stderr).contains("unknown flag") {
+            let out = gh()
+                .args(["auth", "status", "--hostname", host])
+                .output()
+                .context("running gh auth status")?;
+            let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&out.stderr));
+            return Ok(parse_plain_status(&text, host));
+        }
         // gh exits 1 when nobody is logged in, with an empty body.
         let text = String::from_utf8_lossy(&out.stdout);
         if text.trim().is_empty() {
@@ -104,6 +114,46 @@ pub fn accounts(host: &str) -> Result<Vec<Account>> {
     let mut accounts = parsed.hosts.get(host).cloned().unwrap_or_default();
     accounts.retain(|a| !a.login.is_empty());
     Ok(accounts)
+}
+
+/// Accounts from gh's human-readable `auth status`, for gh without `--json`.
+/// 2.40+ prints "Logged in to HOST account LOGIN (...)" with "- Active account:
+/// true"; older gh prints "Logged in to HOST as LOGIN (...)", one account only.
+fn parse_plain_status(text: &str, host: &str) -> Vec<Account> {
+    let mut accounts: Vec<Account> = Vec::new();
+    let mut multi = false;
+    for line in text.lines() {
+        let line = line.trim();
+        let marker = format!("Logged in to {host} ");
+        if let Some(rest) = line.find(&marker).map(|i| &line[i + marker.len()..]) {
+            let (login, is_multi) = if let Some(r) = rest.strip_prefix("account ") {
+                (r, true)
+            } else if let Some(r) = rest.strip_prefix("as ") {
+                (r, false)
+            } else {
+                continue;
+            };
+            multi |= is_multi;
+            let login = login.split_whitespace().next().unwrap_or("");
+            if !login.is_empty() {
+                accounts.push(Account {
+                    login: login.to_string(),
+                    active: false,
+                    scopes: String::new(),
+                });
+            }
+        } else if let Some(acct) = accounts.last_mut() {
+            if let Some(v) = line.strip_prefix("- Active account:") {
+                acct.active = v.trim() == "true";
+            } else if let Some(v) = line.split_once("Token scopes:").map(|(_, v)| v) {
+                acct.scopes = v.replace(['\'', '"'], "");
+            }
+        }
+    }
+    if !multi && accounts.len() == 1 {
+        accounts[0].active = true;
+    }
+    accounts
 }
 
 /// The token gh's own store holds for `login`. Inside an agent session
@@ -308,6 +358,29 @@ pub fn refresh_scopes(host: &str, scopes: &[&str]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plain_status_multi_account() {
+        let text = "github.com\n  \u{2713} Logged in to github.com account me (keyring)\n  - Active account: false\n  - Token scopes: 'repo', 'gist'\n\n  \u{2713} Logged in to github.com account BOT (/home/u/.config/gh/hosts.yml)\n  - Active account: true\n  - Git operations protocol: https\n  - Token: gho_****\n  - Token scopes: 'admin:public_key', 'repo', 'workflow'\n";
+        let accts = super::parse_plain_status(text, "github.com");
+        assert_eq!(accts.len(), 2);
+        assert!(!accts[0].active);
+        assert_eq!(accts[1].login, "BOT");
+        assert!(accts[1].active);
+        assert_eq!(accts[1].scopes(), ["admin:public_key", "repo", "workflow"]);
+    }
+
+    #[test]
+    fn plain_status_legacy_single_account() {
+        let text = "github.com\n  \u{2713} Logged in to github.com as BOT (oauth_token)\n  \u{2713} Token scopes: repo\n";
+        let accts = super::parse_plain_status(text, "github.com");
+        assert_eq!(accts.len(), 1);
+        assert!(accts[0].active);
+        assert!(
+            super::parse_plain_status("You are not logged into any GitHub hosts.", "github.com")
+                .is_empty()
+        );
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
