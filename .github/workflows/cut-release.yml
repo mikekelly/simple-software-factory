@@ -1,14 +1,21 @@
-# Cut and publish a release in one manual run (Actions > cut-release > Run
-# workflow, or `gh workflow run cut-release.yml -f version=X.Y.Z`):
+# Cut a release in two manual runs (Actions > cut-release > Run workflow):
+#
+#   gh workflow run cut-release.yml -f version=X.Y.Z                 # to a draft
+#   gh workflow run cut-release.yml -f version=X.Y.Z -f publish=true # after the smoke test
+#
+# The first run stops at the draft release, so its packages can be
+# smoke-tested on a fresh host (docs/smoke-testing.md) before anyone can
+# install them. The second resumes from the build (the draft keeps the
+# assets that were tested; release.yml never overwrites them) and publishes.
 #
 # 1. prepare: on master, bump Cargo.toml/Cargo.lock to X.Y.Z and push that
 #    commit, then pin packaging/release/PKGBUILD to its GitHub archive
 #    (pkgver, pkgrel=1, _source_commit, sha256sums), push that commit and tag
 #    it vX.Y.Z.
 # 2. build: release.yml for the tag: packages, tests and a draft release.
-# 3. publish: the draft becomes the latest release.
-# 4. homebrew: homebrew.yml builds macOS bottles, attaches them to the
-#    release and pushes the formula to the tap.
+# 3. publish (only with publish=true): the draft becomes the latest release.
+# 4. homebrew (only after publish): homebrew.yml builds macOS bottles,
+#    attaches them to the release and pushes the formula to the tap.
 #
 # Rerunning with a version whose tag already exists skips step 1 and resumes
 # from the build, so a failed build or publish is retried the same way.
@@ -21,6 +28,11 @@ on:
         description: "Version to release, X.Y.Z (no v)"
         required: true
         type: string
+      publish:
+        description: "Publish the draft (only after it passed the smoke test)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -99,6 +111,9 @@ jobs:
 
   publish:
     needs: [prepare, build]
+    # Off by default: a release is published only after its draft passed the
+    # smoke test. homebrew needs this job, so it is skipped with it.
+    if: inputs.publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
