@@ -993,6 +993,8 @@ pub struct StubState {
     /// The whole text of every start and every delivery (the `log` keeps
     /// only its first line), for the tests about what a session is told.
     pub prompts: Vec<String>,
+    /// How many times a project checkout was ensured (a clone, on a host).
+    pub projects: u32,
     /// When set, the next workspace creation fails with this message.
     pub create_error: Option<String>,
     /// When set, the next `start` fails with this message: a harness that
@@ -1088,6 +1090,7 @@ impl StubDriver {
     }
 
     fn ensure_project(&self) -> Result<ProjectSetup> {
+        self.with(|s| s.projects += 1);
         Ok(ProjectSetup {
             repo_id: "stub".into(),
         })
