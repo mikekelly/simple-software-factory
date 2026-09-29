@@ -55,7 +55,10 @@ pub use cli::{
     handover_recorded_text, server_main, summary_quotes_a_sign_in_screen_text,
 };
 pub use config::path_with_local_bin;
+#[doc(hidden)]
+pub use release::credential_helper;
 
 pub(crate) use cli::{
-    client_executable, hostname, purge, remote_client_command, server_executable,
+    client_executable, companion_client_path, hostname, purge, remote_client_command,
+    server_executable,
 };

@@ -39,17 +39,26 @@ pub fn unattended(command: &mut tokio::process::Command) -> &mut tokio::process:
         && std::env::var_os("GIT_CONFIG_COUNT").is_none()
         && let Ok(me) = std::env::current_exe()
     {
-        // After a package upgrade the running daemon's binary reads as
-        // "<path> (deleted)"; the new one is at the same path.
-        let me = me.to_string_lossy();
-        let me = me.strip_suffix(" (deleted)").unwrap_or(&me);
-        let me = me.replace('\'', "'\\''");
         command
             .env("GIT_CONFIG_COUNT", "1")
             .env("GIT_CONFIG_KEY_0", "credential.helper")
-            .env("GIT_CONFIG_VALUE_0", format!("!'{me}' git-credential"));
+            .env("GIT_CONFIG_VALUE_0", credential_helper(&me));
     }
     command
+}
+
+/// The `credential.helper` value that runs `ssf git-credential` for the
+/// running binary `me`. The daemon runs as `ssf-server`, which has no such
+/// subcommand, so it names the `ssf` client beside it, where the package and
+/// standalone layouts both install it (#682).
+pub fn credential_helper(me: &std::path::Path) -> String {
+    // After a package upgrade the running daemon's binary reads as
+    // "<path> (deleted)"; the new one is at the same path.
+    let me = me.to_string_lossy();
+    let me = me.strip_suffix(" (deleted)").unwrap_or(&me);
+    let client = crate::companion_client_path(std::path::Path::new(me));
+    let client = client.to_string_lossy().replace('\'', "'\\''");
+    format!("!'{client}' git-credential")
 }
 
 /// How long one git command may run before it is killed: a hung fetch
@@ -510,6 +519,23 @@ pub(crate) mod testkit {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn credential_helper_names_the_client_beside_the_daemon() {
+        use super::credential_helper;
+        use std::path::Path;
+        assert_eq!(
+            credential_helper(Path::new("/usr/bin/ssf-server")),
+            "!'/usr/bin/ssf' git-credential"
+        );
+        assert_eq!(
+            credential_helper(Path::new("/usr/bin/ssf-server (deleted)")),
+            "!'/usr/bin/ssf' git-credential"
+        );
+        assert_eq!(
+            credential_helper(Path::new("/opt/it's/ssf")),
+            "!'/opt/it'\\''s/ssf' git-credential"
+        );
+    }
     use super::testkit::*;
     use super::*;
 

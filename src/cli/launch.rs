@@ -275,7 +275,7 @@ pub(crate) fn client_executable() -> std::io::Result<PathBuf> {
     std::env::current_exe().map(|p| companion_client_path(&p))
 }
 
-pub(super) fn companion_client_path(server: &Path) -> PathBuf {
+pub(crate) fn companion_client_path(server: &Path) -> PathBuf {
     let name = server
         .file_name()
         .and_then(|n| n.to_str())
