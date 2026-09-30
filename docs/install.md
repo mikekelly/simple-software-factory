@@ -2,6 +2,8 @@
 
 Read this when someone asks you to set up Simple Software Factory for them, from nothing to a factory that watches one repository and has worked its first issue. Offline copy: `ssf skill setup`.
 
+**Check the guidance is current.** If `ssf` is already installed where you are working, compare `ssf --version` with the latest release (`gh release view --repo mikekelly/simple-software-factory --json tagName`). If it is older, its `ssf skill setup` is stale: upgrade it first, or read this file from `master`. When installing onto another machine, follow the guidance of the version being installed there, not of the client you happen to have.
+
 ## 0. Who this is for, and the outcome
 
 You are an agent doing this on behalf of a person, on a machine you have not seen before. The person owns every decision that costs money, creates an account, needs root on their machine, or widens who can drive the factory. You own the probing, the reading, the unprivileged commands, and the diagnosis.

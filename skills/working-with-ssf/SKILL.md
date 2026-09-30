@@ -13,7 +13,12 @@ locally, in a VM, or over SSH. Linux and macOS are supported.
 
 ## Start here
 
-1. Is `ssf` on `PATH`? If yes, run `ssf skill`. It prints a router keyed on
+1. Is `ssf` on `PATH`? If yes, first check it is current: compare
+   `ssf --version` with the latest release
+   (`gh release view --repo mikekelly/simple-software-factory --json tagName`).
+   If it is older, upgrade it before reading its guidance, or follow the
+   `master` docs linked below instead. Installing onto another machine,
+   follow the guidance of the version being installed there. Then run `ssf skill`. It prints a router keyed on
    what the person asked, from the version actually installed, and
    `ssf skill <topic>` prints each topic. Read those, not this file.
 2. If not, the person wants ssf installed. Read
