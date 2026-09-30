@@ -90,7 +90,7 @@ harness knows it.
 | Source | Which harnesses | Where it is read |
 |--------|-----------------|------------------|
 | `catalogue` | `claude`, `codex` | the harness's own on-disk model catalogue under its config home (`$CLAUDE_CONFIG_DIR`, default `~/.claude`; `$CODEX_HOME`, default `~/.codex`) |
-| `command` | `pi`, `omp`, `opencode`, `grok` | the harness itself, asked for its model list (`grok models` answers without a sign-in; a listing that fails or lists nothing falls back to the table) |
+| `command` | `pi`, `omp`, `opencode`, `grok`; `codex` without a catalogue | the harness itself, asked for its model list (`grok models` answers without a sign-in; `codex debug models` asks no model and answers before codex has first run; a listing that fails or lists nothing falls back to the table) |
 | `table` | the rest, or when the machine has neither | ssf's built-in table |
 
 `--json` prints `harness`, `models` and `source` (its `kind` is
