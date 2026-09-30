@@ -322,17 +322,27 @@ without waiting for an Omarchy release. Everything Omarchy's builder needs
 is in that directory plus the tag tarball, which it downloads
 unauthenticated: the repository has to be public for the build to work.
 
-Cutting a release is one command. Run the `cut-release` workflow with the
-new version, from Actions or with
+Cutting a release is two runs of the `cut-release` workflow, with a smoke
+test between them. Every release is smoke-tested on a fresh host before it
+is published: unit tests and CI do not exercise the installed packages,
+the service or a real clone, and v0.23.0 shipped two fixes that broke there.
 
 ```sh
-gh workflow run cut-release.yml -f version=X.Y.Z
+gh workflow run cut-release.yml -f version=X.Y.Z                  # 1. to a draft
+gh release download vX.Y.Z --pattern 'ssf_X.Y.Z-1_amd64.deb'      # 2. smoke-test it
+gh workflow run cut-release.yml -f version=X.Y.Z -f publish=true  # 3. publish
 ```
 
-and watch it to completion. Everything else is automatic: it does steps 1
-and 2 below on `master` (bump, pin `packaging/release/PKGBUILD` to the bump
-commit's archive, tag), builds the packages with `release.yml`, publishes
-the release and pushes the Homebrew formula with `homebrew.yml`. Do not tag
+The first run does steps 1 and 2 below on `master` (bump, pin
+`packaging/release/PKGBUILD` to the bump commit's archive, tag) and builds
+the packages into a draft release with `release.yml`, then stops. Download
+the draft's package (drafts are visible to maintainers only) and run the
+install path on a fresh host as in [smoke-testing.md](smoke-testing.md),
+including every "Not verified" item named by the pull requests in the
+release. If it passes, the second run resumes from the build, keeps the
+tested assets, publishes the release and pushes the Homebrew formula with
+`homebrew.yml`. If it fails, fix on `master` and cut the next patch
+version; delete the failed draft with `gh release delete vX.Y.Z`. Do not tag
 by hand: a hand-pushed tag only builds a draft release. A failed step is a
 bug in the workflow to fix, not a step to finish by hand; rerunning with
 the same version after a failure resumes from the build. The steps it
