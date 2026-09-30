@@ -71,7 +71,7 @@ command -v gh herdr
 
 | What the probes say | Path |
 |---|---|
-| Linux or macOS, and the factory should run on this machine | **On this machine**: the first rung of [the runtime ladder](install-common.md#3-choose-the-runtime) that holds (a VM, else an Incus guest, else host mode). [install-local.md](install-local.md) (`ssf skill setup-local`). |
+| Linux or macOS, and the factory should run on this machine | **On this machine**: the first rung of [the runtime ladder](install-common.md#3-choose-the-runtime) that holds (a VM, else an Incus guest, else host mode in a Docker container, else host mode on the machine itself). [install-local.md](install-local.md) (`ssf skill setup-local`). |
 | This machine is a server or VPS dedicated to the factory, running nothing else | **Host mode on a dedicated server**. [install-server.md](install-server.md) (`ssf skill setup-server`). |
 | This machine is a server or VPS that also runs something else (you are its resident agent, or other services) | **A guest on the server** (Firecracker, else Incus). [install-server.md](install-server.md) (`ssf skill setup-server`). |
 | Too few resources here, or the person does not want agents on this machine | **A server** runs the factory; this machine only drives it. [install-server.md](install-server.md) (`ssf skill setup-server`); [install-client.md](install-client.md) (`ssf skill setup-client`) here. |
@@ -113,7 +113,7 @@ Read the route document for the path the person chose, and follow it to the end;
 
 | Route | Document | Offline |
 |---|---|---|
-| On this machine: local VM, local Incus guest or host mode | [install-local.md](install-local.md) | `ssf skill setup-local` |
+| On this machine: local VM, local Incus guest, Docker container or host mode | [install-local.md](install-local.md) | `ssf skill setup-local` |
 | A server, dedicated or shared, and access to it | [install-server.md](install-server.md) | `ssf skill setup-server` |
 | Client only, driving a factory elsewhere | [install-client.md](install-client.md) | `ssf skill setup-client` |
 | Steps every route shares, from the runtime choice and install to the checklist | [install-common.md](install-common.md) | `ssf skill setup-common` |

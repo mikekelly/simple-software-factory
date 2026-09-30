@@ -144,6 +144,9 @@ There are two choices, and ssf never picks one for you:
 - **lima** (below): a real VM under qemu, but without KVM qemu emulates the
   CPU in software, and agent builds run about 30 times slower.
 
+When neither works, run host mode inside a [Docker container](#docker-container)
+rather than on the machine itself.
+
 ### Incus
 
 Setting Incus up needs root once; ssf does not do it, and `ssf vm build`,
@@ -190,6 +193,61 @@ sudo iptables -t nat -A POSTROUTING -s 10.77.0.0/24 ! -d 10.77.0.0/24 -j MASQUER
 sudo incus profile device add default root disk path=/ pool=default
 sudo incus profile device add default eth0 nic network=incusbr0 name=eth0
 ```
+
+### Docker container
+
+When Incus cannot run here either, for example because its networking fails,
+run the factory in host mode inside a Docker container. ssf has no Docker
+backend: the container is the "host", with systemd as its init so
+`ssf setup`, linger and `systemctl --user` work as on any machine. Agents run
+as the container's `factory` user, with passwordless sudo inside it, and see
+none of the person's files. Installing Docker needs root once (`sudo apt
+install docker.io`, `sudo pacman -S docker`, `sudo dnf install moby-engine`,
+then `sudo systemctl enable --now docker`).
+
+Put the matching `.deb` ([4.1](install-common.md#41-linux-package)) in an
+empty directory with this `Dockerfile`:
+
+```dockerfile
+FROM debian:13
+RUN apt-get update && apt-get install -y systemd systemd-sysv dbus-user-session sudo openssh-server curl ca-certificates
+COPY ssf_*.deb /tmp/
+RUN apt-get install -y /tmp/ssf_*.deb && rm /tmp/ssf_*.deb
+RUN curl -fsSL -o /usr/local/bin/herdr https://github.com/herdrdev/herdr/releases/latest/download/herdr-linux-$(uname -m) && chmod +x /usr/local/bin/herdr
+RUN useradd -m -s /bin/bash factory && echo 'factory ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/factory \
+ && mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/factory
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
+```
+
+Build and start it, keeping `/home` in a named volume so the factory's
+configuration, clones and sign-ins survive a rebuild, and publishing SSH on
+loopback only:
+
+```sh
+sudo docker build -t ssf-host .
+sudo docker run -d --name ssf --hostname ssf --restart unless-stopped \
+  --cgroupns=host --tmpfs /run --tmpfs /run/lock \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:rw -v ssf-home:/home \
+  -p 127.0.0.1:2222:22 ssf-host
+sudo docker exec -i ssf sh -c 'install -d -m700 -o factory -g factory ~factory/.ssh && cat > ~factory/.ssh/authorized_keys && chown factory: ~factory/.ssh/authorized_keys' < ~/.ssh/id_ed25519.pub
+printf 'Host ssf-docker\n  HostName 127.0.0.1\n  Port 2222\n  User factory\n' >> ~/.ssh/config
+ssh ssf-docker true
+```
+
+Run everything after this over `ssh ssf-docker`, not `docker exec`: a login
+sets `USER` and the user manager's environment, which `ssf setup` needs. On a
+kernel without bridge networking (the same failure that stops Incus), replace
+`-p 127.0.0.1:2222:22` with `--network=host`, and move the container's SSH off
+the host's port 22 before `ssh`:
+
+```sh
+sudo docker exec ssf sh -c "printf 'Port 2222\nListenAddress 127.0.0.1\n' > /etc/ssh/sshd_config.d/ssf.conf && systemctl restart ssh"
+```
+
+Upgrading means rebuilding the image with the new `.deb` and recreating the
+container; the `ssf-home` volume keeps the factory. Packages agents install
+outside `/home` are lost then.
 
 ### lima
 

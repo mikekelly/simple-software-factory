@@ -20,7 +20,7 @@ laptop  ──ssh──▶  server (factory account, host mode)
 laptop  ──ssh──▶  server (resident agent)  ──▶  ssf guest (Firecracker, or Incus without KVM)
 ```
 
-Take [3. Choose the runtime](install-common.md#3-choose-the-runtime) (`ssf skill setup-common`) with the probes run on the server. On this route, root for Incus and the package is the server's: give the person the commands to run over SSH there. A VM or Incus guest rung leads to [A guest on the server](#a-guest-on-the-server). The host mode rung here means a factory account of its own, kept apart from the resident agent's, following [Host mode on a dedicated server](#host-mode-on-a-dedicated-server) from its step 2.
+Take [3. Choose the runtime](install-common.md#3-choose-the-runtime) (`ssf skill setup-common`) with the probes run on the server. On this route, root for Incus and the package is the server's: give the person the commands to run over SSH there. A VM or Incus guest rung leads to [A guest on the server](#a-guest-on-the-server). The Docker container rung follows [Host mode in a Docker container](install-local.md#host-mode-in-a-docker-container) (`ssf skill setup-local`) run on the server, with HOST an SSH entry that reaches the container's port through the server (`ProxyJump`). The host mode rung here means a factory account of its own, kept apart from the resident agent's, following [Host mode on a dedicated server](#host-mode-on-a-dedicated-server) from its step 2.
 
 **Who installs** a guest. Two entry points reach the same end state; follow the one that is you:
 

@@ -28,9 +28,17 @@ ssf config set vm.backend incus
 
 Then [4.1 Linux package](#41-linux-package), and later [6.1 The VM](#61-the-vm), which builds the Incus guest.
 
+### Docker container rung
+
+Conditions: Linux, no rung above fits (no usable KVM, and Incus cannot be set up or its networking does not work), and Docker runs here or root is available once to install it.
+
+Tell the person: the factory runs in host mode inside a Docker container, as that container's own user with root inside it, so agents administer their own environment while the person's files stay outside; it shares the host kernel and is weaker isolation than a VM or an Incus guest.
+
+Then: build and start the container with [platform-specifics.md#docker-container](platform-specifics.md#docker-container) (`ssf skill specifics`), which installs the package in it, and follow your route's Docker steps.
+
 ### Host mode rung
 
-Conditions: no rung above fits (no usable KVM and Incus cannot be set up, for want of root or a supported kernel; no systemd user session; no distribution package for a guest; or a Mac too small for a VM), the machine has enough CPU and RAM for the sessions, and the person accepts the tradeoff below.
+Conditions: no rung above fits (no usable KVM, and neither Incus nor Docker can be set up, for want of root or a supported kernel; no systemd user session; no distribution package for a guest; or a Mac too small for a VM), the machine has enough CPU and RAM for the sessions, and the person accepts the tradeoff below.
 
 Tell the person: the agents run as a Unix user on the machine itself, see that user's files and credentials, run with the harness's permission prompts bypassed, and are kept from anything else on the machine only by Unix permissions.
 
