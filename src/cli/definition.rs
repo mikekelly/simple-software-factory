@@ -329,6 +329,9 @@ pub(super) enum Command {
         /// Print one JSON object (`problems`, `checks`) instead of text.
         #[arg(long)]
         json: bool,
+        /// Acknowledge the untagged posts by the bot seen so far; doctor then fails only on later ones.
+        #[arg(long)]
+        ack_untagged: bool,
     },
     /// The background service, and desktop integration where a desktop offers it (Factory menu entries on Omarchy).
     Ui {

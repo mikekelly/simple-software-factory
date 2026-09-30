@@ -56,7 +56,7 @@ fn report_json(problems: usize, checks: Vec<Value>) -> Value {
     json!({"problems": problems, "checks": checks})
 }
 
-pub(super) async fn doctor(json_out: bool) -> Result<()> {
+pub(super) async fn doctor(json_out: bool, ack_untagged: bool) -> Result<()> {
     JSON_MODE.store(json_out, std::sync::atomic::Ordering::Relaxed);
     let problems = std::cell::Cell::new(0);
     let check = |ok: bool, msg: String| {
@@ -983,13 +983,29 @@ session/grok-bridge.log)"
         .flat_map(|r| r.issues.values())
         .flat_map(|i| i.untagged.values().cloned())
         .collect();
+    let mut acked = load_acked_untagged();
+    if ack_untagged {
+        acked.extend(untagged.iter().cloned());
+        match save_acked_untagged(&acked) {
+            Ok(()) => record(
+                Level::Note,
+                format!(
+                    "acknowledged {} untagged post(s) by the bot",
+                    untagged.len()
+                ),
+            ),
+            Err(e) => check(false, format!("acknowledging untagged posts: {e:#}")),
+        }
+    }
+    let (seen, untagged): (Vec<String>, Vec<String>) =
+        untagged.into_iter().partition(|u| acked.contains(u));
     check(
         untagged.is_empty(),
         if untagged.is_empty() {
             "every post by the bot carried an origin tag".to_string()
         } else {
             format!(
-                "{} post(s) by the bot arrived without an origin tag (a person posting as the bot, or the gh shim not in effect): {}",
+                "{} post(s) by the bot arrived without an origin tag (a person posting as the bot, or the gh shim not in effect): {}; once understood, `ssf doctor --ack-untagged` acknowledges them",
                 untagged.len(),
                 untagged
                     .iter()
@@ -1000,6 +1016,15 @@ session/grok-bridge.log)"
             )
         },
     );
+    if !seen.is_empty() {
+        record(
+            Level::Note,
+            format!(
+                "{} earlier untagged post(s) by the bot are acknowledged",
+                seen.len()
+            ),
+        );
+    }
     check(
         answering,
         format!(
@@ -1092,6 +1117,31 @@ pub(super) async fn cache_loop() {
         }
         tokio::time::sleep(Duration::from_secs(15 * 60)).await;
     }
+}
+
+/// Untagged posts by the bot an operator has acknowledged (`ssf doctor
+/// --ack-untagged`), by URL. A file of its own beside the state, so the
+/// CLI never writes the daemon's `state.json`.
+fn acked_untagged_path() -> std::path::PathBuf {
+    crate::config::state_dir().join("untagged-acked.json")
+}
+
+fn load_acked_untagged() -> std::collections::BTreeSet<String> {
+    std::fs::read_to_string(acked_untagged_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_acked_untagged(acked: &std::collections::BTreeSet<String>) -> Result<()> {
+    let path = acked_untagged_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(acked)?)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
 }
 
 async fn run_cached_doctor() -> Value {

@@ -1107,7 +1107,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             print!("{}", prompt::guide(&bot, factory_vm::in_guest()));
             Ok(())
         }
-        Command::Doctor { json } => doctor(json).await,
+        Command::Doctor { json, ack_untagged } => doctor(json, ack_untagged).await,
         Command::Vm { command } => vm_cmd(command).await,
         Command::Ui { command } => ui_cmd(command).await,
         Command::Uninstall {

@@ -121,7 +121,10 @@ fn the_backend_tooling_is_a_note_on_the_host_and_nothing_in_the_guest() {
     // Why it is only ever a note: `doctor` is forwarded, so a factory
     // in a running VM answers doctor from the guest...
     assert_eq!(
-        forwarded_name(&Command::Doctor { json: false }),
+        forwarded_name(&Command::Doctor {
+            json: false,
+            ack_untagged: false
+        }),
         Some("doctor")
     );
     assert!(factory_vm::forwards("doctor"));
