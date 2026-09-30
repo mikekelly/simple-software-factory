@@ -210,6 +210,8 @@ cannot run a VM at all, use host mode or a dedicated server instead.
 
 ## Dedicated servers
 
+**Host mode only; a guest on the server skips this section** (its agents run as the guest's `ssf` user, which already has passwordless sudo, and the `.deb`/`.rpm` already brings gh, git and jq).
+
 Applies when the factory runs on a server or VPS dedicated to it, running
 nothing else: a bot account's dedicated server, or a VPS from Hetzner,
 Linode, OVH or similar. This is the recommended path for such a server

@@ -2,6 +2,8 @@
 
 Read this when someone asks you to set up Simple Software Factory for them, from nothing to a factory that watches one repository and has worked its first issue. Offline copy: `ssf skill setup`.
 
+**Check the guidance is current.** If `ssf` is already installed where you are working, compare `ssf --version` with the latest release (`gh release view --repo mikekelly/simple-software-factory --json tagName`). If it is older, its `ssf skill setup` is stale: upgrade it first, or read this file from `master`. When installing onto another machine, follow the guidance of the version being installed there, not of the client you happen to have.
+
 ## 0. Who this is for, and the outcome
 
 You are an agent doing this on behalf of a person, on a machine you have not seen before. The person owns every decision that costs money, creates an account, needs root on their machine, or widens who can drive the factory. You own the probing, the reading, the unprivileged commands, and the diagnosis.
@@ -77,6 +79,20 @@ command -v gh herdr
 | Too few resources here, or the person does not want agents on this machine | **A server** runs the factory; this machine only drives it. [A server](#a-server); section 3.4 here. |
 | A factory already runs somewhere else | **Client only**. Section 3.4. |
 
+### The setups at a glance
+
+Four setups install a factory. Each step below says which setups it applies to, and each command block where it runs: the **laptop** (the person's own machine), the **server**, or the **guest**. Where the daemon runs decides where the dashboard and Tailscale go.
+
+| | Local VM | Guest on a server | Host mode, dedicated server | Host mode, locally |
+|---|---|---|---|---|
+| Machines | laptop, guest | laptop, server, guest | laptop, server | laptop |
+| Installed on the laptop | ssf package or Homebrew | ssf client only (3.4) | ssf client only (3.4) | ssf package or Homebrew, herdr, harness |
+| Installed on the server | — | ssf package (brings gh, git, jq), Incus if no KVM; nothing else by hand | ssf, gh, git, jq, herdr, harness ([Dedicated servers](platform-specifics.md#dedicated-servers)) | — |
+| Installed in the guest | by `ssf vm build` | by `ssf vm build` | — | — |
+| Agents run as | guest's `ssf` user | guest's `ssf` user | the server's factory account | the person's own user |
+| Passwordless sudo | guest's `ssf` user (already) | guest's `ssf` user (already); **not** the server's account | the factory account (granted by the person) | nobody new |
+| Daemon, dashboard, Tailscale | guest (`ssf vm tailscale`) | guest (`ssf vm tailscale`) | server | laptop |
+
 ### Is a VM reasonable here
 
 `ssf vm build` sizes the guest from the host and prints what it chose:
@@ -132,6 +148,8 @@ Tier 1, tested by hand before each release: **Arch/Omarchy with Firecracker**, *
 
 ### 3.1 Linux package
 
+*Setups: local VM and host mode locally (on the laptop); guest on a server and host mode on a dedicated server (on the server).*
+
 Download the matching asset from [GitHub Releases](https://github.com/mikekelly/simple-software-factory/releases) yourself, print its absolute path, then give the person the install command for their family with that path filled in, and wait for them to confirm it ran:
 
 | Family | Command |
@@ -151,7 +169,7 @@ Where `gh` is already installed, `gh release download --repo mikekelly/simple-so
 
 One package holds both the `ssf` client and the `ssf-server` daemon. The `.deb` and `.rpm` are built for x86_64 and aarch64; the Arch package for x86_64 only.
 
-Prerequisites the package does not always bring: GitHub CLI 2.40 or newer, Git, jq, an OpenSSH client (`ssh-keygen` enrolls the bot's key), and, for host mode, herdr, which only Omarchy's repositories carry as a package. The VM installs its own herdr in the guest. Where to get herdr and the other distro-specific commands and quirks are in [platform-specifics.md](platform-specifics.md). tmux is optional: scratch sessions run in herdr, and tmux is used only to reach one still running in tmux from an older ssf until it next starts ([sessions.md](sessions.md#scratch-sessions)).
+In a guest on a server, install nothing else on the server: the `.deb` and `.rpm` bring `gh`, Git and jq, and `ssf vm build` provisions the guest. Elsewhere, prerequisites the package does not always bring: GitHub CLI 2.40 or newer, Git, jq, an OpenSSH client (`ssh-keygen` enrolls the bot's key), and, for host mode, herdr, which only Omarchy's repositories carry as a package. The VM installs its own herdr in the guest. Where to get herdr and the other distro-specific commands and quirks are in [platform-specifics.md](platform-specifics.md). tmux is optional: scratch sessions run in herdr, and tmux is used only to reach one still running in tmux from an older ssf until it next starts ([sessions.md](sessions.md#scratch-sessions)).
 
 ```sh
 ssf --version
@@ -159,6 +177,8 @@ command -v ssf-server
 ```
 
 ### 3.2 macOS, Homebrew
+
+*Setups: local VM and host mode locally, on a Mac laptop.*
 
 ```sh
 brew install mikekelly/tap/ssf
@@ -168,6 +188,8 @@ ssf --version
 The formula brings `gh` and `lima`. `ssf setup` (section 4) enables a launchd agent per target, so `brew services` is not used. The VM path needs nothing more; for host mode on the Mac, `brew install herdr` as well. Details in [platform-specifics.md](platform-specifics.md#macos).
 
 ### 3.3 Standalone binaries on a rented host
+
+*Setups: host mode only (on the server, or the laptop), when no package fits. A guest needs the package.*
 
 Releases publish static musl Linux binaries for `x86_64` and `aarch64`. Take the client and the server from the **same release** and install both under unversioned names in the same directory. Do not pin a version here: pick the current release.
 
@@ -204,6 +226,8 @@ supervisor, a foreground `ssf-server` — is running, not inactive (#463).
 
 ### 3.4 Client only, driving a factory elsewhere
 
+*Setups: guest on a server and host mode on a dedicated server, on the laptop.*
+
 Install the client the same way (package, Homebrew, or the `ssf` binary alone) and reach the remote factory over SSH. SSF opens no TCP listener; SSH starts the server-side endpoint on the far machine, which needs `ssf-server` on its noninteractive SSH PATH.
 
 ```sh
@@ -213,6 +237,8 @@ ssf --server user@host status
 For a stable name instead of a destination, see the server catalog in [configuration.md#server-catalog](configuration.md#server-catalog). A client-only machine needs no daemon and no `ssf setup`.
 
 ## 4. `ssf setup` and the service
+
+*Setups: all but client only. Runs where ssf was installed in section 3: the laptop for a local VM or host mode locally, the server otherwise (as the factory account in host mode).*
 
 On the package and Homebrew paths only. On Linux, first check linger with `loginctl show-user "$USER" -p Linger --value`; if it is not `yes`, have the person run `sudo loginctl enable-linger USER` (their user name filled in), because `ssf setup` would otherwise try `sudo` itself. Then:
 
@@ -243,6 +269,8 @@ At this point failures for the bot, driver, harness and repositories are expecte
 
 ### The VM
 
+*Setups: local VM (on the laptop) and guest on a server (on the server).*
+
 ```sh
 ssf vm build
 ssf vm status
@@ -261,6 +289,8 @@ followed by the provisioning log and the harnesses installed. Expect `ssf vm sta
 Re-running `ssf vm build` after a failure is safe; it keeps an existing image unless `--force` is given, and it keeps the data disk either way. Sessions run as the guest's `ssf` user with passwordless sudo; the VM is the isolation boundary. More in [vm.md](vm.md) (`ssf skill vm`).
 
 ### Host mode
+
+*Setups: host mode, locally or on a dedicated server, on the machine the factory runs on.*
 
 Agents run as this Unix user and can reach this user's files and credentials, and the default launch commands bypass the harness's permission prompts because the terminals are unattended. Say this plainly to the person before choosing it.
 
@@ -302,7 +332,7 @@ herdr machine list
 
 Expect `Remote server is ready.` If it stops at a prompt instead (a version mismatch, or an offer to install or update the remote herdr), hand the same command, without `</dev/null`, to the person to run interactively, answering No to replacing a running server unless they ask: its panes are live sessions. `herdr --remote ssf-default` then attaches (for a rented host, `herdr --remote user@host --session ssf`). Details and the limits of what a local herdr command reaches are in [liaison.md](liaison.md#inspect-the-factorys-herdr-server).
 
-Root: agents in a VM or on a rented server should be able to `sudo` without a password, so they can install what their work needs without stopping. The guest's `ssf` user already has it. On a dedicated server the person grants it to the factory account; give them the exact commands ([Dedicated servers](platform-specifics.md#dedicated-servers)). Never grant it on the person's own machine in host mode: there, the agents are already running as the person.
+Root: agents in a guest or in host mode on a dedicated server should be able to `sudo` without a password, so they can install what their work needs without stopping. The guest's `ssf` user already has it. A guest on a server needs nothing on the server itself: do not grant the server's account passwordless sudo. In host mode on a dedicated server the person grants it to the factory account; give them the exact commands ([Dedicated servers](platform-specifics.md#dedicated-servers)). Never grant it on the person's own machine in host mode: there, the agents are already running as the person.
 
 ### 5.1 A guest on a server: access for the resident agent and the laptop
 
@@ -546,13 +576,13 @@ Two lines are expected to fail before the first issue and need no action: the re
 
 ### 10.1 Offer remote access, the dashboard and terminal access together
 
-The install is not finished until this is asked. Ask one question covering all four, because the answers depend on each other (the dashboard's bind address follows the Tailscale answer):
+The install is not finished until this is asked. Ask one question covering all three, because the answers depend on each other (the dashboard's bind address follows the Tailscale answer):
 
 > "Last, some optional extras. Do you want: (a) to reach the factory from other devices over Tailscale; (b) the web dashboard and its Chrome extension, which shows each agent's state on GitHub issue and pull request pages; (c) to watch and type into an agent's terminal from them? Any, all or none."
 
 Set up what they accept, in this order.
 
-**Remote access (a).** On a VM target run `ssf vm tailscale` and pass the login URL it prints to the person; it prints the machine name and address once enrolled. That enrolls the guest, which serves SSH, herdr and the web dashboard: that one step is all remote access needs. In host mode or on a rented host, Tailscale goes on that machine itself: give the person the install command from [tailscale.com/download](https://tailscale.com/download) and `sudo tailscale up`, and pass along its login URL. Details in [platform-specifics.md](platform-specifics.md#tailscale).
+**Remote access (a).** On a VM target run `ssf vm tailscale` and pass the login URL it prints to the person; it prints the machine name and address once enrolled. That enrolls the guest, which serves SSH, herdr and the web dashboard: that one step is all remote access needs. Tailscale goes where the daemon runs: the guest when there is one (`ssf vm tailscale`, above, run on the laptop for a local VM or on the server for a guest on a server; never Tailscale on the server itself), otherwise the machine itself in host mode: give the person the install command from [tailscale.com/download](https://tailscale.com/download) and `sudo tailscale up`, and pass along its login URL. Details in [platform-specifics.md](platform-specifics.md#tailscale).
 
 **Dashboard and extension (b).** Where the browser reaches it depends on (a):
 
@@ -565,7 +595,7 @@ Set up what they accept, in this order.
 
 The tunnel must stay open for the dashboard and the extension to work, so say that and let the person choose between it and no dashboard (or Tailscale after all). Never bind a public address instead.
 
-The factory's daemon serves the dashboard wherever the daemon runs: the guest in VM mode, the machine itself in host mode. The setup is the same in every mode, and `ssf config` reaches the right config. Bind it to the factory's Tailscale address when it is on the tailnet (in VM mode, the guest's, after `ssf vm tailscale`), so only tailnet devices can reach it; otherwise keep the loopback default. A loopback dashboard in a VM is also on the host's loopback at the same port (lima forwards it; for Firecracker and Incus the ssf supervisor does, see [dashboard.md](dashboard.md#optional-server-web-dashboard)). Never bind anything else; [dashboard.md](dashboard.md#bind-rules) has the rules.
+The factory's daemon serves it wherever the daemon runs: the guest in VM mode and for a guest on a server, the machine itself in host mode. Nothing about the dashboard goes on a server that hosts a guest, and with Tailscale no SSH tunnel is needed: bind it to the guest's Tailscale address. Run the commands below where you ran `ssf setup` (the laptop, or the server for a guest on a server or host mode on one); they reach the daemon's config. The setup is the same in every mode, and `ssf config` reaches the right config. Bind it to the factory's Tailscale address when it is on the tailnet (in VM mode, the guest's, after `ssf vm tailscale`), so only tailnet devices can reach it; otherwise keep the loopback default. A loopback dashboard in a VM is also on the host's loopback at the same port (lima forwards it; for Firecracker and Incus the ssf supervisor does, see [dashboard.md](dashboard.md#optional-server-web-dashboard)). Never bind anything else; [dashboard.md](dashboard.md#bind-rules) has the rules.
 
 ```sh
 ssf config set dashboard.enabled true
