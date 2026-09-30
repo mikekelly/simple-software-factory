@@ -522,8 +522,35 @@ pub(crate) fn codex_catalogue() -> Result<Catalogued> {
         .join("models_cache.json");
     let raw =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let cache: serde_json::Value =
-        serde_json::from_str(&raw).context("parsing codex's model cache")?;
+    let models = parse_codex_models(&raw).context("parsing codex's model cache")?;
+    Ok(Catalogued {
+        path,
+        models,
+        stale_at: None,
+    })
+}
+
+/// `codex debug models`: the catalogue codex would cache, in the same shape,
+/// fetched when codex is signed in and else the one bundled with the binary.
+/// It asks no model, so it spends no quota, and it answers on a machine where
+/// codex has never run and so has written no `models_cache.json` yet (#687).
+/// A listing that fails lists nothing, and the table answers instead.
+pub(crate) fn codex_models() -> Result<Vec<String>> {
+    // Nothing is run under test: the codex on the machine running the tests
+    // is not the test's to ask, the same rule `harness_dir` follows.
+    #[cfg(test)]
+    return Ok(Vec::new());
+    #[cfg(not(test))]
+    Ok(run("codex", &["debug", "models"])
+        .ok()
+        .and_then(|raw| parse_codex_models(&raw).ok())
+        .unwrap_or_default())
+}
+
+/// The slugs in a codex model catalogue, less the ones whose `visibility` is
+/// `hide`: codex's own picker leaves those out.
+fn parse_codex_models(raw: &str) -> Result<Vec<String>> {
+    let cache: serde_json::Value = serde_json::from_str(raw)?;
     let mut models = Vec::new();
     for model in array(&cache, "models") {
         if model.get("visibility").and_then(serde_json::Value::as_str) == Some("hide") {
@@ -538,11 +565,7 @@ pub(crate) fn codex_catalogue() -> Result<Catalogued> {
         };
         models.push(slug.to_string());
     }
-    Ok(Catalogued {
-        path,
-        models,
-        stale_at: None,
-    })
+    Ok(models)
 }
 
 /// Start Claude Code so it refreshes the model catalogue it keeps under
@@ -1294,6 +1317,16 @@ mod tests {
             apply_to_command("codex", "codex", Some("gpt-5.5"), Some("xhigh"), 0),
             "codex -m gpt-5.5 -c model_reasoning_effort=xhigh"
         );
+    }
+
+    #[test]
+    fn codex_models_leave_out_hidden_and_unnamed_entries() {
+        let listing = r#"{"models":[{"slug":"gpt-6-astra","visibility":"list"},{"slug":"codex-auto-review","visibility":"hide"},{"slug":""},{"slug":"gpt-5.5"}]}"#;
+        assert_eq!(
+            parse_codex_models(listing).unwrap(),
+            ["gpt-6-astra", "gpt-5.5"]
+        );
+        assert!(parse_codex_models("not json").is_err());
     }
 
     #[test]

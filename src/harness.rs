@@ -151,7 +151,7 @@ pub static HARNESSES: &[Harness] = &[
             effort_levels: &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
             effort_args: models::codex_effort,
             catalogue: Some(models::codex_catalogue),
-            list_models: None,
+            list_models: Some(("codex debug models", models::codex_models)),
             refresh: None,
         }),
         auto_compaction: Some(Compaction::Args {
