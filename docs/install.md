@@ -17,10 +17,13 @@ At the end:
 - One small issue assigned to the bot has produced an agent comment on GitHub.
 - `ssf doctor` passes.
 - When the agents run on a VM or a rented server: that machine is reachable over SSH, the agents can become root on it without asking anyone (so they administer their own environment), and it is saved in the person's local herdr, so the person and any agents on their machine can oversee the sessions there.
+- The person was offered remote access (Tailscale), the web dashboard with the Chrome extension, and terminal access from them, in one question (section 10), and what they accepted is set up.
+
+The install is not done until that last offer has been made, even when everything else passes.
 
 Work through the sections in order. Every step says what a good result looks like and what is safe to re-run.
 
-**Run it as a guided install, not a checklist.** Before probing, tell the person in a few lines that you will guide them through setup, name the stages (where it runs → install → bot account → harness sign-in → first repository → first issue → oversight), and say you will ask only what is needed, as you go. Before each step, say in one or two sentences what is about to happen and why, and whether it needs anything from them ("Next I'll build the VM image; this takes a few minutes and needs nothing from you"). After it, give a one-line result.
+**Run it as a guided install, not a checklist.** Before probing, tell the person in a few lines that you will guide them through setup, name the stages (where it runs → install → bot account → harness sign-in → first repository → first issue → oversight → remote access and dashboard), and say you will ask only what is needed, as you go. Before each step, say in one or two sentences what is about to happen and why, and whether it needs anything from them ("Next I'll build the VM image; this takes a few minutes and needs nothing from you"). After it, give a one-line result.
 
 ## 1. How to ask, and what needs consent
 
@@ -560,7 +563,7 @@ Before the first issue, the repository also needs `SSF.md` committed at the root
 
 ## 10. Other devices, then verify
 
-Ask one yes/no question: "Do you want to reach the factory or the dashboard from other devices?" If yes, on a VM target run `ssf vm tailscale` and pass the login URL it prints to the person; it prints the machine name and address once enrolled. That enrolls the guest, which serves SSH, herdr and the web dashboard: that one step is all remote access needs. Tailscale goes where the daemon runs: the guest when there is one (`ssf vm tailscale`, above, run on the laptop for a local VM or on the server for a guest on a server; never Tailscale on the server itself), otherwise the machine itself in host mode: give the person the install command from [tailscale.com/download](https://tailscale.com/download) and `sudo tailscale up`, and pass along its login URL. Details in [platform-specifics.md](platform-specifics.md#tailscale). If no, move on.
+Verify first (below), then make the offer in section 10.1.
 
 ```sh
 ssf doctor
@@ -571,11 +574,28 @@ Also check `herdr machine list` shows the factory machine (section 5), and that 
 
 Two lines are expected to fail before the first issue and need no action: the repository's checkout (cloned when the first session starts) and the `gh`, `git` and `ssf` command links (written when the first agent starts). Anything else, work through [troubleshooting.md](troubleshooting.md) (`ssf skill troubleshoot`).
 
-### Optional: the web dashboard and Chrome extension
+### 10.1 Offer remote access, the dashboard and terminal access together
 
-Ask one yes/no question: "Do you want the web dashboard and the Chrome extension, which shows each agent's state on the GitHub issue and pull request pages?" If no, move on.
+The install is not finished until this is asked. Ask one question covering all three, because the answers depend on each other (the dashboard's bind address follows the Tailscale answer):
 
-If yes, the factory's daemon serves it wherever the daemon runs: the guest in VM mode and for a guest on a server, the machine itself in host mode. Nothing about the dashboard goes on a server that hosts a guest, and no SSH tunnel to it is needed there: bind it to the guest's Tailscale address. Run the commands below where you ran `ssf setup` (the laptop, or the server for a guest on a server or host mode on one); they reach the daemon's config. The setup is the same in every mode, and `ssf config` reaches the right config. Bind it to the factory's Tailscale address when it is on the tailnet (in VM mode, the guest's, after `ssf vm tailscale`), so only tailnet devices can reach it; otherwise keep the loopback default. A loopback dashboard in a VM is also on the host's loopback at the same port (lima forwards it; for Firecracker and Incus the ssf supervisor does, see [dashboard.md](dashboard.md#optional-server-web-dashboard)). Never bind anything else; [dashboard.md](dashboard.md#bind-rules) has the rules.
+> "Last, some optional extras. Do you want: (a) to reach the factory from other devices over Tailscale; (b) the web dashboard and its Chrome extension, which shows each agent's state on GitHub issue and pull request pages; (c) to watch and type into an agent's terminal from them? Any, all or none."
+
+Set up what they accept, in this order.
+
+**Remote access (a).** On a VM target run `ssf vm tailscale` and pass the login URL it prints to the person; it prints the machine name and address once enrolled. That enrolls the guest, which serves SSH, herdr and the web dashboard: that one step is all remote access needs. Tailscale goes where the daemon runs: the guest when there is one (`ssf vm tailscale`, above, run on the laptop for a local VM or on the server for a guest on a server; never Tailscale on the server itself), otherwise the machine itself in host mode: give the person the install command from [tailscale.com/download](https://tailscale.com/download) and `sudo tailscale up`, and pass along its login URL. Details in [platform-specifics.md](platform-specifics.md#tailscale).
+
+**Dashboard and extension (b).** Where the browser reaches it depends on (a):
+
+| Tailscale | Factory | Browser reaches the dashboard at |
+| --- | --- | --- |
+| yes | any | the factory's tailnet address (bind to it, below) |
+| no | on the person's own machine | loopback, `http://127.0.0.1:PORT` |
+| no | guest on a remote server | an SSH tunnel from the laptop to the server's loopback port the guest's dashboard is forwarded to: `ssh -N -L PORT:127.0.0.1:PORT SERVER`, then `http://127.0.0.1:PORT` while it runs; or no dashboard |
+| no | rented host in host mode | the same tunnel to that host's loopback, or no dashboard |
+
+The tunnel must stay open for the dashboard and the extension to work, so say that and let the person choose between it and no dashboard (or Tailscale after all). Never bind a public address instead.
+
+The factory's daemon serves it wherever the daemon runs: the guest in VM mode and for a guest on a server, the machine itself in host mode. Nothing about the dashboard goes on a server that hosts a guest, and with Tailscale no SSH tunnel is needed: bind it to the guest's Tailscale address. Run the commands below where you ran `ssf setup` (the laptop, or the server for a guest on a server or host mode on one); they reach the daemon's config. The setup is the same in every mode, and `ssf config` reaches the right config. Bind it to the factory's Tailscale address when it is on the tailnet (in VM mode, the guest's, after `ssf vm tailscale`), so only tailnet devices can reach it; otherwise keep the loopback default. A loopback dashboard in a VM is also on the host's loopback at the same port (lima forwards it; for Firecracker and Incus the ssf supervisor does, see [dashboard.md](dashboard.md#optional-server-web-dashboard)). Never bind anything else; [dashboard.md](dashboard.md#bind-rules) has the rules.
 
 ```sh
 ssf config set dashboard.enabled true
@@ -591,7 +611,7 @@ journalctl --user -u UNIT | grep 'Server web dashboard'
 
 A capability URL a host-side listener handed out before ssf served the dashboard from the guest no longer works: add the guest's URL to the extension once. A leftover `[dashboard]` in the host config is unused; `ssf doctor` notes it.
 
-Ask one more yes/no question: "Do you want to watch and type into an agent's terminal from the dashboard or the extension?" Both default to off; if yes, before the restart above:
+**Terminal access (c).** Both settings default to off; if accepted, set them before the restart above:
 
 ```sh
 ssf config set daemon.item_pane_input true      # the factory's config (the guest in VM mode); repo.item_pane_input per repository
@@ -630,8 +650,7 @@ Upgrade by installing the next release's package the same way it was installed. 
 - [ ] Server: the agents run in a guest (Firecracker, else Incus), or host mode was chosen as the fallback with the reason said to the person.
 - [ ] Guest on a server: the resident agent (if any) and the person's laptop each pass `ssh <entry> true`, show the factory in `herdr machine list`, and get an answer from `ssf status`; the laptop uses its own key through `ProxyJump`; `working-with-ssf` is installed globally on the laptop, and the resident agent has it loaded in its own harness (listed by a new session), or `ssf skill` in its standing instructions where the harness has no skills.
 - [ ] `working-with-ssf` skill installed on this machine and, when separate, where the sessions run, as the sessions' user.
-- [ ] The person was asked about reaching the factory from other devices; Tailscale enrolled if yes.
-- [ ] The person was asked about the web dashboard and Chrome extension; if yes, the listener binds to loopback or a Tailscale address and the extension has the factory saved.
+- [ ] The person was offered remote access, the dashboard with the Chrome extension, and terminal access in one question (10.1); Tailscale enrolled if accepted; if the dashboard was accepted, it binds to loopback or a Tailscale address (a remote guest without Tailscale is reached through an SSH tunnel) and the extension has the factory saved.
 - [ ] Bot account created; `ssf auth status` names it.
 - [ ] Bot has Write on the repository, verified with `push: true`, and board access if there is a board.
 - [ ] Allowed users are deliberate; `*` only with the person's consent.
