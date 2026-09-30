@@ -51,7 +51,7 @@ Read `ssf skill agent` once; the short form:
 | `ssf skill ...` | Document | Covers |
 | --- | --- | --- |
 | `setup` | `docs/install.md` | fresh machine to first issue: where it runs, then the route document |
-| `setup-local` | `docs/install-local.md` | a factory on the person's own machine: local VM, Incus guest, host mode |
+| `setup-local` | `docs/install-local.md` | a factory on the person's own machine: local VM, Incus guest, Docker container, host mode |
 | `setup-server` | `docs/install-server.md` | a factory on a server, dedicated or shared, and access to it |
 | `setup-client` | `docs/install-client.md` | a client only, driving a factory elsewhere |
 | `setup-common` | `docs/install-common.md` | steps every route shares, from the runtime choice and install to the checklist |

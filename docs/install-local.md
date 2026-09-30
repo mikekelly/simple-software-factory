@@ -13,7 +13,18 @@ For the VM and Incus guest rungs. The daemon runs in the guest, on this machine;
 3. [6.1 The VM](install-common.md#61-the-vm) (`ssf skill setup-common`), on this machine.
 4. [7. Oversee the agents from the person's machine](install-common.md#7-oversee-the-agents-from-the-persons-machine) (`ssf skill setup-common`), with HOST `ssf-default`.
 5. [Install the working-with-ssf skill](install-common.md#install-the-working-with-ssf-skill) (`ssf skill setup-common`), on this machine.
-6. [Then, on either path](#then-on-either-path).
+6. [Then, on every path](#then-on-every-path).
+
+## Host mode in a Docker container
+
+For the Docker container rung. The daemon runs in the container, on this machine, as its `factory` user; HOST is `ssf-docker`, the SSH entry [platform-specifics.md#docker-container](platform-specifics.md#docker-container) (`ssf skill specifics`) writes. Run the steps below in the container (`ssh ssf-docker`), not on this machine.
+
+1. Build and start the container with [platform-specifics.md#docker-container](platform-specifics.md#docker-container) (`ssf skill specifics`); it installs the package, herdr and linger.
+2. [5. `ssf setup` and the service](install-common.md#5-ssf-setup-and-the-service) (`ssf skill setup-common`), for host mode, in the container.
+3. [6.2 Host mode](install-common.md#62-host-mode) (`ssf skill setup-common`), in the container; install the harness CLI there.
+4. [7. Oversee the agents from the person's machine](install-common.md#7-oversee-the-agents-from-the-persons-machine) (`ssf skill setup-common`), with HOST `ssf-docker`.
+5. [Install the working-with-ssf skill](install-common.md#install-the-working-with-ssf-skill) (`ssf skill setup-common`), in the container.
+6. [Then, on every path](#then-on-every-path), reading "where the factory runs" as the container.
 
 ## Host mode on this machine
 
@@ -24,9 +35,9 @@ For the host mode rung. The daemon runs on this machine, as the person's own use
 3. [6.2 Host mode](install-common.md#62-host-mode) (`ssf skill setup-common`).
 4. [7. Oversee the agents from the person's machine](install-common.md#7-oversee-the-agents-from-the-persons-machine) (`ssf skill setup-common`), with no HOST.
 5. [Install the working-with-ssf skill](install-common.md#install-the-working-with-ssf-skill) (`ssf skill setup-common`), on this machine.
-6. [Then, on either path](#then-on-either-path).
+6. [Then, on every path](#then-on-every-path).
 
-## Then, on either path
+## Then, on every path
 
 Where these steps say "where the factory runs" or "where you ran `ssf setup`", read this machine.
 
