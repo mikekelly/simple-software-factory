@@ -25,7 +25,8 @@ json_paths.each do |path|
     bottle = entry.fetch("bottle")
     abort "bottle.rb: #{path} is a rebuild; not supported" unless bottle["rebuild"].to_i.zero?
     cellar = bottle.fetch("cellar")
-    cellar = cellar.start_with?(":") ? cellar : cellar.inspect
+    # brew writes any, any_skip_relocation (symbols) or a Cellar path.
+    cellar = cellar.start_with?("/") ? cellar.inspect : ":#{cellar.delete_prefix(":")}"
     bottle.fetch("tags").each do |tag, info|
       sha = info.fetch("sha256")
       abort "bottle.rb: '#{sha}' is not a sha256" unless sha.match?(/\A[0-9a-f]{64}\z/)
