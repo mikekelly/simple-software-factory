@@ -76,8 +76,12 @@ pub(super) async fn auth(command: AuthCommand) -> Result<()> {
                 let chosen = match chosen {
                     Some(c) => c,
                     None => {
+                        let who = user
+                            .as_deref()
+                            .map(|u| format!("@{}", u.trim_start_matches('@')))
+                            .unwrap_or_else(|| "the bot account".into());
                         println!(
-                            "Signing in another account in the browser. Use a private window so GitHub does not reuse your own session."
+                            "Signing in another account in the browser: approve the code as {who}. If the browser is signed in to a different GitHub account, use a private window or sign out first."
                         );
                         ghcli::login_web(&host, ghcli::REQUIRED_SCOPES)?;
                         accounts = ghcli::accounts(&host)?;
@@ -86,7 +90,7 @@ pub(super) async fn auth(command: AuthCommand) -> Result<()> {
                         match now_active {
                             Some(l) if previous_active.as_deref() != Some(l.as_str()) => l,
                             Some(l) => bail!(
-                                "the browser sign-in did not add a new account (gh is still on @{l}); sign in as the bot in a private window"
+                                "the browser sign-in approved @{l}, which gh already had active; if @{l} is the bot, run `ssf auth login --user {l}`, otherwise approve the code as the bot (a private window avoids reusing your own session)"
                             ),
                             None => bail!("gh reports no active account after sign-in"),
                         }
