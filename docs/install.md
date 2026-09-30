@@ -1,6 +1,6 @@
 # Install a factory
 
-Read this when someone asks you to set up Simple Software Factory for them, from nothing to a factory that watches one repository and has worked its first issue. Offline copy: `ssf skill setup`.
+Read this when someone asks you to set up Simple Software Factory for them, from nothing to a factory that watches one repository and has worked its first issue. Offline copy: `ssf skill setup`. This document chooses where the factory runs and sends you to one route document; the steps every route shares are in [install-common.md](install-common.md) (`ssf skill setup-common`).
 
 **Check the guidance is current.** If `ssf` is already installed where you are working, compare `ssf --version` with the latest release (`gh release view --repo mikekelly/simple-software-factory --json tagName`). If it is older, its `ssf skill setup` is stale: upgrade it first, or read this file from `master`. When installing onto another machine, follow the guidance of the version being installed there, not of the client you happen to have.
 
@@ -17,27 +17,27 @@ At the end:
 - One small issue assigned to the bot has produced an agent comment on GitHub.
 - `ssf doctor` passes.
 - When the agents run on a VM or a rented server: that machine is reachable over SSH, the agents can become root on it without asking anyone (so they administer their own environment), and it is saved in the person's local herdr, so the person and any agents on their machine can oversee the sessions there.
-- The person was offered remote access (Tailscale), the web dashboard with the Chrome extension, and terminal access from them, in one question (section 10), and what they accepted is set up.
+- The person was offered remote access (Tailscale), the web dashboard with the Chrome extension, and terminal access from them, in one question ([12.1](install-common.md#121-offer-remote-access-the-dashboard-and-terminal-access-together)), and what they accepted is set up.
 
 The install is not done until that last offer has been made, even when everything else passes.
 
-Work through the sections in order. Every step says what a good result looks like and what is safe to re-run.
+Work through the sections in order, here and then in the route document. Every step says what a good result looks like and what is safe to re-run.
 
 **Run it as a guided install, not a checklist.** Before probing, tell the person in a few lines that you will guide them through setup, name the stages (where it runs → install → bot account → harness sign-in → first repository → first issue → oversight → remote access and dashboard), and say you will ask only what is needed, as you go. Before each step, say in one or two sentences what is about to happen and why, and whether it needs anything from them ("Next I'll build the VM image; this takes a few minutes and needs nothing from you"). After it, give a one-line result.
 
 ## 1. How to ask, and what needs consent
 
-**Ask one decision at a time, at the step that needs it; never present the full list of questions up front.** Before the first install command, probe (section 2) and ask only where the factory should run. Every later question lives in the section that needs it:
+**Ask one decision at a time, at the step that needs it; never present the full list of questions up front.** Before the first install command, probe ([2](#2-choose-where-the-factory-runs)) and ask only where the factory should run. Every later question lives in the section that needs it:
 
 | Question | Asked in |
 |---|---|
-| Where the factory runs, after you present the options | section 2 |
-| Whether renting a host is acceptable, and at what cost | section 2, only if a rented host is proposed |
-| Whether a bot GitHub account exists, or may be created | section 6 |
-| Which repository to watch, who owns it, and whether they can grant the bot Write | section 6, Write access |
-| Which harness they already pay for, and any metered API spend | section 8 |
-| The model and effort | section 9 |
-| Who may drive the factory, if not the default | section 7 |
+| Where the factory runs, after you present the options | [2](#2-choose-where-the-factory-runs) |
+| Whether renting a host is acceptable, and at what cost | [2](#2-choose-where-the-factory-runs), only if a rented host is proposed |
+| Whether a bot GitHub account exists, or may be created | [8](install-common.md#8-the-bot-account) (`ssf skill setup-common`) |
+| Which repository to watch, who owns it, and whether they can grant the bot Write | [8, Write access](install-common.md#8-the-bot-account) (`ssf skill setup-common`) |
+| Which harness they already pay for, and any metered API spend | [10](install-common.md#10-sign-in-the-harness) (`ssf skill setup-common`) |
+| The model and effort | [11](install-common.md#11-watch-the-first-repository) (`ssf skill setup-common`) |
+| Who may drive the factory, if not the default | [9](install-common.md#9-who-may-drive-the-factory) (`ssf skill setup-common`) |
 
 **Hand privileged commands to the person.** Do not run `sudo` yourself: most harnesses have no terminal for a password, and root on their machine is theirs to use. Prepare everything the command needs first (download the package, print its exact path), give the person the exact command, ask them to run it in their own terminal (in Claude Code, typing `! <command>` runs it in the session), and continue once they confirm and you have checked the result. Run it yourself only when you already have non-interactive root there (`sudo -n true` succeeds), such as inside the factory's own VM.
 
@@ -71,24 +71,21 @@ command -v gh herdr
 
 | What the probes say | Path |
 |---|---|
-| Linux, `/dev/kvm` readable and writable, `systemctl --user` answers, resources allow a VM | **Local VM** (the default). Section 3.1, then 4 and 5. |
-| macOS, resources allow a VM | **Homebrew + lima VM**. Section 3.2, then 4 and 5. |
-| Linux without usable `/dev/kvm`, `systemctl --user` answers, and root is available once to set up Incus | **Local Incus guest**. Set Incus up first ([platform-specifics.md#incus](platform-specifics.md#incus)), then `ssf config set vm.backend incus`, section 3.1, 4 and 5. Tell the person in one line: a user-namespaced system container sharing the host kernel, weaker isolation than a VM but separate from their files; it needs root once for the Incus setup. Its CPU and memory are shared limits, so the 8 GB rule does not apply. |
-| Linux without KVM where Incus cannot be set up, or without a systemd user session, or a Mac too small for a VM, with enough CPU/RAM for the sessions, and the person accepts that agents see this user's files | **Host mode on this machine**. Section 3.1, 3.2 or 3.3, then 5 (host mode). |
-| This machine is a server or VPS dedicated to the factory, running nothing else | **Host mode on a dedicated server**. [A server](#a-server), then [Dedicated servers](platform-specifics.md#dedicated-servers). |
-| This machine is a server or VPS that also runs something else (you are its resident agent, or other services) | **A guest on the server** (Firecracker, else Incus). [A server](#a-server), then [5.1](#51-a-guest-on-a-server-access-for-the-resident-agent-and-the-laptop). |
-| Too few resources here, or the person does not want agents on this machine | **A server** runs the factory; this machine only drives it. [A server](#a-server); section 3.4 here. |
-| A factory already runs somewhere else | **Client only**. Section 3.4. |
+| Linux or macOS, and the factory should run on this machine | **On this machine**: the first rung of [the runtime ladder](install-common.md#3-choose-the-runtime) that holds (a VM, else an Incus guest, else host mode). [install-local.md](install-local.md) (`ssf skill setup-local`). |
+| This machine is a server or VPS dedicated to the factory, running nothing else | **Host mode on a dedicated server**. [install-server.md](install-server.md) (`ssf skill setup-server`). |
+| This machine is a server or VPS that also runs something else (you are its resident agent, or other services) | **A guest on the server** (Firecracker, else Incus). [install-server.md](install-server.md) (`ssf skill setup-server`). |
+| Too few resources here, or the person does not want agents on this machine | **A server** runs the factory; this machine only drives it. [install-server.md](install-server.md) (`ssf skill setup-server`); [install-client.md](install-client.md) (`ssf skill setup-client`) here. |
+| A factory already runs somewhere else | **Client only**. [install-client.md](install-client.md) (`ssf skill setup-client`). |
 
 ### The setups at a glance
 
-Four setups install a factory. Each step below says which setups it applies to, and each command block where it runs: the **laptop** (the person's own machine), the **server**, or the **guest**. Where the daemon runs decides where the dashboard and Tailscale go.
+Four setups install a factory. Each route document says which setups it covers, and each command block where it runs: the **laptop** (the person's own machine), the **server**, or the **guest**. Where the daemon runs decides where the dashboard and Tailscale go.
 
 | | Local VM | Guest on a server | Host mode, dedicated server | Host mode, locally |
 |---|---|---|---|---|
 | Machines | laptop, guest | laptop, server, guest | laptop, server | laptop |
-| Installed on the laptop | ssf package or Homebrew | ssf client only (3.4) | ssf client only (3.4) | ssf package or Homebrew, herdr, harness |
-| Installed on the server | — | ssf package (brings gh, git, jq), Incus if no KVM; nothing else by hand | ssf, gh, git, jq, herdr, harness ([Dedicated servers](platform-specifics.md#dedicated-servers)) | — |
+| Installed on the laptop | ssf package or Homebrew | ssf client only ([4.4](install-common.md#44-client-only-driving-a-factory-elsewhere)) | ssf client only ([4.4](install-common.md#44-client-only-driving-a-factory-elsewhere)) | ssf package or Homebrew, herdr, harness |
+| Installed on the server | — | ssf package (brings gh, git, jq), Incus if no KVM; nothing else by hand | ssf, gh, git, jq, herdr, harness ([Host mode on a dedicated server](install-server.md#host-mode-on-a-dedicated-server)) | — |
 | Installed in the guest | by `ssf vm build` | by `ssf vm build` | — | — |
 | Agents run as | guest's `ssf` user | guest's `ssf` user | the server's factory account | the person's own user |
 | Passwordless sudo | guest's `ssf` user (already) | guest's `ssf` user (already); **not** the server's account | the factory account (granted by the person) | nobody new |
@@ -106,569 +103,19 @@ Rule of thumb for judging "reasonable": each parallel agent session wants about 
 
 Say to the person, in one line each, what the options cost them: the VM keeps agents away from their files but takes half the machine; host mode takes only what the sessions use but the agents run as their user with permission prompts bypassed; a rented host costs money and puts the factory on a machine they administer over SSH.
 
-### A server
-
-Suitable servers include the dedicated server that comes with a Grok Bot account, or a VPS from Hetzner, Linode, OVH or a similar provider. Requirements: Linux, a non-root user, outbound HTTPS, and enough RAM for the sessions by the rule above. Renting costs money: get explicit consent before proposing a specific product, and do not create the account for them.
-
-Ask the person one question: **is this server dedicated to the factory, or does it also run something else** (a resident agent such as Hermes, OpenClaw, Grok Bot or Meta Muse, or other services)?
-
-**Dedicated: host mode.** A guest keeps the agents away from a resident agent and its files; on a server that exists only for the factory there is nothing to keep them from, and the server itself is the isolation boundary. A guest there only costs memory, setup (Incus, a second Tailscale enrolment) and failure modes of its own. Run the factory in host mode under a dedicated factory account with passwordless sudo, from the distribution package where one fits (it brings `gh` and `ssf@.service`) or the standalone binaries (3.3), with herdr and linger: follow [platform-specifics.md#dedicated-servers](platform-specifics.md#dedicated-servers).
-
-```
-laptop  ──ssh──▶  server (factory account, host mode)
-```
-
-**Shared: a guest.** Put the agents in a guest, so they are kept away from the resident agent and its files:
-
-```
-laptop  ──ssh──▶  server (resident agent)  ──▶  ssf guest (Firecracker, or Incus without KVM)
-```
-
-Run the probes of this section on the server, then:
-
-| On the server | Path |
-|---|---|
-| `/dev/kvm` usable (bare-metal servers usually; some VPSes offer nested virtualisation) | **Firecracker guest**: section 3.1, 4, then 5 (the VM). |
-| No usable `/dev/kvm` | **Incus guest**: set Incus up first ([platform-specifics.md#incus](platform-specifics.md#incus)), then 3.1, 4 and 5. Tell the person in one line: an Incus guest is a system container sharing the server's kernel, weaker isolation than a VM but still separate from the resident agent's files. |
-| No KVM and Incus cannot be set up (no root at all, or an unsupported kernel), or no distribution package fits | **Host mode**, the fallback: a factory account of its own, kept apart from the resident agent's, then [platform-specifics.md#dedicated-servers](platform-specifics.md#dedicated-servers). Tell the person the agents are then separated from the resident agent only by Unix permissions. |
-
-Incus, and the package install in 3.1, need root once. Give the person the exact commands from [platform-specifics.md#incus](platform-specifics.md#incus) to run over SSH on the server, or, when the installing agent already has non-interactive root there (`sudo -n true` succeeds), run them yourself. Then `ssf config set vm.backend incus` before `ssf vm build`.
-
-**Who installs.** Two entry points reach the same end state; follow the one that is you:
-
-- **A. An agent on the person's laptop installs**, driving the server over SSH: run every server-side command below as `ssh user@server '<command>'` (or in an SSH session), and the laptop-side steps locally. At the end, give the resident agent (if there is one) its own access, section 5.1 step 1, run over SSH as the resident agent's user.
-- **B. The resident agent on the server installs**: run the server-side commands locally. Before anything else after section 5, give yourself working access (section 5.1 step 1) and confirm it; then **offer** the person direct access from their own device (5.1 step 2), producing the exact steps for them or for their laptop's agent.
-
-Either way the end state is: the resident agent and the person's laptop each have `ssf` CLI, SSH and herdr access to the guest.
-
-## 3. Install
-
 ### Supported platforms
 
 Tier 1, tested by hand before each release: **Arch/Omarchy with Firecracker**, **macOS with Lima**, and the **Claude** and **Codex** harnesses. Everything else (`.deb` and `.rpm` distributions, standalone binaries, Incus, host mode, SSH targets, other harnesses) is best effort: each package format is installed in a container and its `ssf --version` and `ssf --help` checked before a release is published, but nothing is run there beyond that. This list documents what is tested; it enables or disables nothing.
 
-### 3.1 Linux package
+### Open the route document
 
-*Setups: local VM and host mode locally (on the laptop); guest on a server and host mode on a dedicated server (on the server).*
+Read the route document for the path the person chose, and follow it to the end; it links each shared step in [install-common.md](install-common.md) (`ssf skill setup-common`) in order.
 
-Download the matching asset from [GitHub Releases](https://github.com/mikekelly/simple-software-factory/releases) yourself, print its absolute path, then give the person the install command for their family with that path filled in, and wait for them to confirm it ran:
-
-| Family | Command |
-|---|---|
-| Arch | `sudo pacman -U ssf-*.pkg.tar.zst` |
-| Debian / Ubuntu | `sudo apt install ./ssf_*_$(dpkg --print-architecture).deb` |
-| Fedora / RHEL | `sudo dnf install ./ssf-*.$(uname -m).rpm` |
-
-On a fresh server `gh` is not there yet (the package brings it) and is not signed in, so download the public asset with `curl`:
-
-```sh
-tag=$(curl -fsSL https://api.github.com/repos/mikekelly/simple-software-factory/releases/latest | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)
-curl -fsSLO "https://github.com/mikekelly/simple-software-factory/releases/download/$tag/ASSET"   # ASSET: the file name for the family, from the release page
-```
-
-Where `gh` is already installed, `gh release download --repo mikekelly/simple-software-factory --pattern PATTERN` does the same.
-
-One package holds both the `ssf` client and the `ssf-server` daemon. The `.deb` and `.rpm` are built for x86_64 and aarch64; the Arch package for x86_64 only.
-
-In a guest on a server, install nothing else on the server: the `.deb` and `.rpm` bring `gh`, Git and jq, and `ssf vm build` provisions the guest. Elsewhere, prerequisites the package does not always bring: GitHub CLI 2.40 or newer, Git, jq, an OpenSSH client (`ssh-keygen` enrolls the bot's key), and, for host mode, herdr, which only Omarchy's repositories carry as a package. The VM installs its own herdr in the guest. Where to get herdr and the other distro-specific commands and quirks are in [platform-specifics.md](platform-specifics.md). tmux is optional: scratch sessions run in herdr, and tmux is used only to reach one still running in tmux from an older ssf until it next starts ([sessions.md](sessions.md#scratch-sessions)).
-
-```sh
-ssf --version
-command -v ssf-server
-```
-
-### 3.2 macOS, Homebrew
-
-*Setups: local VM and host mode locally, on a Mac laptop.*
-
-```sh
-brew install mikekelly/tap/ssf
-ssf --version
-```
-
-The formula brings `gh` and `lima`. `ssf setup` (section 4) enables a launchd agent per target, so `brew services` is not used. The VM path needs nothing more; for host mode on the Mac, `brew install herdr` as well. Details in [platform-specifics.md](platform-specifics.md#macos).
-
-### 3.3 Standalone binaries on a rented host
-
-*Setups: host mode only (on the server, or the laptop), when no package fits. A guest needs the package.*
-
-Releases publish static musl Linux binaries for `x86_64` and `aarch64`. Take the client and the server from the **same release** and install both under unversioned names in the same directory. Do not pin a version here: pick the current release.
-
-```sh
-arch=$(uname -m)                 # x86_64 or aarch64
-dir=$(mktemp -d)
-tag=$(curl -fsSL https://api.github.com/repos/mikekelly/simple-software-factory/releases/latest | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)
-base=https://github.com/mikekelly/simple-software-factory/releases/download/$tag
-curl -fsSL "$base/SHA256SUMS" -o "$dir/SHA256SUMS"
-for f in $(grep -o "ssf-\(server-\)\?[0-9][^ ]*-linux-$arch\$" "$dir/SHA256SUMS"); do curl -fsSL "$base/$f" -o "$dir/$f"; done
-(cd "$dir" && sha256sum --check --ignore-missing SHA256SUMS)
-install -Dm755 "$dir"/ssf-[0-9]*-linux-$arch   "$HOME/.local/bin/ssf"
-install -Dm755 "$dir"/ssf-server-*-linux-$arch "$HOME/.local/bin/ssf-server"
-export PATH="$HOME/.local/bin:$PATH"
-ssf --version && ssf-server --version
-```
-
-The `SHA256SUMS` check stops on a tampered or truncated download; a release older than the one that introduced it has no `SHA256SUMS`, so drop those two lines there. Persist that `PATH` line for future shells. Supply the prerequisites yourself with the host's package manager: CA certificates, curl, Git, jq, GitHub CLI 2.40 or newer, an OpenSSH client, herdr, and the harness. The bare binaries carry no service units, no VM scripts and no configuration examples, so skip `ssf setup` on this path and leave the server catalog empty, so that the client and the foreground daemon share one configuration and state directory.
-
-Run `ssf-server` in a persistent terminal or under the host's process supervisor:
-
-```sh
-ssf-server
-```
-
-ssf runs its agents in its own herdr session, `ssf`, and starts that session's
-server itself, detached, with a herdr config it writes (see
-[drivers.md](drivers.md#host-or-guest)). Attach to it with `herdr session attach ssf`.
-
-With no service unit, `ssf status` and `ssf doctor` report the daemon itself
-(`ssf.sock`) and name the unit's absence as detail, and the dashboards draw no
-warning while it answers: a factory run this way — a container, another
-supervisor, a foreground `ssf-server` — is running, not inactive (#463).
-
-### 3.4 Client only, driving a factory elsewhere
-
-*Setups: guest on a server and host mode on a dedicated server, on the laptop.*
-
-Install the client the same way (package, Homebrew, or the `ssf` binary alone) and reach the remote factory over SSH. SSF opens no TCP listener; SSH starts the server-side endpoint on the far machine, which needs `ssf-server` on its noninteractive SSH PATH.
-
-```sh
-ssf --server user@host status
-```
-
-For a stable name instead of a destination, see the server catalog in [configuration.md#server-catalog](configuration.md#server-catalog). A client-only machine needs no daemon and no `ssf setup`.
-
-## 4. `ssf setup` and the service
-
-*Setups: all but client only. Runs where ssf was installed in section 3: the laptop for a local VM or host mode locally, the server otherwise (as the factory account in host mode).*
-
-On the package and Homebrew paths only. On Linux, first check linger with `loginctl show-user "$USER" -p Linger --value`; if it is not `yes`, have the person run `sudo loginctl enable-linger USER` (their user name filled in), because `ssf setup` would otherwise try `sudo` itself. Then:
-
-```sh
-ssf setup
-```
-
-It validates any existing configuration, creates the conventional VM server `ssf-server` when nothing is configured yet (selected automatically while it is the only one), enables that server's background service, and on Linux needs login linger so the factory survives logout and starts at boot. Expect it to end with `ssf setup complete; selected service enabled` and a `next:` line naming `ssf vm build` (VM) or `ssf auth login --web` (host).
-
-For host mode, create the local target first so setup prepares that shape:
-
-```sh
-ssf server add local --local
-ssf setup
-```
-
-Do not create both a VM server and a local server just to compare: with more than one configured, unqualified commands require `--server NAME`.
-
-`ssf setup` is idempotent and safe to re-run at any time. It creates no bot, watches no repository, and never removes configuration. If it stops on linger, give the person the `sudo loginctl enable-linger $USER` line it prints (with the user name filled in), and run `ssf setup` again once they confirm.
-
-```sh
-ssf doctor
-```
-
-At this point failures for the bot, driver, harness and repositories are expected. Only unreadable configuration or a missing `gh` needs fixing now.
-
-## 5. Where the agents run
-
-### The VM
-
-*Setups: local VM (on the laptop) and guest on a server (on the server).*
-
-```sh
-ssf vm build
-ssf vm status
-```
-
-`ssf vm build` picks the backend (Firecracker on Linux, lima on macOS and on Linux with qemu), sizes the guest by the rule in section 2, writes those sizes to the selected target, and provisions git, gh, herdr and the harness CLIs. Read the printed sizes and the harness installation results: a harness that failed to install cannot be signed in. `--vcpus`, `--mem-mib` and `--data-gib` override the rule; an already-set size is kept.
-
-The build prints one line for the host it measured and one per size it chose, in the shape
-
-```
-this machine: 8 CPUs, 32768 MiB RAM, 155 GiB free on /home (measured at /home/you/.local/share/ssf/vm, [vm] dir)
-```
-
-followed by the provisioning log and the harnesses installed. Expect `ssf vm status` afterwards to report a running VM and working SSH. From here, `ssf doctor`, `ssf auth`, `ssf repo` and `ssf status` operate inside the guest even when typed on the host. `ssf vm logs` shows the guest daemon's journal.
-
-Re-running `ssf vm build` after a failure is safe; it keeps an existing image unless `--force` is given, and it keeps the data disk either way. Sessions run as the guest's `ssf` user with passwordless sudo; the VM is the isolation boundary. More in [vm.md](vm.md) (`ssf skill vm`).
-
-### Host mode
-
-*Setups: host mode, locally or on a dedicated server, on the machine the factory runs on.*
-
-Agents run as this Unix user and can reach this user's files and credentials, and the default launch commands bypass the harness's permission prompts because the terminals are unattended. Say this plainly to the person before choosing it.
-
-herdr provides the workspaces and terminals. ssf runs its agents in a herdr session of its own named `ssf`, never the person's own herdr session, with a herdr config ssf writes that turns herdr's own agent restore off. The daemon starts that session's server itself when it is not running, so there is nothing to start by hand. To watch and type in the agents' panes:
-
-```sh
-herdr session attach ssf
-```
-
-`ssf status` and `ssf doctor` name the session. An install from before #602 whose agents ran in the person's default herdr session: see [drivers.md](drivers.md#moving-an-existing-host-install-to-the-ssf-session). ssf clones under `herdr.projects_dir` (`~/ssf/projects`) and makes a worktree per item beside the clone.
-
-```sh
-ssf doctor
-```
-
-Expect doctor to say the driver (herdr, the only one) is reachable and ready. Details in [drivers.md](drivers.md).
-
-### Oversee the agents from the person's machine
-
-Do not skip this step. The machine the agents run on must be reachable over SSH and visible in the person's own herdr, beside Local in the sidebar. The SSH host name is `ssf-default` for the local VM (the entry `ssf vm ssh-config` writes, `ssf-NAME` for a VM named otherwise), or `user@host` for a rented host.
-
-For a local VM, add the SSH entry to `~/.ssh/config`, creating the file if it is missing and appending otherwise (skip if `grep -q '^Host ssf-default$' ~/.ssh/config` already finds it):
-
-```sh
-mkdir -p ~/.ssh && chmod 700 ~/.ssh
-ssf vm ssh-config >> ~/.ssh/config
-chmod 600 ~/.ssh/config
-ssh ssf-default true
-```
-
-Then save the machine in the person's herdr. Run it yourself with input closed first: closed input can never answer yes to replacing the remote server.
-
-```sh
-herdr machine add ssf-default --label factory </dev/null
-# a rented host runs ssf in host mode, whose agents live in the herdr session `ssf`:
-# herdr machine add user@host --label factory --remote-session ssf </dev/null
-herdr machine list
-```
-
-Expect `Remote server is ready.` If it stops at a prompt instead (a version mismatch, or an offer to install or update the remote herdr), hand the same command, without `</dev/null`, to the person to run interactively, answering No to replacing a running server unless they ask: its panes are live sessions. `herdr --remote ssf-default` then attaches (for a rented host, `herdr --remote user@host --session ssf`). Details and the limits of what a local herdr command reaches are in [liaison.md](liaison.md#inspect-the-factorys-herdr-server).
-
-Root: agents in a guest or in host mode on a dedicated server should be able to `sudo` without a password, so they can install what their work needs without stopping. The guest's `ssf` user already has it. A guest on a server needs nothing on the server itself: do not grant the server's account passwordless sudo. In host mode on a dedicated server the person grants it to the factory account; give them the exact commands ([Dedicated servers](platform-specifics.md#dedicated-servers)). Never grant it on the person's own machine in host mode: there, the agents are already running as the person.
-
-### 5.1 A guest on a server: access for the resident agent and the laptop
-
-Only when the guest runs on a shared server ([A server](#a-server)). The guest's SSH listens on the server's loopback (`127.0.0.1:<vm.ssh_port>`, 2222 by default), so nothing is published on the internet: the laptop reaches it with `ProxyJump` through the server, and the server's own user reaches it directly.
-
-**Step 1. The server's user (the resident agent).** On the server, as the user that ran `ssf setup`:
-
-```sh
-ssf status                                    # the ssf CLI reaches the guest daemon
-grep -q '^Host ssf-default$' ~/.ssh/config 2>/dev/null || {
-  mkdir -p ~/.ssh && chmod 700 ~/.ssh
-  ssf vm ssh-config >> ~/.ssh/config && chmod 600 ~/.ssh/config
-}
-ssh ssf-default true
-herdr machine add ssf-default --label factory </dev/null
-herdr machine list
-```
-
-Good: `ssf status` names the account and repositories (or none yet), `ssh ssf-default true` returns silently, `herdr machine list` shows `ssf-default`. If `herdr machine add` stops at a prompt, handle it as in section 5.
-
-**Step 2. The person's laptop.** In entry point B, offer this to the person first ("Shall I set up access from your laptop?"); in A, do it.
-
-1. **The ssf client** on the laptop: package, Homebrew or bare binary, as in 3.4. No `ssf setup`, no daemon.
-2. **A key of the laptop's own.** On the laptop, `ssh-keygen -t ed25519 -f ~/.ssh/ssf-factory -N ''` (skip if it exists), and get the contents of `~/.ssh/ssf-factory.pub`. Never copy the server's private key to the laptop.
-3. **Authorise it in the guest.** On the server, append that public key line to the guest `ssf` user's `authorized_keys`, idempotently:
-
-   ```sh
-   KEY='ssh-ed25519 AAAA... laptop'            # the laptop's .pub line
-   ssf vm ssh -- "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && { grep -qxF '$KEY' ~/.ssh/authorized_keys || echo '$KEY' >> ~/.ssh/authorized_keys; }"
-   ```
-
-   The laptop must also reach the server itself over SSH as `user@server` (the person's usual login).
-4. **The SSH entry** on the laptop, appended to `~/.ssh/config` (skip if `grep -q '^Host ssf-factory$' ~/.ssh/config` finds it); use the port `ssf config get vm.ssh_port` prints on the server:
-
-   ```
-   Host ssf-factory
-     HostName 127.0.0.1
-     Port 2222
-     HostKeyAlias ssf-factory
-     User ssf
-     ProxyJump user@server
-     IdentityFile ~/.ssh/ssf-factory
-     IdentitiesOnly yes
-   ```
-
-   Then `ssh ssf-factory true`. The first connection asks to trust the guest's host key; that is expected. `HostKeyAlias` records it under `ssf-factory` rather than `[127.0.0.1]:2222`, which every guest forwarded to that port would share.
-5. **herdr** on the laptop, so the person opens the agents' terminals in their own herdr and agents on the laptop reach running sessions:
-
-   ```sh
-   herdr machine add ssf-factory --label factory </dev/null
-   herdr machine list
-   ```
-
-6. **The server catalog** on the laptop, so `ssf status` and `ssf doctor` reach the factory without `--server`:
-
-   ```sh
-   ssh ssf-factory 'command -v ssf-server'    # /usr/local/bin/ssf-server: on the non-interactive PATH
-   ssf server add factory --ssh ssf-factory
-   ssf status
-   ```
-
-   The destination is the SSH alias, so the jump and key from step 4 apply.
-7. **The skill, globally on the laptop**, so every harness there knows ssf. In entry point B the laptop is not the installing machine, so no earlier step covers it:
-
-   ```sh
-   npx -y skills add mikekelly/simple-software-factory -g -y
-   ```
-
-8. **Optionally Tailscale** instead of the jump, for a person already on a tailnet: `ssf vm tailscale` on the server enrolls the guest (section 10); the laptop's SSH entry then uses the guest's tailnet name as `HostName`, port 22, and no `ProxyJump`.
-
-**Skills: the resident agent's harness must load `working-with-ssf`, not only have it on disk.** The laptop has the skill from step 2.7; the guest gets it in the next subsection. On the server, as the resident agent's user:
-
-```sh
-npx -y skills add mikekelly/simple-software-factory -g -y
-```
-
-That links the skill into the global skills directories of the harnesses it detects, and prints which. If the resident harness is not in that list, name it with `-a`:
-
-| Resident harness | Global skills directory | Install for it |
+| Route | Document | Offline |
 |---|---|---|
-| Hermes Agent | `~/.hermes/skills` | `-a hermes-agent` |
-| OpenClaw | `~/.openclaw/skills` (`~/.clawdbot/skills` or `~/.moltbot/skills` on older installs) | `-a openclaw` |
-| Grok Build | `~/.grok/skills` | `-a grok` |
-| Claude Code | `~/.claude/skills` | `-a claude-code` |
-| Pi | `~/.pi/agent/skills` | `-a pi` |
-
-For example `npx -y skills add mikekelly/simple-software-factory -g -y -a openclaw`. `npx skills add --help` and the CLI's agent list cover the other harnesses it knows; a harness that reads a directory of its own can take a copy with `--copy`.
-
-Then **confirm it is loaded**: start a new session of the resident harness (skills are usually read at startup) and check that it lists `working-with-ssf` in its skills, or ask it to quote that skill's description. A file on disk that the harness does not read does not count.
-
-**No skill mechanism** (for example Meta Muse, or any harness not above that loads no skills directory): put a line in the resident agent's standing instructions or memory instead, such as "For anything about the ssf factory on this server, run `ssf skill` and follow it; `ssf skill setup` is the install guide." Confirm the same way: a new session answers where the ssf guidance comes from.
-
-### Install the working-with-ssf skill
-
-Run this yourself; it needs no `sudo` and no questions. Tell the person in one line what it is for: any agent on that machine can then set up, operate and troubleshoot ssf.
-
-On the machine you are running on:
-
-```sh
-npx -y skills add mikekelly/simple-software-factory -g -y
-```
-
-Host mode needs only the step above, and so does a VM: `ssf vm build` installs the skill for the guest's `ssf` user (a failure is reported in the build log, not fatal). When the sessions run on a rented host, install it there too, as the Unix user that runs them:
-
-```sh
-ssh user@host 'npx -y skills add mikekelly/simple-software-factory -g -y'
-```
-
-If `npx` is missing on that machine, install Node.js there first (`mise use -g node`, or the system package). A `✗ PromptScript does not support global skill installation` line in the output is harmless. Expect `working-with-ssf` in `npx skills ls -g` (or `~/.agents/skills/working-with-ssf`) on each machine.
-
-## 6. The bot account
-
-The factory acts on GitHub as an account of its own. Every agent post carries a byline naming the session and what it runs, and a post from the bot *without* a byline is read as typed by a person, so sharing the person's own account confuses who said what. The bot is a default, not a security boundary: agents run as a Unix user and the account only bounds what `gh` does by default.
-
-**Ask now whether a bot account exists; if not, ask whether one may be created, then let them create it.** In a private browser window they sign up at `https://github.com/signup` with a separate address (plus-addressing works), verify it, and turn on two-factor authentication. For an organisation, the same thing owned by the organisation as a machine user. Nothing else is needed: no repositories, no keys.
-
-Sign it in where the factory runs. On a VM target the command runs in the guest, so the VM from section 5 must be up:
-
-```sh
-ssf auth login --web
-ssf auth status
-```
-
-`--web` runs gh's device flow: the terminal prints a one-time code and `https://github.com/login/device`, which the person opens in the window where the bot is signed in. Over SSH, or where no browser should open, prefix `BROWSER=true`. Start it only when the person is ready to approve, finish it before section 8's harness sign-in, and tell them the code lasts about 15 minutes. `--user <bot>` checks the approved account is the intended one. In VM mode the credential is written inside the guest. Where OAuth apps are forbidden, use a classic personal access token instead: `printf '%s' "$TOKEN" | ssf auth login --token`. A fine-grained token reads as missing every scope.
-
-Scopes: `repo`, `workflow` (pushes that touch `.github/workflows/`), `project` (boards), `admin:public_key` and `admin:ssh_signing_key` (key enrollment); a pasted classic token needs the same. `--no-keys` skips the key and needs only `repo` and `workflow`, at the cost of unsigned commits. `ssf doctor` and `ssf auth status` name any scope the token lacks; `ssf auth login` again adds it.
-
-Login records `github.login` and `github.email`, and enrolls a dedicated ed25519 key on the bot account as both an SSH key and a signing key. `ssf auth logout` revokes those keys and forgets the bot.
-
-**Write access.** Ask now which repository the factory should watch, who owns it, and whether that owner can grant the bot Write. An invitation is not access. The repository owner invites the bot with Write, from their own account:
-
-```sh
-gh api repos/OWNER/NAME/collaborators/BOT -X PUT -f permission=push
-```
-
-Then the bot accepts. After `ssf auth login` the bot's token is in ssf's own token file, not in `gh`, so where ssf runs (inside the guest in VM mode) pass it explicitly:
-
-```sh
-export GH_TOKEN=$(cat ~/.config/ssf/token)
-gh api user/repository_invitations --jq '.[] | {id, repository: .repository.full_name}'
-gh api user/repository_invitations/ID -X PATCH
-gh api repos/OWNER/NAME --jq '{repository: .full_name, push: .permissions.push}'
-```
-
-Or accept from the bot's own notifications in a browser signed in as the bot.
-
-The last command must name the repository with `push: true`. A pending invitation makes a private repository return 404, which looks like a missing repository.
-
-The daemon can accept invitations itself, from owners the person names:
-
-```sh
-ssf config set github.auto_accept_invitations_from '["OWNER"]'
-```
-
-The login match is case-insensitive. This accepts the GitHub invitation only; it does not add the repository to the factory.
-
-**Board access.** For a Projects (v2) board, its owner grants the bot Write under the board's **Settings -> Manage access**. Repository Write alone does not authorise card moves, and the token needs `project` scope.
-
-`ssf auth login` is safe to re-run: a failed or half-finished login can simply be run again.
-
-## 7. Who may drive the factory
-
-Whatever reaches the bot on GitHub is relayed into a running agent's terminal, so this is a real trust boundary. By default the agents act only on assignments, mentions, review requests, labels and comments from collaborators with push access, which GitHub calls Write or higher. The daemon fetches that list each pass and `ssf doctor` prints it per repository. The person's own account must be on it to assign issues to the bot. Nothing needs setting for the default.
-
-To narrow or widen it:
-
-```sh
-ssf config set daemon.allowed_users '["alice", "bob"]'
-ssf repo set OWNER/NAME --allowed-users alice,bob
-```
-
-`"*"` means anyone on GitHub. It is refused unless someone types `yes` at the terminal or passes `--accept-anyone-risk`. **An agent must never pass that flag on the person's behalf.** If the collaborator list cannot be fetched, nothing is acted on for that repository until a list is configured, and `ssf doctor` says so.
-
-## 8. Sign in the harness
-
-Ask now which harness the person already pays for, and whether any metered API spend is acceptable. Each harness is signed in once, where the agents run, with the harness's own sign-in. The credential lands in the home directory there (for example `~/.claude/.credentials.json` in the guest), and every later session uses it. ssf does not sign harnesses in.
-
-Do this step with the person, one harness at a time, through herdr. In VM mode run each `herdr` command below inside the guest with `ssf vm ssh herdr ...`; in host mode, including on a dedicated server (over SSH there), as the Unix user that runs the sessions, against ssf's own herdr session: prefix each `herdr` command with `HERDR_SESSION=ssf` (only that session's server is running, so plain `herdr` answers `server_not_running`).
-
-1. **Open the harness** in a pane in the projects root (`/var/lib/ssf/projects` in the VM; `herdr.projects_dir` elsewhere). Folder trust given there does not cover the repositories under it; first-run screens that are global, such as sign-in and preference screens, are cleared once here:
-
-   ```sh
-   herdr workspace create --cwd /var/lib/ssf/projects --label "claude login" --no-focus
-   herdr pane run PANE claude     # PANE: result.root_pane.pane_id in the JSON printed above
-   ```
-
-2. **Clear the first-run screens.** Read the pane with `herdr pane read PANE` and answer with `herdr pane send-keys PANE KEY...`. Take the default on preference screens, or ask the person in one line if the choice matters; for Claude Code's "Try the new fullscreen renderer?" pick **Not now**; finish Oh My Pi's setup wizard here too, since it is kept per user and covers every later repository. Grant folder trust explicitly: Claude Code's trust screen defaults to "No, exit", so select the trust option rather than pressing enter. Codex's first launch asks to review and trust hooks: the one listed is herdr's `SessionStart` agent-state hook, which provisioning installed and sessions rely on, so trust it. Read again after every key: screens change with every harness release.
-
-3. **Start the harness's own sign-in** (for example `/login`, typed with `herdr pane run PANE /login`) only when the person is ready for it; never run two sign-ins at once, since each code expires while the person is busy with the other.
-   - **The link.** `herdr pane read` returns screen rows, so a long URL is split across lines. Rejoin it before handing it over, for example `herdr pane read PANE | tr -d '\n' | grep -o 'https://[^ ]*'`, and check it against the screen. The person's browser may be on another computer, so do not open it on the factory machine: give the URL as text, alone in a fenced code block so it copies whole even where the terminal wraps it.
-   - **The code.** Many sign-ins, Claude Code's included, show a code in the browser after the person approves (Claude's looks like `<code>#<state>`) while the harness waits at a prompt such as `Paste code here if prompted >`. Approving in the browser is not enough: ask for the code, type it with `herdr pane send-text PANE '<code>'` and `herdr pane send-keys PANE enter`, and tell the person it passes through this chat and expires within minutes. Check the result (`claude auth status` shows `loggedIn: true`, or `ssf doctor`) before going on.
-   - A sign-in that needs the browser to reach a `localhost` callback on the factory machine (OMP's loopback OAuth) cannot finish from the person's browser: pick a method that takes a pasted code or redirect URL, or an API key.
-
-4. **API-key harnesses.** Ask the person for the key only after they have agreed to metered spend, and say it passes through the chat.
-   - OpenCode: `opencode auth login` in the pane, pick the provider and paste the key; it is saved in `~/.local/share/opencode/auth.json`.
-   - Grok: `grok login --device-auth` signs in an xAI account; for a key, enter it through Grok's own interface when it asks.
-   - Crush: pick the provider and paste the key in Crush's own first-run screen; `crush login copilot` signs in with GitHub Copilot instead.
-
-   Enter keys through the harness's interface rather than writing its files by hand, so the harness writes the format it reads.
-
-5. **Relaunch, confirm and quit.** Some first-run screens appear only on a later launch (Claude Code's fullscreen-renderer question came on the second), so quit the harness and run it again in the same pane, clearing any screen as in step 2, until a launch reaches the prompt with nothing to answer. Confirm the sign-in with the harness's own status (`claude auth status`, `codex login status`), or in VM mode `ssf vm status` on the host, which lists signed-in harnesses on its `logins:` line. Then quit the harness (`/exit`, `/quit` or `ctrl+c`, whatever it takes) and close the workspace. Codex can leave its app-server daemon running after it quits; ssf's sessions do not use it, so stop it with `codex app-server daemon stop` in the same place.
-
-6. **If a screen makes no sense**, stop sending keys and tell the person where to look: the herdr machine (`ssf-default` for the local VM, saved in section 5, or Local in host mode), the workspace label (`claude login`) and the pane. They can finish it by hand there.
-
-Without an agent, the person does the same by hand: `ssf vm ssh` (or a shell on the host), run the harness, and use its own sign-in. Per-harness quirks are in [platform-specifics.md](platform-specifics.md#harness-notes). Signing in again is also the fix when a login later expires under a running session: ssf holds that session and resumes it once the harness is signed in.
-
-## 9. Watch the first repository
-
-Ask now for the person's explicit choice of model and effort, and confirm the harness. Examples and recommendations are not consent. List what the installation actually offers, in the place the sessions will run:
-
-```sh
-ssf agents
-ssf models HARNESS
-```
-
-On a VM target both run inside the guest, where the sessions run. `ssf models` names what answered: the harness's own catalogue, its listing command, or ssf's built-in table — and for Claude Code it starts the CLI once to refresh a catalogue that is missing or expired, so the listing names models released since that file was written. `ssf agents --json` adds the supported effort levels and launch commands. Then:
-
-```sh
-ssf repo add OWNER/NAME --harness HARNESS --model MODEL --effort EFFORT
-ssf repo list --json
-```
-
-`--model` and `--effort` are required in the resulting configuration wherever the harness supports them; omit one only where it is unsupported. Use `ssf repo set` with the same options to change a setting later; changes apply to the next started or resumed session.
-
-Before the first issue, the repository also needs `SSF.md` committed at the root of its **default branch**, and any items that predate this factory need reviewing with `ssf candidates` and adopting with `ssf adopt`. The full path, including choosing a first issue and what to expect from it, is [repositories.md](repositories.md) (`ssf skill repo`).
-
-`ssf repo add` rewrites the entry for a repository that is already there, so it is safe to re-run after a mistake; it is also how you correct a harness or model chosen in error.
-
-## 10. Other devices, then verify
-
-Verify first (below), then make the offer in section 10.1.
-
-```sh
-ssf doctor
-ssf status
-```
-
-Also check `herdr machine list` shows the factory machine (section 5), and that `npx skills ls -g | grep working-with-ssf` finds the skill on this machine and, when separate, where the sessions run (`ssh ssf-default 'npx skills ls -g' | grep working-with-ssf`). For a guest on a server, run from the laptop: `working-with-ssf` is installed globally (`npx -y skills ls -g` lists it), `ssh ssf-factory true`, `herdr machine list` shows `ssf-factory`, and `ssf status` answers; and from the resident agent on the server: its own harness has `working-with-ssf` loaded (a new session lists it or quotes its description; or, without a skill mechanism, its standing instructions point at `ssf skill`), `ssh ssf-default true`, `herdr machine list` shows `ssf-default`, and `ssf status` answers. Healthy looks like: the token belongs to the bot; the driver is reachable and ready; the harness is installed and signed in where sessions run; each repository shows its GitHub identity, its allowed users, the commit identity, and its SSF agent guidance. `ssf status` names the configured account, then the repositories and their tracked items with no last error.
-
-Two lines are expected to fail before the first issue and need no action: the repository's checkout (cloned when the first session starts) and the `gh`, `git` and `ssf` command links (written when the first agent starts). Anything else, work through [troubleshooting.md](troubleshooting.md) (`ssf skill troubleshoot`).
-
-### 10.1 Offer remote access, the dashboard and terminal access together
-
-The install is not finished until this is asked. Ask one question covering all three, because the answers depend on each other (the dashboard's bind address follows the Tailscale answer):
-
-> "Last, some optional extras. Do you want: (a) to reach the factory from other devices over Tailscale; (b) the web dashboard and its Chrome extension, which shows each agent's state on GitHub issue and pull request pages; (c) to watch and type into an agent's terminal from them? Any, all or none."
-
-Set up what they accept, in this order.
-
-**Remote access (a).** On a VM target run `ssf vm tailscale` and pass the login URL it prints to the person; it prints the machine name and address once enrolled. That enrolls the guest, which serves SSH, herdr and the web dashboard: that one step is all remote access needs. Tailscale goes where the daemon runs: the guest when there is one (`ssf vm tailscale`, above, run on the laptop for a local VM or on the server for a guest on a server; never Tailscale on the server itself), otherwise the machine itself in host mode: give the person the install command from [tailscale.com/download](https://tailscale.com/download) and `sudo tailscale up`, and pass along its login URL. Details in [platform-specifics.md](platform-specifics.md#tailscale).
-
-**Dashboard and extension (b).** Where the browser reaches it depends on (a):
-
-| Tailscale | Factory | Browser reaches the dashboard at |
-| --- | --- | --- |
-| yes | any | the factory's tailnet address (bind to it, below) |
-| no | on the person's own machine | loopback, `http://127.0.0.1:PORT` |
-| no | guest on a remote server | an SSH tunnel from the laptop to the server's loopback port the guest's dashboard is forwarded to: `ssh -N -L PORT:127.0.0.1:PORT SERVER`, then `http://127.0.0.1:PORT` while it runs; or no dashboard |
-| no | rented host in host mode | the same tunnel to that host's loopback, or no dashboard |
-
-The tunnel must stay open for the dashboard and the extension to work, so say that and let the person choose between it and no dashboard (or Tailscale after all). Never bind a public address instead.
-
-The factory's daemon serves it wherever the daemon runs: the guest in VM mode and for a guest on a server, the machine itself in host mode. Nothing about the dashboard goes on a server that hosts a guest, and with Tailscale no SSH tunnel is needed: bind it to the guest's Tailscale address. Run the commands below where you ran `ssf setup` (the laptop, or the server for a guest on a server or host mode on one); they reach the daemon's config. The setup is the same in every mode, and `ssf config` reaches the right config. Bind it to the factory's Tailscale address when it is on the tailnet (in VM mode, the guest's, after `ssf vm tailscale`), so only tailnet devices can reach it; otherwise keep the loopback default. A loopback dashboard in a VM is also on the host's loopback at the same port (lima forwards it; for Firecracker and Incus the ssf supervisor does, see [dashboard.md](dashboard.md#optional-server-web-dashboard)). Never bind anything else; [dashboard.md](dashboard.md#bind-rules) has the rules.
-
-```sh
-ssf config set dashboard.enabled true
-ssf config set dashboard.bind TAILSCALE_ADDRESS      # tailnet; skip for loopback. VM: the address `ssf vm tailscale` printed
-# VM mode: restart the guest daemon and read its URL
-ssf vm ssh -- sudo systemctl restart ssf
-ssf vm logs | grep 'Server web dashboard'
-# host mode: restart the unit ssf setup made (e.g. ssf@ssf-server.service)
-systemctl --user list-units 'ssf*.service'
-systemctl --user restart UNIT
-journalctl --user -u UNIT | grep 'Server web dashboard'
-```
-
-A capability URL a host-side listener handed out before ssf served the dashboard from the guest no longer works: add the guest's URL to the extension once. A leftover `[dashboard]` in the host config is unused; `ssf doctor` notes it.
-
-**Terminal access (c).** Both settings default to off; if accepted, set them before the restart above:
-
-```sh
-ssf config set daemon.item_pane_input true      # the factory's config (the guest in VM mode); repo.item_pane_input per repository
-ssf config set dashboard.terminal_input true    # this page's own terminal (the factory's config too); the extension needs only the line above
-```
-
-Without `item_pane_input`, neither offers **Show agent TUI**, and people speak to an agent by commenting on the item.
-
-On macOS, restart with `launchctl kickstart -k gui/$(id -u)/dev.ssf.server.NAME` and find the URL with `grep 'Server web dashboard' ~/Library/Logs/ssf/NAME.log` ([operate.md](operate.md) names the agent and log).
-
-Hand the capability URL it logs (`http://ADDRESS:8787/<secret>/`) to the person, as a secret: it grants access to the factory. Then, in Chrome on their machine:
-
-1. Open the URL and use its **Download Chrome extension** link. Chrome warns about an insecure download because it is plain HTTP; choose **Keep**. (`ssf chrome-extension` writes the same zip on the command line.)
-2. Unzip it.
-3. Open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked** and select the unzipped directory, the one holding `manifest.json`.
-4. The extension's options page opens by itself: **Add a factory**, paste the capability URL, **Save and allow**, and accept Chrome's permission prompt.
-
-Opening any issue in a watched repository then shows the overlay. Details in [dashboard.md](dashboard.md) and the [extension README](../chrome-extension/README.md).
-
-## 11. Upgrading, stopping, uninstalling
-
-Upgrade by installing the next release's package the same way it was installed. The Arch, `.deb` and `.rpm` packages restart running services (`ssf.service`, `ssf@NAME.service`) on the new version; on macOS run `launchctl kickstart -k gui/$(id -u)/dev.ssf.server.NAME`. Upgrades never stop or restart a VM or agent sessions: the new service reattaches to the running guest and herdr session, and the guest keeps its own version until `ssf vm upgrade`. A service started by ssf 0.19 or earlier, which still holds its VM, is left running with a message. Standalone binaries are replaced in pairs with the daemon stopped. Configuration, state, keys and VM disks survive an upgrade. See [operate.md](operate.md) (`ssf skill operate`).
-
-`ssf ui service disable` stops the service and keeps it stopped across logins; `ssf ui service enable` brings it back.
-
-`ssf uninstall` reports first and asks once. It refuses while workspaces hold uncommitted or unpushed work. `--force` bypasses that and destroys the work with the data disk, so leave that decision to the person. See [uninstall.md](uninstall.md) (`ssf skill uninstall`).
-
-## 12. Checklist
-
-- [ ] Probes run; the person chose where the factory runs, before anything else was asked.
-- [ ] Consent recorded at each step for accounts, spending, and the model choice; every `sudo` command was run by the person.
-- [ ] `ssf --version` and `ssf-server` both present, from the same release.
-- [ ] `ssf setup` complete and the service enabled (package and Homebrew paths).
-- [ ] `ssf vm status` reports a running VM, or herdr is reachable in host mode.
-- [ ] VM or rented host: reachable over SSH, agents have passwordless `sudo`, and it is saved in the person's herdr (`herdr machine add`, shown by `herdr machine list`).
-- [ ] Server: the agents run in a guest (Firecracker, else Incus), or host mode was chosen as the fallback with the reason said to the person.
-- [ ] Guest on a server: the resident agent (if any) and the person's laptop each pass `ssh <entry> true`, show the factory in `herdr machine list`, and get an answer from `ssf status`; the laptop uses its own key through `ProxyJump`; `working-with-ssf` is installed globally on the laptop, and the resident agent has it loaded in its own harness (listed by a new session), or `ssf skill` in its standing instructions where the harness has no skills.
-- [ ] `working-with-ssf` skill installed on this machine and, when separate, where the sessions run, as the sessions' user.
-- [ ] The person was offered remote access, the dashboard with the Chrome extension, and terminal access in one question (10.1); Tailscale enrolled if accepted; if the dashboard was accepted, it binds to loopback or a Tailscale address (a remote guest without Tailscale is reached through an SSH tunnel) and the extension has the factory saved.
-- [ ] Bot account created; `ssf auth status` names it.
-- [ ] Bot has Write on the repository, verified with `push: true`, and board access if there is a board.
-- [ ] Allowed users are deliberate; `*` only with the person's consent.
-- [ ] Harness signed in where the sessions run.
-- [ ] `SSF.md` on the default branch; repository added with a chosen harness, model and effort.
-- [ ] `ssf doctor` clean apart from the pre-first-issue exceptions.
-- [ ] A small issue assigned to the bot produced an agent comment on GitHub.
-
-## What is safe to re-run
-
-| Step | After a failure |
-|---|---|
-| `ssf setup` | re-run freely; it validates, never destroys, and skips what is already done |
-| `ssf auth login` | re-run; a half-finished device flow leaves nothing behind. `ssf auth logout` first only if the wrong account was approved |
-| `ssf vm build` | re-run; it keeps an existing image and the data disk. `--force` remakes the image, and still keeps the data disk |
-| Sign in the harness (section 8) | repeat; it is also the fix for an expired login |
-| `ssf repo add` | re-run; it replaces that repository's settings |
-| `ssf doctor`, `ssf status`, `ssf models`, `ssf agents` | re-run at any time; reads, except that `ssf models claude` refreshes Claude Code's own catalogue |
-
-Destructive and not to be re-run casually: `ssf vm destroy`, `ssf uninstall`, and anything with `--force`.
+| On this machine: local VM, local Incus guest or host mode | [install-local.md](install-local.md) | `ssf skill setup-local` |
+| A server, dedicated or shared, and access to it | [install-server.md](install-server.md) | `ssf skill setup-server` |
+| Client only, driving a factory elsewhere | [install-client.md](install-client.md) | `ssf skill setup-client` |
+| Steps every route shares, from the runtime choice and install to the checklist | [install-common.md](install-common.md) | `ssf skill setup-common` |
+
+Reading this file from GitHub, the others sit beside it at the same base URL: `https://raw.githubusercontent.com/mikekelly/simple-software-factory/master/docs/install-local.md`, and likewise `install-server.md`, `install-client.md` and `install-common.md`.

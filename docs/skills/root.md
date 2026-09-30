@@ -11,7 +11,7 @@ locally, in a VM, or over SSH.
 
 | The person wants | Do this |
 | --- | --- |
-| ssf installed and their first repository watched | `ssf skill setup`. It opens with a resource check that decides between a local VM, host mode and a rented host, then runs to the first issue. Before `ssf` is installed, the same document is `docs/install.md` in the repository. |
+| ssf installed and their first repository watched | `ssf skill setup`. It opens with a resource check that decides between a local VM, host mode and a rented host, then sends you to one route document (`ssf skill setup-local`, `setup-server` or `setup-client`) that runs to the first issue. Before `ssf` is installed, the same documents are `docs/install.md` and its siblings in the repository. |
 | a repository added to a factory that already runs | `ssf skill repo`: access for the bot, choosing harness, model and effort with the person, `ssf repo add`, a minimal `SSF.md`, `ssf candidates` and `ssf adopt`, the first issue. |
 | to know what is running, change a setting, upgrade, stop | `ssf skill operate`: targets, `doctor` and `status` before any change, the service, versions. `ssf skill config` for every key; `ssf skill harnesses` for models, effort and what a session runs. |
 | something is not working | `ssf skill troubleshoot`: triage sequence, then symptom, check and remedy. |
@@ -50,7 +50,11 @@ Read `ssf skill agent` once; the short form:
 
 | `ssf skill ...` | Document | Covers |
 | --- | --- | --- |
-| `setup` | `docs/install.md` | fresh machine to first issue, all install paths |
+| `setup` | `docs/install.md` | fresh machine to first issue: where it runs, then the route document |
+| `setup-local` | `docs/install-local.md` | a factory on the person's own machine: local VM, Incus guest, host mode |
+| `setup-server` | `docs/install-server.md` | a factory on a server, dedicated or shared, and access to it |
+| `setup-client` | `docs/install-client.md` | a client only, driving a factory elsewhere |
+| `setup-common` | `docs/install-common.md` | steps every route shares, from the runtime choice and install to the checklist |
 | `repo` | `docs/repositories.md` | adding and configuring a repository, `SSF.md`, first issue |
 | `operate` | `docs/operate.md` | targets, inspection, service, upgrade, stopping |
 | `troubleshoot` | `docs/troubleshooting.md` | symptom, check, remedy |

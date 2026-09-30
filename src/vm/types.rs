@@ -3,7 +3,7 @@ use super::*;
 /// Where a harness keeps its sign-in inside the guest: the file it writes
 /// under the guest home. `ssf vm status` (and `doctor`) use `check()` to say
 /// who is logged in. Signing in is the harness's own flow, run in a herdr
-/// pane or over `ssf vm ssh` (docs/install.md, "Sign in the harness").
+/// pane or over `ssf vm ssh` (docs/install-common.md, "Sign in the harness").
 #[derive(Debug, Clone, Copy)]
 pub struct Login {
     pub harness: &'static str,

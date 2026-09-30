@@ -28,9 +28,13 @@ locally, in a VM, or over SSH. Linux and macOS are supported.
    It opens with a resource check that decides, with the person, between a
    local VM, host mode on a server dedicated to the factory, a guest on a
    server shared with a resident agent (with laptop and resident-agent
-   access) and host mode on this machine, then runs to the first issue. Once
-   `ssf` is installed, continue from `ssf skill setup`, which is the same
-   document at the installed version.
+   access) and host mode on this machine, then sends you to one route
+   document beside it (`install-local.md`, `install-server.md` or
+   `install-client.md`, same base URL), which links the shared steps in
+   `install-common.md` and runs to the first issue. Once `ssf` is installed,
+   continue from `ssf skill setup` (and `ssf skill setup-local`,
+   `setup-server`, `setup-client`, `setup-common`), the same documents at the
+   installed version.
 3. If you're an ssf agent session that ssf itself started on an issue (`SSF_SESSION` will be set)
    read `ssf guide` instead.
 

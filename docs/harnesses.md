@@ -347,7 +347,7 @@ ssf never signs a harness in. Each one is signed in once, by hand, on the
 machine that runs the sessions, and the person must do it: it is their
 account and may cost money.
 
-- A new factory: the sign-in step of [install.md](install.md#8-sign-in-the-harness).
+- A new factory: the sign-in step of [install-common.md](install-common.md#10-sign-in-the-harness).
 - In VM mode the sessions run in the guest, so the sign-in belongs there
   (`ssf vm ssh` and the harness's own sign-in, see [Harness logins](vm.md#harness-logins)). Copying a
   host credential file in with `vm.files` shares one session between host

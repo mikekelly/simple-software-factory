@@ -301,7 +301,7 @@ with its own sign-in, run inside the guest; the credential it writes in the
 guest home is what every later session uses. Nothing is copied from this
 machine.
 
-- With an agent: step 8 of [install.md](install.md#8-sign-in-the-harness).
+- With an agent: step 10 of [install-common.md](install-common.md#10-sign-in-the-harness).
   The agent opens the harness in a herdr pane in the guest, clears its
   first-run screens, starts its sign-in, and hands the person the link.
 - Without one: `ssf vm ssh`, run the harness (`claude`, `codex`, ...), and use
@@ -340,7 +340,7 @@ session shows as blocked and its item gets one comment saying how
 to sign in again), holds its activity, and resumes on its own once the
 guest is signed in again; see
 [sessions.md](sessions.md#a-harness-that-is-not-signed-in). The first sign-in
-during an install is step 8 of [install.md](install.md#8-sign-in-the-harness).
+during an install is step 10 of [install-common.md](install-common.md#10-sign-in-the-harness).
 
 ## Reaching it
 

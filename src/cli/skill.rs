@@ -5,6 +5,14 @@ use super::prelude::*;
 pub(super) enum SkillTopic {
     /// From a fresh machine to a factory watching its first repository.
     Setup,
+    /// Setup route: a factory on the person's own machine (VM, Incus guest, host mode).
+    SetupLocal,
+    /// Setup route: a factory on a server, dedicated or shared, and access to it.
+    SetupServer,
+    /// Setup route: a client only, driving a factory elsewhere.
+    SetupClient,
+    /// Setup steps every route shares, from the runtime choice and install to the checklist.
+    SetupCommon,
     /// Adding a repository to a running factory: access, stack, SSF.md, the first issue.
     Repo,
     /// Operating a running factory: targets, inspection, the service, upgrades.
@@ -41,6 +49,10 @@ pub(super) fn print(topic: Option<SkillTopic>) -> Result<()> {
     let document = match topic {
         None => include_str!("../../docs/skills/root.md"),
         Some(SkillTopic::Setup) => include_str!("../../docs/install.md"),
+        Some(SkillTopic::SetupLocal) => include_str!("../../docs/install-local.md"),
+        Some(SkillTopic::SetupServer) => include_str!("../../docs/install-server.md"),
+        Some(SkillTopic::SetupClient) => include_str!("../../docs/install-client.md"),
+        Some(SkillTopic::SetupCommon) => include_str!("../../docs/install-common.md"),
         Some(SkillTopic::Repo) => include_str!("../../docs/repositories.md"),
         Some(SkillTopic::Operate) => include_str!("../../docs/operate.md"),
         Some(SkillTopic::Troubleshoot) => include_str!("../../docs/troubleshooting.md"),
