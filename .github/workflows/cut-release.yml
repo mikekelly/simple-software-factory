@@ -7,7 +7,8 @@
 #    it vX.Y.Z.
 # 2. build: release.yml for the tag: packages, tests and a draft release.
 # 3. publish: the draft becomes the latest release.
-# 4. homebrew: homebrew.yml pushes the formula to the tap.
+# 4. homebrew: homebrew.yml builds macOS bottles, attaches them to the
+#    release and pushes the formula to the tap.
 #
 # Rerunning with a version whose tag already exists skips step 1 and resumes
 # from the build, so a failed build or publish is retried the same way.
@@ -115,6 +116,9 @@ jobs:
   homebrew:
     needs: [prepare, publish]
     uses: ./.github/workflows/homebrew.yml
+    # The bottle jobs attach the macOS bottles to the release.
+    permissions:
+      contents: write
     with:
       tag: ${{ needs.prepare.outputs.tag }}
     secrets: inherit

@@ -1,6 +1,9 @@
 # When a vX.Y.Z GitHub release is published, render packaging/homebrew/ssf.rb
-# with the tag tarball's url and sha256 and push it to the Homebrew tap as
-# Formula/ssf.rb.
+# with the tag tarball's url and sha256, build a bottle of it on each macOS
+# runner and attach the bottles to the release, add their `bottle do` block
+# (packaging/homebrew/bottle.rb) and push the formula to the Homebrew tap as
+# Formula/ssf.rb. A bottle job that fails leaves only its bottle out: Macs
+# without a bottle build from source, as every Mac did before.
 # packaging/homebrew/README.md says how the tap and the token are set up.
 # Waiting for publication keeps the tap from pointing at a draft whose
 # packages have not completed validation. Manual dispatch remains available.
@@ -25,6 +28,11 @@ on:
         description: "Release tag to publish, vX.Y.Z"
         required: true
         type: string
+      dry_run:
+        description: "Build bottles, but upload nothing and do not push the tap"
+        required: false
+        type: boolean
+        default: false
 
 env:
   # The tap repository; the formula is pushed there as Formula/ssf.rb.
@@ -50,6 +58,9 @@ permissions:
 jobs:
   formula:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Version from the tag
         id: version
@@ -97,9 +108,96 @@ jobs:
           name: ssf.rb
           path: rendered/ssf.rb
 
-      - name: Push the formula to the tap
+  bottle:
+    needs: [formula]
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest macOS of each architecture: Homebrew pours a bottle
+        # built for an older macOS on newer ones, so these two cover every
+        # Mac the formula supports; macos-15 is only for when macos-14
+        # runners retire.
+        runner: [macos-14, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ssf.rb
+
+      - name: Build the bottle
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ needs.formula.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # brew builds bottles only of tapped formulae: a throwaway local tap.
+          brew tap-new --no-git local/ssf
+          cp ssf.rb "$(brew --repository local/ssf)/Formula/ssf.rb"
+          brew install --build-bottle local/ssf/ssf
+          brew test local/ssf/ssf
+          brew bottle --json \
+            --root-url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}" \
+            local/ssf/ssf
+          ls -l ./*.bottle.*
+
+      - name: Attach the bottle to the release
+        if: inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.formula.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # brew writes ssf--X.Y.Z.TAG.bottle.tar.gz and downloads the name in
+          # the JSON's "filename", ssf-X.Y.Z.TAG.bottle.tar.gz.
+          for json in ./*.bottle.json; do
+            jq -r '.[].bottle.tags[] | [.local_filename, .filename] | @tsv' "$json" |
+              while IFS=$'\t' read -r local remote; do
+                mv "$local" "$remote"
+                gh release upload "$TAG" "$remote" --clobber
+              done
+          done
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bottle-${{ matrix.runner }}
+          path: ./*.bottle.json
+
+  publish:
+    needs: [formula, bottle]
+    # Also when a bottle job failed: the formula then carries the bottles
+    # that were built and the rest of Macs build from source.
+    if: always() && needs.formula.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      # The workflow's own commit, not the tag: bottle.rb is a release tool,
+      # and a tag cut before it existed can be bottled by a later one.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+
+      - name: Add the bottle block
+        env:
+          TAG: ${{ needs.formula.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p rendered
+          shopt -s nullglob
+          packaging/homebrew/bottle.rb artifacts/ssf.rb/ssf.rb \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}" \
+            artifacts/bottle-*/*.bottle.json > rendered/ssf.rb
+          ruby -c rendered/ssf.rb
+          cat rendered/ssf.rb
+
+      - name: Push the formula to the tap
+        if: inputs.dry_run != true
+        env:
+          VERSION: ${{ needs.formula.outputs.version }}
           DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           set -euo pipefail
