@@ -8,6 +8,17 @@ placeholder) and pushes the result to the tap repository
 [mikekelly/homebrew-tap](https://github.com/mikekelly/homebrew-tap) as
 `Formula/ssf.rb`, which is what `brew install` reads.
 
+Before the push, the workflow builds a bottle on `macos-14` (arm64) and
+`macos-15-intel` with `brew install --build-bottle` and `brew bottle
+--json`, attaches each bottle to the release as
+`ssf-X.Y.Z.TAG.bottle.tar.gz`, and `bottle.rb` writes a `bottle do` block
+(`root_url` the release's download url, one sha256 per bottle) into the
+formula. Homebrew pours a bottle on its macOS version and newer ones, so
+installs need no Rust toolchain; a Mac with no bottle, or a release whose
+bottle job failed, builds from source as before. A manual dispatch with
+`dry_run` builds the bottles and renders the formula without uploading or
+pushing anything.
+
 The formula is for macOS, and says so to Homebrew with `depends_on
 :macos`, so Linuxbrew refuses it rather than installing something that
 does not work. On Linux `brew services` would write a

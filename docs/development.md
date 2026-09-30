@@ -372,7 +372,10 @@ automates, for reference:
    own), which renders
    `packaging/homebrew/ssf.rb` (the formula's source of truth; the
    `url` and `sha256` of the tag tarball go in, see
-   `packaging/homebrew/render.sh`) and pushes it to the tap
+   `packaging/homebrew/render.sh`), builds bottles of it on macOS runners
+   (arm64 and Intel), attaches them to the release, adds their `bottle do`
+   block (`packaging/homebrew/bottle.rb`; a failed bottle job only leaves
+   its Macs building from source) and pushes it to the tap
    `mikekelly/homebrew-tap` as `Formula/ssf.rb` when the
    `HOMEBREW_TAP_DEPLOY_KEY` secret is set. Without it, the workflow uploads the
    rendered formula as the run's `ssf.rb` artifact and then fails
@@ -443,7 +446,7 @@ from the release either way.
 | `src/ui.rs`, `bin/ssf-ui` | Omarchy integration: the **Factory** menu entries, the removal of the superseded bar widget, and the helper behind them (service toggle, log, status terminal) |
 | `packaging/` | the development PKGBUILD, the Omarchy systemd unit, pacman install script, `dev-install.sh` (the service on a dev build); `release/` is the release PKGBUILD and Omarchy metadata, the directory that goes into omarchy-pkgs; `linux/` is the .deb and .rpm: `nfpm.yaml`, `build.sh`, the `default.target` unit and the post-install and post-remove hooks; `homebrew/` is the macOS formula, its render script and the tap notes |
 | `.github/workflows/release.yml` | the release workflow: on a `vX.Y.Z` tag, builds the .deb, .rpm, .pkg.tar.zst and bare binaries and attaches them to the GitHub release |
-| `.github/workflows/homebrew.yml` | the tap workflow: when the release is published, renders the Homebrew formula and pushes it to `mikekelly/homebrew-tap` |
+| `.github/workflows/homebrew.yml` | the tap workflow: when the release is published, renders the Homebrew formula, builds and attaches macOS bottles and pushes it to `mikekelly/homebrew-tap` |
 | `skills/working-with-ssf/` | the thin installable agent skill: affordance hooks, installation link and `ssf skill` entrypoint |
 | `docs/` | `install.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/`; `docs/skills/root.md` is the `ssf skill` router |
 
