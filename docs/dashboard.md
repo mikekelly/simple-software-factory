@@ -105,7 +105,7 @@ daemon directly, and everything the dashboards read comes from that process:
 
 `ssf setup` and `ssf ui service enable` need a service manager and are what
 such a host skips; see
-[host mode with standalone binaries](install.md#33-standalone-binaries-on-a-rented-host).
+[host mode with standalone binaries](install-common.md#43-standalone-binaries).
 `ssf status` and `ssf doctor` then report the daemon rather than the unit —
 `service: running (started outside ssf.service, which is stopped and disabled)`
 — and the dashboard draws no warning at all.

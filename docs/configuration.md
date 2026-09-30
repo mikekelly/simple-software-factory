@@ -347,4 +347,4 @@ refused at load with the fix spelled out, `ssf status` prints a warning
 while the wildcard is in effect, and the dashboards show one. Ask the
 person before setting it; it is their repository and their spend. Choosing
 the list during installation is step 7 of
-[install.md](install.md#7-who-may-drive-the-factory).
+[install-common.md](install-common.md#9-who-may-drive-the-factory).

@@ -19,7 +19,7 @@ and that decides what it needs before it can do anything for them:
 | GitHub | The liaison's own integration or account, never the factory bot's credentials | The same, on the liaison machine, alongside the SSH access it needs |
 
 Complete the factory first: [Install](install.md), or
-[Dedicated servers](platform-specifics.md#dedicated-servers) when it runs on
+[Host mode on a dedicated server](install-server.md#host-mode-on-a-dedicated-server) when it runs on
 a server of its own. Then set up the side the liaison runs on (the "Setup"
 sections below), and configure its monitoring last.
 
@@ -105,7 +105,7 @@ remote liaison can see GitHub but not the factory.
    ```
 
 3. **The client on the liaison machine**, if it has none: see
-   [Client only, driving a factory elsewhere](install.md#34-client-only-driving-a-factory-elsewhere).
+   [Client only, driving a factory elsewhere](install-common.md#44-client-only-driving-a-factory-elsewhere).
    Driving a remote factory needs neither a local daemon nor `ssf setup`.
 
 4. **A name for the factory**, so the destination is written once:

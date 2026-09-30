@@ -7,7 +7,7 @@ on the generic path: read the section that matches the machine in front of
 you, and ignore the rest.
 
 Each section opens with one line saying when it applies. The generic
-instructions live in `ssf skill setup` (docs/install.md),
+instructions live in `ssf skill setup` (docs/install.md and the route documents it links),
 `ssf skill operate` (docs/operate.md) and
 `ssf skill troubleshoot` (docs/troubleshooting.md).
 
@@ -210,69 +210,9 @@ cannot run a VM at all, use host mode or a dedicated server instead.
 
 ## Dedicated servers
 
-**Host mode only; a guest on the server skips this section** (its agents run as the guest's `ssf` user, which already has passwordless sudo, and the `.deb`/`.rpm` already brings gh, git and jq).
-
-Applies when the factory runs on a server or VPS dedicated to it, running
-nothing else: a bot account's dedicated server, or a VPS from Hetzner,
-Linode, OVH or similar. This is the recommended path for such a server
-([install.md](install.md#a-server)); a server that also runs a resident
-agent or other services gets a guest instead. It is also the fallback on a
-shared server that can run no guest.
-
-The server runs the factory in host mode; the person operates it from
-their own machine as a client over SSH. Nothing here needs KVM, Docker or a
-desktop session, though it does need a Unix account the agents will run as:
-in host mode agents can reach that user's files and credentials, so give the
-factory its own account. The target state: the server is reachable over
-SSH, the factory account can become root without a password so the agents
-manage their own environment (the server is the isolation boundary, so this
-is safe there), the factory runs as a service that survives logout and
-reboot, and the server is saved in the person's local herdr so they, and
-agents on their machine, can oversee the sessions.
-
-1. Check the host's real capabilities rather than the product description:
-   architecture, RAM, free disk, whether `/dev/kvm` is usable, and whether
-   `systemctl --user` works. A vendor name settles none of these.
-2. Create the factory account and give it passwordless sudo, for example
-   `echo 'ssf ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/ssf` as root, then
-   `visudo -cf /etc/sudoers.d/ssf`. Put the person's SSH public key in that
-   account's `authorized_keys` so they, and `herdr machine add`, can reach
-   it directly.
-3. Install prerequisites with the host's package manager: CA certificates,
-   curl, git, jq, a recent `gh`, and an OpenSSH client (`ssh-keygen` is
-   needed to enrol the bot's key). Refresh package indexes first on minimal
-   images.
-4. Install herdr, and the harness CLIs the repositories will use, as the
-   same Unix user that will run the factory.
-5. Install ssf **as a distribution package where one fits** (Debian/Ubuntu or
-   Fedora/RHEL on x86_64 or aarch64, Arch on x86_64; install.md section 3.1): it brings `gh`
-   and the `ssf@.service` unit. Enable linger for the factory account
-   (`sudo loginctl enable-linger ssf`), then as that account run
-   `ssf server add local --local` and `ssf setup` (install.md section 4);
-   the service then survives logout and starts at boot.
-6. Otherwise (no package fits), put `ssf` and `ssf-server`
-   **from the same release** into `~/.local/bin` on that account, keep the
-   two together, and persist that directory on `PATH` (install.md section
-   3.3). Leave the server catalog empty, so the client and a foreground
-   `ssf-server` share one configuration and state, do not set `SSF_SERVER`,
-   and run `ssf-server` under whatever keeps processes alive on that host.
-7. Sign the bot in (`ssf auth login`) and watch a repository
-   (`ssf repo add owner/repo --harness ID --model MODEL --effort EFFORT`,
-   install.md section 9).
-8. From the person's own machine, reach it as a client:
-   `ssf --server user@host status`, or give it a catalog name with
-   `ssf server add NAME --ssh user@host`. SSH starts the same command
-   endpoint on the remote machine; ssf opens no TCP listener. The SSH
-   account must be the one that can operate that factory, and needs
-   `ssf-server` on its `PATH`.
-9. Save the server in the person's local herdr, from an interactive
-   terminal on their machine: `herdr machine add user@host --label factory`.
-   Answer No if it offers to replace the running remote server. The
-   sessions then appear beside Local in their sidebar; see
-   [liaison.md](liaison.md#inspect-the-factorys-herdr-server).
-
-Renting a machine costs money and usually means creating an account: both
-are the person's decision, not yours.
+Applies when the factory runs on a server or VPS dedicated to it. The procedure is
+[Host mode on a dedicated server](install-server.md#host-mode-on-a-dedicated-server)
+(`ssf skill setup-server`).
 
 ## Tailscale
 
@@ -306,7 +246,7 @@ behaves unusually inside a session.
 sessions: ssf answers first-run trust dialogs from the pane, but a login
 prompt is the one dialog it cannot answer. Sign in as the same Unix user
 and `HOME` that runs herdr; in VM mode that is the guest: an agent does it through herdr as in
-[install.md](install.md#8-sign-in-the-harness), or the person runs
+[install-common.md](install-common.md#10-sign-in-the-harness), or the person runs
 `ssf vm ssh`, starts the harness and uses its own sign-in. The credential is
 written there; nothing is copied from the host.
 

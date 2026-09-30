@@ -420,11 +420,11 @@ automates, for reference:
 The first submission to omarchy-pkgs is a PR adding `pkgbuilds/ssf/` from
 `packaging/release/` (issue #123 has the prepared branch and the command).
 When it lands, the Arch install line in `README.md` and
-[Install](install.md) switches from "download the package from the latest
+[Install](install-common.md#41-linux-package) switches from "download the package from the latest
 release" to `sudo pacman -S ssf`, and this document's development-build
 note stays as it is. Until then the release carries the package file
 (`ssf-X.Y.Z-1-x86_64.pkg.tar.zst`, built by the workflow) and
-[Install](install.md) says "from the latest release"; the .deb and .rpm come
+[Install](install-common.md#41-linux-package) says "from the latest release"; the .deb and .rpm come
 from the release either way.
 
 ## Layout
@@ -458,7 +458,7 @@ from the release either way.
 | `.github/workflows/release.yml` | the release workflow: on a `vX.Y.Z` tag, builds the .deb, .rpm, .pkg.tar.zst and bare binaries and attaches them to the GitHub release |
 | `.github/workflows/homebrew.yml` | the tap workflow: when the release is published, renders the Homebrew formula, builds and attaches macOS bottles and pushes it to `mikekelly/homebrew-tap` |
 | `skills/working-with-ssf/` | the thin installable agent skill: affordance hooks, installation link and `ssf skill` entrypoint |
-| `docs/` | `install.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/`; `docs/skills/root.md` is the `ssf skill` router |
+| `docs/` | `install.md` (the setup hub) and `install-*.md` (its route and shared-step documents) and the reference behind the README, installed under `/usr/share/doc/ssf/`; `docs/skills/root.md` is the `ssf skill` router |
 
 Large unit-test suites live beside their implementation under `src/<module>/tests.rs`
 or `src/<module>/tests/`, with shared fixtures in the test module. Start with the
