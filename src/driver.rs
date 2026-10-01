@@ -708,6 +708,37 @@ impl Driver {
         }
     }
 
+    /// Reopen the exact retained checkout after its last pane disappeared.
+    /// This never creates a git worktree or chooses a different branch.
+    pub async fn reopen_worktree(
+        &self,
+        repo_id: &str,
+        repo: &str,
+        number: u64,
+        path: &str,
+    ) -> Result<String> {
+        match self {
+            Driver::Herdr(d) => {
+                d.open_worktree(
+                    repo_root(repo_id),
+                    &crate::herdr::workspace_label(repo, number),
+                    path,
+                )
+                .await
+            }
+            #[cfg(test)]
+            Driver::Stub(d) => d.with(|s| {
+                if let Some(why) = s.reopen_error.take() {
+                    bail!("{why}");
+                }
+                let id = format!("stub::{path}");
+                s.worktrees.insert(id.clone());
+                s.log.push(format!("reopen:{id}"));
+                Ok(id)
+            }),
+        }
+    }
+
     /// Filesystem path of the repository's main checkout.
     pub async fn repo_path(&self, repo_id: &str) -> Result<String> {
         match self {
@@ -854,7 +885,8 @@ impl Driver {
     }
 
     /// Quit the agent in a terminal (a harness stuck on a login prompt,
-    /// say) so the next delivery starts it again. The workspace stays.
+    /// say) so the next delivery starts it again. Closing the last pane
+    /// can remove the workspace; its git checkout remains on disk.
     pub async fn stop_agent(&self, worktree_id: &str, handle: &str) -> Result<()> {
         match self {
             Driver::Herdr(d) => d.stop_agent(worktree_id, handle).await,
@@ -997,6 +1029,10 @@ pub struct StubState {
     pub projects: u32,
     /// When set, the next workspace creation fails with this message.
     pub create_error: Option<String>,
+    /// Closing the outgoing agent removes its workspace, as Herdr does
+    /// when that agent occupies its last pane.
+    pub stop_removes_workspace: bool,
+    pub reopen_error: Option<String>,
     /// When set, the next `start` fails with this message: a harness that
     /// cannot be started at all.
     pub start_error: Option<String>,
@@ -1185,6 +1221,9 @@ impl StubDriver {
 
     fn start(&self, worktree_id: &str, command: &str, harness: &str, text: &str) -> Result<String> {
         self.with(|s| {
+            if !s.worktrees.contains(worktree_id) {
+                bail!("{worktree_id}: no such workspace");
+            }
             if let Some(why) = s.start_error.take() {
                 bail!("{why}");
             }
@@ -1270,6 +1309,9 @@ impl StubDriver {
             // The pane has no agent in it any more: a driver reports none,
             // and nothing says what harness was ever there.
             s.harnesses.remove(worktree_id);
+            if s.stop_removes_workspace {
+                s.worktrees.remove(worktree_id);
+            }
             s.log.push(format!("stop:{handle}"));
         });
     }

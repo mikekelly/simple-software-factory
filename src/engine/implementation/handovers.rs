@@ -292,8 +292,8 @@ which harness is running in its workspaces"
         };
         let kind = self.item_kind(repo, number);
         let text = prompt::handover_prompt(&note_from, kind, summary.as_deref(), &story.text);
-        // End the caller's pane. The workspace stays, so the new session
-        // opens on the same checkout and branch.
+        // End the caller's pane. Closing its last pane can remove the
+        // workspace, but the checkout and branch stay on disk.
         match self
             .driver(repo)
             .live_handle(&wt, st.terminal_handle.as_deref())
@@ -393,7 +393,7 @@ which harness is running in its workspaces"
                 summary: summary.clone(),
             });
         }
-        for n in bound {
+        for &n in &bound {
             let e = self.entry(repo, n);
             e.agent_session_id = None;
             retire(e, &retired);
@@ -411,11 +411,39 @@ which harness is running in its workspaces"
             tokens,
         );
         self.record_launch(repo, number, &eff);
-        let handle = match self
-            .driver(repo)
-            .start(&wt, &cmd, &title, &eff.harness, &text)
-            .await
-        {
+        let started = async {
+            // The outgoing pane has now ended and its attribution and
+            // unread note are saved on the item. Check again here: the
+            // pre-stop check cannot cover Herdr removing the last pane's
+            // workspace. Reopen only this item's retained checkout;
+            // generic rehydration could create a different one.
+            let wt = if self.driver(repo).worktree_exists(&wt).await? {
+                wt
+            } else {
+                let path = st
+                    .worktree_path
+                    .as_deref()
+                    .context("the item has no retained checkout path")?;
+                let repo_id = self.repo_id_for(repo, number).await?;
+                let id = self
+                    .driver(repo)
+                    .reopen_worktree(&repo_id, &repo.name, number, path)
+                    .await?;
+                let e = self.entry(repo, number);
+                e.worktree_id = Some(id.clone());
+                for &n in &bound {
+                    let e = self.entry(repo, n);
+                    e.worktree_id = Some(id.clone());
+                    e.worktree_path = Some(path.to_string());
+                }
+                id
+            };
+            self.driver(repo)
+                .start(&wt, &cmd, &title, &eff.harness, &text)
+                .await
+        }
+        .await;
+        let handle = match started {
             Ok(handle) => handle,
             Err(e) if crate::herdr::at_question(&e).is_some() => {
                 // The new harness is running, at a question ssf does not
