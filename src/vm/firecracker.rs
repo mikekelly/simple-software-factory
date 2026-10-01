@@ -166,6 +166,70 @@ impl Vm {
         }
     }
 
+    /// Enlarge the Firecracker root disk (`root.ext4`, this VM's own copy
+    /// of the image, not the image itself) to `want` GiB, with the VM
+    /// stopped: checked, lengthened, resized offline. Never shrinks.
+    /// Returns the new size, or `None` when it is that size already.
+    /// lima and incus have no such step.
+    pub fn grow_root(&self, want: u32) -> Result<Option<u32>> {
+        match self.backend() {
+            BackendKind::Firecracker => {}
+            BackendKind::Lima => bail!(
+                "`ssf vm grow --root-gib` is Firecracker only: a lima instance's root disk is set when the instance is made ([vm] root_gib, at least {} GiB) and ssf does not resize it",
+                lima::ROOT_GIB_FLOOR
+            ),
+            BackendKind::Incus => bail!(
+                "`ssf vm grow --root-gib` is Firecracker only: an Incus container's root is its storage pool's, not a disk ssf can grow"
+            ),
+        }
+        if self.running_or_refuse("grow")? {
+            bail!(
+                "VM {} is running; stop it first (`{}` when the service owns it, else `ssf vm stop`), grow, then start it again",
+                self.cfg.name,
+                platform::service_hint("stop")
+            );
+        }
+        let disk = self.root_disk();
+        let meta = std::fs::symlink_metadata(&disk).with_context(|| {
+            format!(
+                "{} does not exist yet; `ssf vm start` makes it from the image",
+                disk.display()
+            )
+        })?;
+        // Only the VM's own copy: never the image a reset copies from.
+        let image = std::fs::metadata(self.rootfs()).ok();
+        if !meta.file_type().is_file()
+            || image.is_some_and(|i| {
+                use std::os::unix::fs::MetadataExt;
+                (i.dev(), i.ino()) == (meta.dev(), meta.ino())
+            })
+        {
+            bail!(
+                "{} is not this VM's own copy of the image ({}), so `ssf vm grow` leaves it alone",
+                disk.display(),
+                self.rootfs().display()
+            );
+        }
+        let current = u32::try_from(meta.len().div_ceil(1 << 30)).unwrap_or(u32::MAX);
+        let Some(target) = plan_root_grow(current, want)? else {
+            println!("{} stays at {current} GiB", disk.display());
+            return Ok(None);
+        };
+        let facts = HostFacts::probe(&self.base)?;
+        let allocated = std::os::unix::fs::MetadataExt::blocks(&meta) * 512;
+        if (u64::from(target) << 30).saturating_sub(allocated) > facts.free_bytes {
+            warn!(
+                "{target} GiB is more than the host has free ({} GiB on {}); a guest that fills the disk would see I/O errors before \"disk full\"",
+                facts.free_bytes >> 30,
+                facts.mount
+            );
+        }
+        info!("checking and resizing {}", disk.display());
+        grow_image(&disk, u64::from(target) << 30)?;
+        println!("{} grown from {current} to {target} GiB", disk.display());
+        Ok(Some(target))
+    }
+
     pub(in crate::vm) fn fc_grow(&self, want: Option<u32>) -> Result<Option<u32>> {
         let disk = self.data_disk();
         let meta = std::fs::metadata(&disk).with_context(|| {
@@ -640,6 +704,17 @@ impl Vm {
                 .status()?;
             if !st.success() {
                 bail!("copying the image failed");
+            }
+            // An image built smaller than [vm] root_gib (an older default,
+            // or a root grown since): the fresh copy is grown to match.
+            let len = std::fs::metadata(self.root_disk())?.len();
+            if len < u64::from(self.cfg.root_gib) << 30 {
+                info!(
+                    "growing {} to {} GiB",
+                    self.root_disk().display(),
+                    self.cfg.root_gib
+                );
+                grow_image(&self.root_disk(), u64::from(self.cfg.root_gib) << 30)?;
             }
         }
         self.require_compatible_root()?;

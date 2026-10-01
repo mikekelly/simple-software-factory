@@ -154,7 +154,7 @@ fn vm_sizes_stay_unset_until_written_and_old_files_pin_them() {
     assert!(!text.contains("vcpus"), "{text}");
     assert!(!text.contains("mem_mib"), "{text}");
     assert!(!text.contains("data_gib"), "{text}");
-    assert!(text.contains("root_gib = 8"), "{text}");
+    assert!(text.contains("root_gib = 20"), "{text}");
     let back: Config = toml::from_str(&text).unwrap();
     assert_eq!(back.vm.vcpus, None);
     assert_eq!(back.vm.data_gib, None);

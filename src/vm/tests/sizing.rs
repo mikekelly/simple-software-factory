@@ -87,6 +87,11 @@ fn grow_plans_refuse_to_shrink_and_skip_the_same_size() {
     let e = plan_grow(20, Some(10), 80).unwrap_err().to_string();
     assert!(e.contains("shrink"), "{e}");
     assert!(plan_grow(20, Some(0), 80).is_err());
+    // The root disk: only the size asked for, named in the refusal.
+    assert_eq!(plan_root_grow(8, 20).unwrap(), Some(20));
+    assert_eq!(plan_root_grow(20, 20).unwrap(), None);
+    let e = plan_root_grow(20, 8).unwrap_err().to_string();
+    assert!(e.contains("the root disk") && e.contains("shrink"), "{e}");
 }
 
 #[test]

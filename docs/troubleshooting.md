@@ -177,7 +177,9 @@ rather than running slowly.
 
 Disk: stop the VM (stop the service, or `ssf vm stop` when it was started by
 hand), `ssf vm grow`, start it again. Growing keeps what is on the disk and
-requires the VM to be stopped. Free space first if growing is not possible:
+requires the VM to be stopped. A full root filesystem (`/`, not
+`/var/lib/ssf`) under Firecracker grows the same way with `ssf vm grow
+--root-gib N` (see [Size](vm.md#size)). Free space first if growing is not possible:
 `ssf purge` removes the workspaces of closed items whose agent is gone.
 
 Memory: `ssf config set vm.mem_mib N` (acts on the host side of a VM target) and `ssf vm restart`.

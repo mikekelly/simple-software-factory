@@ -64,7 +64,8 @@
 # data_gib =                                   # persistent data disk (state, clones, worktrees); sparse, so a cap, not a reservation.
 #                                              # unset = half the free space where the disk will live, at least 20; `ssf vm build` prints
 #                                              # the path it measured, and `ssf vm grow` enlarges the disk later
-# root_gib = 8                                 # size of the root image `ssf vm build` makes (lima: the instance's root disk, at least 20)
+# root_gib = 20                                # size of the root image `ssf vm build` makes (lima: the instance's root disk, at least 20);
+#                                              # `ssf vm grow --root-gib N` enlarges a Firecracker VM's root disk later
 # ssh_port = 2222                              # the guest's sshd on 127.0.0.1
 # files = ["~/.claude/.credentials.json"]      # host files copied into the guest at every start; `src:dest` to place them
 #                                              # (a copied login is the same session as yours: a guest logout signs you out here too; prefer `ssf vm login`)

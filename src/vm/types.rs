@@ -622,10 +622,20 @@ pub fn choose_sizes(cfg: &mut VmConfig, flags: [Option<u32>; 3], rule: Sizes) ->
 /// rule for today. Smaller than today is refused; the same size is
 /// nothing to do.
 pub fn plan_grow(current: u32, want: Option<u32>, rule: u32) -> Result<Option<u32>> {
+    plan_disk_grow("the data disk", current, want, rule)
+}
+
+/// [`plan_grow`] for the Firecracker root disk: no rule, only the size
+/// asked for. A smaller root comes from `ssf vm reset` (the image's size).
+pub fn plan_root_grow(current: u32, want: u32) -> Result<Option<u32>> {
+    plan_disk_grow("the root disk", current, Some(want), want)
+}
+
+fn plan_disk_grow(what: &str, current: u32, want: Option<u32>, rule: u32) -> Result<Option<u32>> {
     let target = want.unwrap_or(rule);
     match target.cmp(&current) {
         std::cmp::Ordering::Less if want.is_some() => bail!(
-            "the data disk is {current} GiB and {target} GiB would shrink it, which `ssf vm grow` does not do (a smaller disk means a new VM: `ssf vm destroy`)"
+            "{what} is {current} GiB and {target} GiB would shrink it, which `ssf vm grow` does not do (a smaller disk means a new VM: `ssf vm destroy`)"
         ),
         std::cmp::Ordering::Less | std::cmp::Ordering::Equal => Ok(None),
         std::cmp::Ordering::Greater => Ok(Some(target)),
