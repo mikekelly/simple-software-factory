@@ -763,7 +763,7 @@ fn default_vm_dir() -> String {
     "~/.local/share/ssf/vm".to_string()
 }
 fn default_vm_root_gib() -> u32 {
-    8
+    20
 }
 fn default_vm_ssh_port() -> u16 {
     2222

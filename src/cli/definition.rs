@@ -501,18 +501,25 @@ pub(super) enum VmCommand {
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         data_gib: Option<u32>,
     },
-    /// Enlarge an existing VM's data disk, keeping what is on it (the VM
-    /// must be stopped).
+    /// Enlarge an existing VM's data disk, or its root disk, keeping what
+    /// is on it (the VM must be stopped).
     ///
-    /// Grows to the size given, or to the rule for today's free space
-    /// (half of it, at least 20 GiB): Firecracker runs `e2fsck -f`,
-    /// lengthens the file and `resize2fs`; lima runs `limactl disk resize`
-    /// and the guest grows the filesystem at its next boot; incus sets the
-    /// volume's `size`. Then `[vm] data_gib` is updated. Never shrinks; a smaller disk means a new VM.
+    /// Grows the data disk to the size given, or to the rule for today's
+    /// free space (half of it, at least 20 GiB): Firecracker runs `e2fsck
+    /// -f`, lengthens the file and `resize2fs`; lima runs `limactl disk
+    /// resize` and the guest grows the filesystem at its next boot; incus
+    /// sets the volume's `size`. Then `[vm] data_gib` is updated. With
+    /// `--root-gib` (Firecracker only) the VM's `root.ext4` is grown the
+    /// same way and `[vm] root_gib` updated; the data disk then grows only
+    /// when `--data-gib` is given too. Never shrinks; a smaller disk means a new VM.
     Grow {
-        /// The new size in GiB (at least the current size).
+        /// The data disk's new size in GiB (at least the current size).
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         data_gib: Option<u32>,
+        /// The root disk's new size in GiB (at least the current size;
+        /// Firecracker only).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        root_gib: Option<u32>,
     },
     /// Boot the VM (making its disks on first use) and wait for its daemon.
     Start,

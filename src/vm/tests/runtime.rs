@@ -117,6 +117,41 @@ fn grow_resizes_the_image_and_refuses_a_running_vm() {
     let blocks =
         std::os::unix::fs::MetadataExt::blocks(&std::fs::metadata(vm.data_disk()).unwrap());
     assert!(blocks * 512 < 1 << 30, "{blocks} blocks");
+    // The root disk: this VM's root.ext4 grows, the image it was copied
+    // from does not, and the data disk is left as it is.
+    let e = vm.grow_root(2).unwrap_err().to_string();
+    assert!(e.contains("does not exist yet"), "{e}");
+    std::fs::write(vm.rootfs(), "the image").unwrap();
+    std::os::unix::fs::symlink(vm.rootfs(), vm.root_disk()).unwrap();
+    let e = vm.grow_root(2).unwrap_err().to_string();
+    assert!(e.contains("not this VM's own copy"), "{e}");
+    std::fs::remove_file(vm.root_disk()).unwrap();
+    std::fs::hard_link(vm.rootfs(), vm.root_disk()).unwrap();
+    let e = vm.grow_root(2).unwrap_err().to_string();
+    assert!(e.contains("not this VM's own copy"), "{e}");
+    std::fs::remove_file(vm.root_disk()).unwrap();
+    let f = std::fs::File::create(vm.root_disk()).unwrap();
+    f.set_len(1 << 30).unwrap();
+    drop(f);
+    run_ok(
+        Command::new("mkfs.ext4")
+            .args(["-q", "-F", "-L", "ssf-root"])
+            .arg(vm.root_disk()),
+        "mkfs",
+    )
+    .unwrap();
+    assert!(vm.grow_root(0).is_err(), "shrinking is refused");
+    assert_eq!(vm.grow_root(1).unwrap(), None, "same size: nothing to do");
+    assert_eq!(vm.grow_root(2).unwrap(), Some(2));
+    assert_eq!(block_count(&vm.root_disk()), 2 << 30);
+    assert_eq!(std::fs::read(vm.rootfs()).unwrap(), b"the image");
+    assert_eq!(vm.data_cap_gib(), 2);
+    for backend in [BackendKind::Lima, BackendKind::Incus] {
+        let mut other = cfg.clone();
+        other.vm.backend = Some(backend);
+        let e = Vm::new(&other).grow_root(4).unwrap_err().to_string();
+        assert!(e.contains("Firecracker only"), "{e}");
+    }
     // Running (a process whose name says firecracker): refused.
     let fake = dir.join("firecracker");
     crate::test_support::write_executable(&fake, std::fs::read("/bin/sleep").unwrap());
@@ -135,6 +170,9 @@ fn grow_resizes_the_image_and_refuses_a_running_vm() {
     let e = vm.grow(Some(4)).unwrap_err().to_string();
     assert!(e.contains("is running"), "{e}");
     assert_eq!(vm.data_cap_gib(), 2, "untouched");
+    let e = vm.grow_root(4).unwrap_err().to_string();
+    assert!(e.contains("is running"), "{e}");
+    assert_eq!(std::fs::metadata(vm.root_disk()).unwrap().len(), 2 << 30);
     child.kill().unwrap();
     child.wait().unwrap();
     let _ = std::fs::remove_dir_all(&dir);

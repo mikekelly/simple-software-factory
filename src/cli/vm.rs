@@ -145,9 +145,22 @@ pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
             size_vm(&mut cfg, &vm.base, [vcpus, mem_mib, data_gib])?;
             factory_vm::Vm::new(&cfg).build(&cfg, force).await
         }
-        VmCommand::Grow { data_gib } => {
+        VmCommand::Grow { data_gib, root_gib } => {
+            let mut cfg = cfg;
+            if let Some(want) = root_gib
+                && let Some(n) = vm.grow_root(want)?
+            {
+                cfg.vm.root_gib = n;
+                cfg.save_vm_settings()?;
+                println!(
+                    "vm.root_gib = {n} written to {}",
+                    vm_settings_destination()?
+                );
+            }
+            if root_gib.is_some() && data_gib.is_none() {
+                return Ok(());
+            }
             if let Some(n) = vm.grow(data_gib)? {
-                let mut cfg = cfg;
                 cfg.vm.data_gib = Some(n);
                 cfg.save_vm_settings()?;
                 println!(

@@ -124,8 +124,8 @@ neither backend: both seed a Linux `ssf` into the guest.
 | `build` | downloads Firecracker, gvproxy, a kernel and a pinned Ubuntu 24.04 minimal-cloud root tarball into `vm.dir`, verifies each against the SHA-256 pinned in `src/vm.rs`, makes the root image and boots it once to provision | writes `lima.yaml` and `share/`, creates the data disk if absent, `limactl create`, then a first start during which the guest provisions itself; stops the instance afterwards | writes `share/`, creates the data volume if absent, `incus init` and the devices, then a first start in which `incus exec` provisions the guest with the lima guest scripts; stops the container afterwards |
 | `start` | boots the microVM, waits for ssh and the guest daemon | writes `share/` fresh, `limactl start`, waits for the provisioning marker, ssh and the daemon | writes `share/` fresh, applies `limits.cpu`/`limits.memory`, `incus start`, provisions a reset container, waits for ssh and the daemon |
 | `stop` | Ctrl-Alt-Del through Firecracker's API | `limactl stop`, then `limactl stop -f` if that fails | `incus stop`, then `incus stop --force` if that fails |
-| `grow` | `e2fsck -f`, lengthens the file, `resize2fs` | `limactl disk resize`; the guest grows the filesystem at its next boot | sets the volume's `size` (a pool that cannot cap volumes leaves them uncapped, and there is nothing to grow) |
-| `reset` | the root disk remade from a rebuilt image | `limactl delete` and `limactl create`; provisioned again at the next start | `incus delete` and a new container on the same volume; provisioned again at the next start |
+| `grow` | `e2fsck -f`, lengthens the file, `resize2fs` (the data disk; with `--root-gib`, `root.ext4`) | `limactl disk resize`; the guest grows the filesystem at its next boot | sets the volume's `size` (a pool that cannot cap volumes leaves them uncapped, and there is nothing to grow); no `--root-gib` |
+| `reset` | the root disk remade from a rebuilt image, grown to `root_gib` | `limactl delete` and `limactl create`; provisioned again at the next start | `incus delete` and a new container on the same volume; provisioned again at the next start |
 | `destroy --yes` | the disks and `<vm.dir>/<name>/` | the instance, the data disk and `<vm.dir>/<name>/`; the confirmation names all three | the container, the volume and `<vm.dir>/<name>/` |
 | `console` | the serial console log | the instance's `serial.log` in lima's instance directory | `incus console --show-log`, saved to `<vm.dir>/<name>/console.log` |
 
@@ -149,7 +149,7 @@ editable.
 | `vcpus` | the host's logical CPUs minus one | 2 |
 | `mem_mib` | half the host's RAM, rounded down to 256 MiB; never more than the host's RAM | 4096, or the host's RAM when smaller |
 | `data_gib` | half the free space, at build time, of the filesystem that will hold the data disk | 20 |
-| `root_gib` | the system only: 8 under Firecracker | 20 under lima, whatever the key says |
+| `root_gib` | the system only: 20 under Firecracker | 20 under lima, whatever the key says |
 
 Which filesystem is measured depends on the backend: `vm.dir` under
 Firecracker, lima's own disk directory (`$LIMA_HOME/_disks`, by default
@@ -186,6 +186,24 @@ ssf ui service disable               # add --server NAME when several targets ex
 ssf vm grow                          # or: ssf vm grow --data-gib 200
 ssf ui service enable                # or `ssf vm start` for a VM operated by hand
 ```
+
+Under Firecracker the root disk (`<vm dir>/<name>/root.ext4`, the VM's own
+copy of the image, which holds the system and tooling agents install) can fill
+too. `ssf vm grow --root-gib N` enlarges it offline the same way and writes
+`root_gib`; the data disk then grows only if `--data-gib` is given as well. A
+reset copies the image again, grown to `root_gib`. The VM must be stopped:
+
+```sh
+ssf vm stop                          # or stop the service, as above
+ssf vm grow --root-gib 40
+ssf vm start
+```
+
+Both disks are checked with `e2fsck -f` before anything changes; a failed
+check leaves the image untouched. If `resize2fs` fails after the file was
+lengthened, the larger file with the old filesystem still boots as before;
+with the VM stopped, run `resize2fs <vm dir>/<name>/root.ext4` (or
+`data.ext4`) by hand to finish. lima and incus have no root grow.
 
 `ssf vm status` shows the sizes and, with the guest reachable, the data disk's
 use against its cap. `ssf doctor`, which runs inside the guest, fails its
