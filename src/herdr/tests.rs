@@ -32,7 +32,7 @@ async fn herdr_live_last_pane_handover() {
     let closed = git.dir.join("closed");
     crate::test_support::write_executable(
         &wrapper,
-        &format!(
+        format!(
             r#"#!/bin/sh
 case "$1 $2" in
   'agent list')
