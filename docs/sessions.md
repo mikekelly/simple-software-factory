@@ -387,7 +387,9 @@ items are polled) the daemon:
 1. checks the item is still active, its workspace still known, and that the driver can
    say what is running in it;
 2. ends the outgoing agent's pane, leaving the worktree and its branch exactly as they
-   are;
+   are. If closing the last pane removes the Herdr workspace, ssf reopens the retained
+   checkout and records its new workspace id before starting the replacement. Dirty
+   files and local commits stay in that same checkout;
 3. retires the outgoing session on the record (its conversation id, terminal and any
    block go; the worktree, branch, driver and subscribers stay) and stores the target as
    the item's per-item overrides, so every later launch, resume and re-creation uses the

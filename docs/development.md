@@ -224,6 +224,23 @@ check another ordinary thread makes delivery hold rather than target the newest
 conversation. Close only your scratch pane/server; preserve journals on an
 uncertain outcome. The app-server remains experimental.
 
+## Herdr last-pane handover check
+
+With Herdr already running, run:
+
+```sh
+cargo test herdr_live_last_pane_handover -- --ignored --nocapture
+```
+
+This test creates its own temporary Git repository and Herdr workspace. Synthetic
+agent detection forces `stop_agent` to close the last pane; pane closure, workspace
+disappearance, reopening the retained checkout and a replacement shell command are
+real Herdr operations. It checks that dirty files and an unpushed commit survive.
+It closes only its own workspaces and does not restart the server or use a model or
+credentials. Engine regression tests separately cover replacement harness selection,
+shared-item rebinding and one-time summary delivery; the live check does not run a
+real model handover.
+
 ## Claude inbox live checks
 
 Use an isolated scratch checkout and a Herdr pane you created for the test;

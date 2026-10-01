@@ -1,6 +1,103 @@
 use super::*;
 use serde_json::json;
 
+/// Against an already running Herdr server. Agent detection is synthetic
+/// so stop_agent must use its pane-close fallback; Ctrl-C, last-pane
+/// disappearance, retained-checkout reopen and replacement command are
+/// real Herdr operations. No model, login or server restart is needed.
+/// `cargo test herdr_live_last_pane_handover -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore]
+async fn herdr_live_last_pane_handover() {
+    use crate::release::testkit::{scratch, sh};
+    let git = scratch("herdr-last-pane-handover").await;
+    let h = Herdr::new(HerdrConfig::default());
+    h.status().await.unwrap();
+    let wt = h
+        .create_worktree(
+            &git.work,
+            "owner/widgets",
+            "issue-711-retained",
+            711,
+            "ssf: isolated test",
+            None,
+        )
+        .await
+        .unwrap();
+    let (ws, _) = split_id(&wt.id);
+    let panes = h.panes(ws).await.unwrap();
+    assert_eq!(panes.len(), 1, "the test requires a last pane");
+    let pane = panes[0].pane_id.clone();
+    let wrapper = git.dir.join("herdr-wrapper");
+    let closed = git.dir.join("closed");
+    crate::test_support::write_executable(
+        &wrapper,
+        format!(
+            r#"#!/bin/sh
+case "$1 $2" in
+  'agent list')
+    if [ -f '{closed}' ]; then
+      echo '{{"agents":[]}}'
+    else
+      echo '{{"agents":[{{"agent":"claude","agent_status":"idle","pane_id":"{pane}","workspace_id":"{ws}"}}]}}'
+    fi
+    ;;
+  'pane close')
+    herdr "$@" || exit $?
+    touch '{closed}'
+    ;;
+  *) exec herdr "$@" ;;
+esac
+"#,
+            closed = closed.display()
+        ),
+    );
+    let stopping = Herdr::new(HerdrConfig {
+        command: wrapper.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+    let mut reopened = None;
+    let result: Result<()> = async {
+        sh(&wt.path, &["push", "-q", "-u", "origin", "HEAD"]).await;
+        std::fs::write(Path::new(&wt.path).join("local"), "unpushed commit")?;
+        sh(&wt.path, &["add", "local"]).await;
+        sh(&wt.path, &["commit", "-q", "-m", "unpushed"]).await;
+        let head = sh(&wt.path, &["rev-parse", "HEAD"]).await;
+        std::fs::write(Path::new(&wt.path).join("local"), "dirty work")?;
+        std::fs::write(Path::new(&wt.path).join("untracked"), "keep me")?;
+        let dirty = sh(&wt.path, &["status", "--porcelain"]).await;
+        stopping.stop_agent(&wt.id, &pane).await?;
+        assert!(closed.exists(), "stop_agent did not take its close fallback");
+        assert!(!h.worktree_exists(&wt.id).await?, "last-pane closure retained the workspace");
+        let id = h.open_worktree(&git.work, &workspace_label("owner/widgets", 711), &wt.path).await?;
+        reopened = Some(id.clone());
+        assert_ne!(id, wt.id);
+        assert!(h.worktree_exists(&id).await?);
+        assert_eq!(sh(&wt.path, &["rev-parse", "HEAD"]).await, head);
+        assert_eq!(sh(&wt.path, &["status", "--porcelain"]).await, dirty);
+        let replacement = h.run_harness(&id, "pwd > replacement-cwd").await?;
+        let marker = Path::new(&wt.path).join("replacement-cwd");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !marker.exists() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(std::fs::read_to_string(marker)?.trim(), wt.path);
+        assert_eq!(std::fs::read_to_string(Path::new(&wt.path).join("local"))?, "dirty work");
+        assert_eq!(std::fs::read_to_string(Path::new(&wt.path).join("untracked"))?, "keep me");
+        eprintln!("actual Herdr stop/close/reopen: {} -> {id}; replacement command in {replacement}; checkout {} retained; synthetic outgoing agent detection", wt.id, wt.path);
+        Ok(())
+    }.await;
+    // Close only the workspaces created by this test. The scratch fixture
+    // removes its own repository after Herdr has released the panes.
+    for id in reopened.iter().chain(std::iter::once(&wt.id)) {
+        if h.worktree_exists(id).await.unwrap_or(false) {
+            let (ws, _) = split_id(id);
+            let _ = h.run(&["workspace", "close", ws]).await;
+        }
+    }
+    result.unwrap();
+}
+
 /// The pending mailbox file for one event sequence, once the daemon has
 /// published it.  The file is named by sequence and content fingerprint, which
 /// only the channel computes, so this finds it the way the bridge does.

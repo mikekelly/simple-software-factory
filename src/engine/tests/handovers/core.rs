@@ -1,5 +1,129 @@
 use super::*;
 
+/// Herdr removes a workspace when stop_agent closes its last pane. The
+/// engine must rebind the existing checkout after stopping, before start.
+#[tokio::test]
+async fn last_pane_handover_reopens_the_retained_checkout_once() {
+    use crate::release::testkit::{scratch, sh};
+    let _sandbox = crate::config::test_support::sandbox();
+    let git = scratch("last-pane-handover").await;
+    let (path, branch) = crate::driver::add_local_worktree(&git.work, "issue-5-keep", None)
+        .await
+        .unwrap();
+    sh(&path, &["push", "-q", "-u", "origin", "HEAD"]).await;
+    std::fs::write(std::path::Path::new(&path).join("unpushed"), "local commit").unwrap();
+    sh(&path, &["add", "unpushed"]).await;
+    sh(&path, &["commit", "-q", "-m", "local only"]).await;
+    let head = sh(&path, &["rev-parse", "HEAD"]).await;
+    std::fs::write(
+        std::path::Path::new(&path).join("unpushed"),
+        "dirty tracked work",
+    )
+    .unwrap();
+    std::fs::write(
+        std::path::Path::new(&path).join("untracked"),
+        "untracked work",
+    )
+    .unwrap();
+    let dirty = sh(&path, &["status", "--porcelain"]).await;
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = repo();
+    e.entry(&r, 5).worktree_path = Some(path.clone());
+    e.entry(&r, 5).branch = Some(branch.clone());
+    d.runs("w5", "claude");
+    seeded(&mut e, 6, None, true);
+    let bound = e.entry(&r, 6);
+    bound.shares_workspace_of = Some(5);
+    bound.worktree_id = Some("w5".into());
+    bound.agent_session_id = Some("sess-5".into());
+    d.with(|s| s.stop_removes_workspace = true);
+    e.handover(
+        "o/r#5",
+        "codex",
+        None,
+        None,
+        Some("Keep the dirty parser work."),
+        None,
+    )
+    .await
+    .unwrap();
+    e.run_handovers(&r).await;
+    let new_id = format!("stub::{path}");
+    let log = d.log();
+    assert_eq!(log.len(), 3, "{log:?}");
+    assert_eq!(log[0], "stop:t5");
+    assert_eq!(log[1], format!("reopen:{new_id}"));
+    assert!(log[2].starts_with(&format!("start:{new_id}:")), "{log:?}");
+    for n in [5, 6] {
+        assert_eq!(e.entry(&r, n).worktree_id.as_deref(), Some(new_id.as_str()));
+        assert!(e.entry(&r, n).agent_session_id.is_none());
+    }
+    let st = e.entry(&r, 5);
+    assert_eq!(st.worktree_path.as_deref(), Some(path.as_str()));
+    assert_eq!(st.branch.as_deref(), Some(branch.as_str()));
+    assert!(st.blocked.is_none());
+    assert!(st.handover_note.is_none(), "the replacement read the note");
+    assert_eq!(st.retired_session_ids, vec!["sess-5"]);
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0].matches("Keep the dirty parser work.").count(), 1);
+    assert!(prompts[0].contains("You took over this issue from a session on Claude Code"));
+    assert_eq!(sh(&path, &["rev-parse", "HEAD"]).await, head);
+    assert_eq!(sh(&path, &["status", "--porcelain"]).await, dirty);
+    assert_eq!(
+        std::fs::read_to_string(std::path::Path::new(&path).join("unpushed")).unwrap(),
+        "dirty tracked work"
+    );
+    assert_eq!(
+        std::fs::read_to_string(std::path::Path::new(&path).join("untracked")).unwrap(),
+        "untracked work"
+    );
+    e.run_handovers(&r).await;
+    assert!(d.log().is_empty(), "no duplicate replacement session");
+    assert!(d.prompts().is_empty(), "the summary is delivered once");
+    d.with(|s| {
+        assert_eq!(s.worktrees.len(), 1);
+        assert_eq!(s.live.len(), 1);
+    });
+}
+
+#[tokio::test]
+async fn last_pane_reopen_failure_keeps_the_outgoing_summary_for_recovery() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    d.runs("w5", "claude");
+    d.with(|s| {
+        s.stop_removes_workspace = true;
+        s.reopen_error = Some("retained checkout could not be opened".into());
+    });
+    e.handover(
+        "o/r#5",
+        "codex",
+        None,
+        None,
+        Some("Do not lose this note."),
+        None,
+    )
+    .await
+    .unwrap();
+    e.run_handovers(&repo()).await;
+    let st = e.entry(&repo(), 5);
+    assert!(st.handover.is_none());
+    assert_eq!(st.overrides.as_ref().unwrap().harness, "codex");
+    let note = st.handover_note.as_ref().unwrap();
+    assert_eq!(note.from, "Claude Code");
+    assert_eq!(note.summary.as_deref(), Some("Do not lose this note."));
+    assert!(st.blocked.is_some());
+    assert!(st.agent_session_id.is_none());
+    assert!(st.terminal_handle.is_none());
+    assert_eq!(st.worktree_path.as_deref(), Some("/w/5"));
+    assert!(d.launches().is_empty());
+    assert!(d.prompts().is_empty());
+    assert_eq!(d.log(), vec!["stop:t5"]);
+}
+
 /// Handing over an item that has no running session is a refusal about the
 /// item — `409` on the web API, not a factory failure — and it names the
 /// command that fits: a first session on the item is `ssf assign`'s.

@@ -158,7 +158,7 @@ pub fn should_start(in_guest: bool, listed: &Result<Option<bool>>) -> bool {
 static ENSURE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Human-readable label; checkout names remain the recovery key.
-fn workspace_label(repo: &str, number: u64) -> String {
+pub(crate) fn workspace_label(repo: &str, number: u64) -> String {
     let name = repo.rsplit('/').next().unwrap_or(repo);
     format!("{name}-{number}")
 }
@@ -935,10 +935,13 @@ impl Herdr {
         })
     }
 
-    /// A workspace on a checkout that already exists: a scratch session's
-    /// plain worktree from when it ran in tmux (#491), moving to a pane
-    /// (#565). Nothing is created or removed on disk.
+    /// A workspace on a checkout that already exists: a retained item
+    /// checkout after its last pane closed, or a scratch session's plain
+    /// worktree moving from tmux (#491, #565). Nothing changes on disk.
     pub async fn open_worktree(&self, repo_root: &str, label: &str, path: &str) -> Result<String> {
+        if !std::path::Path::new(path).is_dir() {
+            bail!("retained checkout {path} is gone; refusing to open another checkout");
+        }
         let ws = self.open(repo_root, path, label).await?;
         Ok(make_id(&ws, path))
     }
@@ -1300,6 +1303,9 @@ impl Herdr {
     /// after a few seconds, close the pane; the workspace keeps its other
     /// panes and `launch` opens a new tab when none is free.
     pub async fn stop_agent(&self, id: &str, pane_id: &str) -> Result<()> {
+        // Closing the last pane can remove its workspace. Callers that
+        // replace the agent must check the workspace again after this
+        // returns and reopen the retained checkout before launching.
         let (ws, _) = split_id(id);
         for _ in 0..2 {
             let _ = self.run(&["pane", "send-keys", pane_id, "ctrl+c"]).await;
