@@ -685,6 +685,9 @@ omitted. A PR alias resolves to the issue session that owns it: its open PRs
 keep the same owner and independent GitHub completion states. Parked sessions
 appear separately from active execution cards, with their blocker and next-action
 owner. `ssf peers` and `ssf status --json` retain the workspace and conversation evidence.
+`ssf doctor` reports parked owners and their PR aliases as intentional parking,
+with the blocker, next-action owner and explicit resume command. Their stopped
+item-activity channels do not count as failures; other health checks still apply.
 
 Parking stops only an agent freshly reported idle, after checking it has no
 approval, trust or sign-in dialog, pending handover/release, or unacknowledged
