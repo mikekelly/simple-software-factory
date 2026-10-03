@@ -704,8 +704,8 @@ also asks the agent to read the issue and its owned PRs before continuing.
 If stopping fails after the hold is saved, the session remains parked; inspect
 the agent and retry parking at an idle boundary before resuming. A failed
 resume keeps the hold and answers no dialogs. A live agent left by a failed resume must be inspected
-and parked again at a safe boundary before another resume. Handover requires
-resuming first. Parking does not relax checked release or purge safeguards.
+and parked again at a safe boundary before another resume. Handover and changing
+the assignment launch stack require resuming first. Parking does not relax checked release or purge safeguards.
 
 This lifecycle writes state format version 2. Older daemons refuse that state;
 follow the documented state-backup rollback procedure when reverting the binary.

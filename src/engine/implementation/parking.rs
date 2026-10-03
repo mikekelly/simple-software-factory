@@ -78,6 +78,18 @@ impl Engine {
                 "the session has an unacknowledged delivery; let it reach a recorded idle boundary first"
             ));
         }
+        let path = st
+            .worktree_path
+            .as_deref()
+            .context("the retained checkout path is missing")?;
+        let branch = git(path, &["symbolic-ref", "--quiet", "HEAD"])
+            .await
+            .context("cannot snapshot the checkout branch at the parking boundary")?;
+        if st.parked.is_some() && st.branch.as_deref() != Some(branch.as_str()) {
+            anyhow::bail!(Refused::conflict(
+                "the checkout branch changed while parked; preserve the original parking boundary before retrying"
+            ));
+        }
         self.capture_sessions(&repo);
         let st = self.entry(&repo, number).clone();
         let stack = st
@@ -108,6 +120,8 @@ impl Engine {
                 "this harness cannot resume its conversation; parking refused"
             ));
         }
+        let old_branch = st.branch.clone();
+        self.entry(&repo, number).branch = Some(branch);
         self.entry(&repo, number).parked = Some(Parked {
             since: st
                 .parked
@@ -122,6 +136,7 @@ impl Engine {
         // leaves ordinary activity unable to relaunch this session.
         if let Err(e) = self.persist() {
             self.entry(&repo, number).parked = st.parked;
+            self.entry(&repo, number).branch = old_branch;
             return Err(e);
         }
         if let Some(handle) = live {

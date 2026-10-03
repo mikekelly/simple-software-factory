@@ -16,6 +16,8 @@ async fn parking_open_created_issue_preserves_wip_and_aliases_until_explicit_res
     )
     .await;
     std::fs::write(Path::new(&git.work).join("dirty"), "still in progress").unwrap();
+    // An agent can rename its delivery branch after the workspace was assigned.
+    sh(&git.work, &["branch", "-m", "acceptance-5"]).await;
     let head = crate::release::git(&git.work, &["rev-parse", "HEAD"])
         .await
         .unwrap();
@@ -112,7 +114,7 @@ async fn parking_open_created_issue_preserves_wip_and_aliases_until_explicit_res
     let resumed = e.resume_parked("o/r#7").await.unwrap();
     assert_eq!(resumed["worktree_path"], git.work);
     assert_eq!(resumed["agent_session_id"], "sess-5");
-    assert_eq!(resumed["branch"], "refs/heads/bot/issue-5");
+    assert_eq!(resumed["branch"], "refs/heads/acceptance-5");
     assert!(e.entry(&r, 5).parked.is_none());
     let launches = d.launches();
     assert!(launches[0].contains("--resume") && launches[0].contains("sess-5"));
@@ -144,6 +146,8 @@ async fn parking_refuses_work_dialogs_handover_missing_conversation_and_pending_
     let stub = GitHubStub::start().await;
     let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
     let r = repo();
+    let git = crate::release::testkit::scratch("parking-refusals").await;
+    e.entry(&r, 5).worktree_path = Some(git.work.clone());
     d.with(|s| {
         s.working.insert("w5".into());
     });
@@ -182,6 +186,7 @@ async fn parking_refuses_work_dialogs_handover_missing_conversation_and_pending_
     assert!(e.entry(&r, 5).parked.is_none());
     std::fs::remove_file(mailbox.join("0001.json")).unwrap();
     e.park("o/r#5", "acceptance", "@alice").await.unwrap();
+    std::fs::remove_dir_all(&git.dir).unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -205,6 +210,14 @@ async fn failed_resume_keeps_the_hold_and_never_recreates_a_missing_checkout() {
             .await
             .is_err()
     );
+    e.entry(&r, 5).active = false;
+    assert!(e.assign("o/r#5", "codex", None, None, None).await.is_err());
+    assert!(
+        stub.assignments().is_empty(),
+        "parked assignment must not mutate GitHub"
+    );
+    assert_eq!(e.entry(&r, 5).agent_session_id.as_deref(), Some("sess-5"));
+    assert!(e.entry(&r, 5).retired_session_ids.is_empty());
     d.with(|s| {
         s.start_error = Some("cannot launch".into());
         s.relaunch_screen = READY_SCREEN.iter().map(|line| line.to_string()).collect();
@@ -241,6 +254,8 @@ async fn parked_pr_completion_is_recorded_without_resuming_its_open_owner() {
     let stub = GitHubStub::start().await;
     let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
     let r = repo();
+    let git = crate::release::testkit::scratch("parked-completion").await;
+    e.entry(&r, 5).worktree_path = Some(git.work.clone());
     e.park("o/r#5", "device acceptance", "@alice")
         .await
         .unwrap();
@@ -262,4 +277,5 @@ async fn parked_pr_completion_is_recorded_without_resuming_its_open_owner() {
         "pending completion evidence must not be marked delivered"
     );
     assert!(d.launches().is_empty());
+    std::fs::remove_dir_all(&git.dir).unwrap();
 }
