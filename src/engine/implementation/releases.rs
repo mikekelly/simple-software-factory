@@ -120,6 +120,9 @@ impl Engine {
     ) -> Result<Delivery> {
         let target = self.owner_of(repo, number);
         let st = self.entry(repo, target).clone();
+        if st.parked.is_some() {
+            return Err(SessionParked(session_id(&repo.name, target)).into());
+        }
         let first_prompt =
             crate::driver::FirstPrompt::for_state(st.seeded, st.first_prompt_attempted);
         if first_prompt == crate::driver::FirstPrompt::Send {

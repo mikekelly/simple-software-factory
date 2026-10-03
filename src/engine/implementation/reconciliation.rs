@@ -275,7 +275,8 @@ impl Engine {
         // it and starts the new one, and bringing the old harness back
         // only to stop it would waste a launch (and a login check).
         let has_workspace = |s: &IssueState| {
-            !s.cleanup_pending
+            s.parked.is_none()
+                && !s.cleanup_pending
                 && !s.release_pending
                 && s.handover.is_none()
                 && s.worktree_id.is_some()

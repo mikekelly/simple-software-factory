@@ -25,6 +25,16 @@ impl Engine {
         let id = session_id(&repo.name, number);
         let harness = harness.trim();
         let st = self.peek(&repo, number).cloned();
+        let recorded = self.owner_of(&repo, number);
+        if self
+            .peek(&repo, recorded)
+            .is_some_and(|s| s.parked.is_some())
+        {
+            anyhow::bail!(Refused::conflict(format!(
+                "{} is parked; explicitly resume its retained session before changing its assignment stack",
+                session_id(&repo.name, recorded)
+            )));
+        }
         // A seat on the item is a refusal and not a silent no-op: an item
         // with a session is `ssf handover`'s to move, and an item whose
         // session is committed elsewhere (a handover or a release on its
@@ -46,7 +56,6 @@ pass has removed the workspace"
         // An item bound to another item's session runs that session's
         // stack (`overrides_of` reads the owner's record), so overrides
         // written here would be inert.
-        let recorded = self.owner_of(&repo, number);
         if recorded != number {
             anyhow::bail!(Refused::conflict(
                 self.bound_refusal(&repo, &id, recorded, harness)

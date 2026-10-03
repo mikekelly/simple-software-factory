@@ -1107,6 +1107,15 @@ impl Herdr {
     /// Enter answers the question and the text is gone -- so the dialog is
     /// answered and the harness waited for again.
     pub async fn settle_harness(&self, pane_id: &str, harness: &str) -> Result<String> {
+        self.settle_harness_with_trust(pane_id, harness, true).await
+    }
+
+    async fn settle_harness_with_trust(
+        &self,
+        pane_id: &str,
+        harness: &str,
+        answer_trust: bool,
+    ) -> Result<String> {
         let deadline = Instant::now() + Duration::from_millis(self.cfg.tui_idle_timeout_ms);
         let mut detected = false;
         while Instant::now() < deadline {
@@ -1139,6 +1148,13 @@ impl Herdr {
                 return Ok(state);
             };
             match settle_step(&state, &text) {
+                Settle::Answer(_) if !answer_trust => {
+                    return Err(AtQuestion {
+                        pane: pane_id.into(),
+                        first: true,
+                    }
+                    .into());
+                }
                 Settle::Answer(answer) => {
                     info!(pane_id, state, "accepting the folder trust dialog");
                     self.answer_trust(pane_id, answer).await?;
@@ -1233,6 +1249,36 @@ impl Herdr {
         let pane = self.run_harness(id, command).await?;
         self.settle_harness(&pane, harness).await?;
         let _ = self.run(&["pane", "rename", &pane, title]).await;
+        Ok(pane)
+    }
+
+    /// Explicit parking resume never answers a dialog or falls back to a
+    /// different conversation. A failed launch leaves its pane for inspection.
+    pub async fn start_parked(
+        &self,
+        id: &str,
+        command: &str,
+        title: &str,
+        harness: &str,
+        text: &str,
+    ) -> Result<String> {
+        let pane = self.run_harness(id, command).await?;
+        self.settle_harness_with_trust(&pane, harness, false)
+            .await?;
+        let screen = self.screen(&pane).await?;
+        if crate::sessions::resume_failed(&screen) {
+            bail!("the parked conversation could not be resumed; no fresh session started");
+        }
+        let screen = screen.join("\n");
+        if screen.trim().is_empty()
+            || driver::blocking_dialog(harness, &screen).is_some()
+            || driver::trust_dialog(&screen).is_some()
+            || self.at_question_now(&pane).await?
+        {
+            return Err(AtQuestion { pane, first: true }.into());
+        }
+        let _ = self.run(&["pane", "rename", &pane, title]).await;
+        self.submit_first_prompt(&pane, text).await?;
         Ok(pane)
     }
 

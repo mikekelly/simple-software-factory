@@ -1141,6 +1141,7 @@ mod invitations;
 mod listings;
 #[path = "login.rs"]
 mod login_tests;
+mod parking;
 mod releases;
 mod scratch;
 mod state;

@@ -588,3 +588,9 @@ request when there is one — the binding by session tag or branch, which is wha
 a delegated pull request has — and otherwise the card of the issue the body
 closes or refs, marked `for #N`. A closed or merged item's page reads **Done**
 and offers no Assign form.
+
+Parked owning sessions are listed separately from active execution cards, with
+their concrete blocker and next-action owner. Their issues and owned PRs keep
+independent GitHub completion states. Resume explicitly with
+`ssf resume --as owner/repo#N`; comments and polling do not reactivate them.
+See [parking an unfinished item](sessions.md#parking-an-unfinished-item).

@@ -139,6 +139,7 @@ struct FactoryView {
     name: String,
     cards: Vec<Value>,
     monitored_items: Vec<Value>,
+    parked: Vec<Value>,
     warning: Option<String>,
     error: Option<String>,
     received: Option<Instant>,
@@ -151,6 +152,7 @@ impl FactoryView {
             route,
             cards: Vec::new(),
             monitored_items: Vec::new(),
+            parked: Vec::new(),
             warning: None,
             error: None,
             received: None,
@@ -256,6 +258,7 @@ impl View {
             .as_array()
             .cloned()
             .unwrap_or_default();
+        factory.parked = dashboard["parked"].as_array().cloned().unwrap_or_default();
         let hostname = payload["server"]["hostname"].as_str().unwrap_or_default();
         let vm = payload["host_vm"]["name"].as_str().unwrap_or_default();
         let reported = match (hostname.is_empty(), vm.is_empty()) {
@@ -563,6 +566,14 @@ fn render_compact(frame: &mut Frame<'_>, area: Rect, view: &mut View) {
             )));
             global += 1;
         }
+        for parked in &factory.parked {
+            lines.push(Line::from(format!(
+                "  parked: {} · {} · next action: {}",
+                clean(text(parked, "owner")),
+                clean(text(&parked["parked"], "blocker")),
+                clean(text(&parked["parked"], "next_action_owner"))
+            )));
+        }
         if !factory.monitored_items.is_empty() {
             lines.push(Line::from(format!(
                 "  monitored without agent: {}",
@@ -697,6 +708,26 @@ fn render(frame: &mut Frame<'_>, view: &mut View) {
                 view.hitboxes.push((cell, index));
             }
             y += card_height + 1;
+        }
+        for parked in &factory.parked {
+            if y >= bottom {
+                break;
+            }
+            let label = format!(
+                "Parked  {} · {} · next action: {}",
+                clean(text(parked, "owner")),
+                clean(text(&parked["parked"], "blocker")),
+                clean(text(&parked["parked"], "next_action_owner"))
+            );
+            let height = UnicodeWidthStr::width(label.as_str())
+                .div_ceil(usize::from(content.width.max(1)))
+                .max(1)
+                .min(usize::from(bottom - y)) as u16;
+            frame.render_widget(
+                Paragraph::new(label).wrap(Wrap { trim: true }),
+                Rect::new(content.x, y, content.width, height),
+            );
+            y += height;
         }
         if !factory.monitored_items.is_empty() && y < bottom {
             let items = factory

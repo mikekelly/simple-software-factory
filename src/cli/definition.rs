@@ -189,6 +189,25 @@ pub(super) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Park an idle owning session without completing GitHub items or deleting work.
+    Park {
+        /// Act on an issue or its owning session through a PR alias.
+        #[arg(long = "as", value_name = "SESSION")]
+        r#as: Option<String>,
+        #[arg(long)]
+        blocker: String,
+        #[arg(long)]
+        next_action_owner: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Resume a parked session in its retained checkout and conversation.
+    Resume {
+        #[arg(long = "as", value_name = "SESSION")]
+        r#as: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Give a session's workspace back once everything is on origin: the
     /// daemon checks the tree is clean, every commit at HEAD is reachable from
     /// a remote-tracking ref and no stash was made on the branch, and refuses

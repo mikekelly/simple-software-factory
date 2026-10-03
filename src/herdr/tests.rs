@@ -2347,3 +2347,29 @@ fn framed_messages_are_identified_on_screen() {
     // The follow-up is short enough to show whole.
     assert!(prompt_on_screen(&format!("❯ {followup}"), &followup));
 }
+
+/// Explicit parking resume must leave even a recognized trust dialog for
+/// the person, rather than inherit the normal launcher's automatic answer.
+#[tokio::test]
+async fn parking_resume_does_not_answer_a_known_trust_dialog() {
+    let (base, h) = question_herdr("parking-trust", 100);
+    let fake = base.join("herdr");
+    let script = std::fs::read_to_string(&fake).unwrap().replace(
+        "Choose the text style that looks best",
+        "Do you trust the contents of this directory?",
+    );
+    crate::test_support::write_executable(&fake, script);
+    let err = h
+        .settle_harness_with_trust("w7:p1", "codex", false)
+        .await
+        .unwrap_err();
+    assert!(at_question(&err).is_some());
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(
+        !calls.contains("send-keys")
+            && !calls.contains("send-text")
+            && !calls.contains("agent prompt"),
+        "{calls}"
+    );
+    std::fs::remove_dir_all(base).unwrap();
+}
