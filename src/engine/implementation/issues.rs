@@ -455,6 +455,20 @@ impl Engine {
             e.triggers = triggers.clone();
             st.triggers = triggers.clone();
         }
+        let acting = self.owner_of(repo, issue.number);
+        if self.peek(repo, acting).is_some_and(|s| s.parked.is_some()) {
+            // Completion evidence is still current while delivery watermarks
+            // stay untouched for explicit resumption.
+            let e = self.entry(repo, issue.number);
+            e.title = issue.title.clone();
+            e.github_state = Some(github_state(issue, pr.as_ref().or(e.pr.as_ref()), false));
+            if pr.is_some() {
+                e.pr = pr;
+            }
+            e.triggers = triggers;
+            e.active = issue.state != "closed";
+            return Ok(());
+        }
         match existing {
             Some(st) if st.seeded && !st.active => {
                 self.reactivate(repo, owner, name, issue, st).await?

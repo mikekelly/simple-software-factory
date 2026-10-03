@@ -1138,6 +1138,7 @@ impl Engine {
         } else {
             None
         };
+        let parked = self.peek(repo, session).is_some_and(|s| s.parked.is_some());
         let shared = st.shares_workspace_of.is_some();
         // The workspace is done with only when nothing bound to this session
         // is still open.
@@ -1157,8 +1158,14 @@ impl Engine {
         e.retirement_announced = false;
         e.title = issue.title.clone();
         e.github_state = Some(github_state(&issue, st.pr.as_ref(), merged));
-        e.updated_at = Some(issue.updated_at.clone());
-        e.replace_seen(diff.seen);
+        e.updated_at = if parked {
+            None
+        } else {
+            Some(issue.updated_at.clone())
+        };
+        if !parked {
+            e.replace_seen(diff.seen);
+        }
         e.retired_at = Some(now_iso());
         e.cleanup_pending = false;
         if handle.is_some() {

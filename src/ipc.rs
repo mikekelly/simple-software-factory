@@ -81,8 +81,17 @@ pub enum Request {
         from: String,
         target: String,
     },
-    /// Remove the workspace of `session` (`owner/repo#N`) once the checks
-    /// in `crate::release` pass; `force` skips them.
+    /// Hold the owning session at an idle boundary without completing its item.
+    Park {
+        session: String,
+        blocker: String,
+        next_action_owner: String,
+    },
+    /// Explicitly resume the parked owner in its retained checkout and conversation.
+    Resume {
+        session: String,
+    },
+    /// Remove the workspace once release checks pass; `force` skips them.
     Release {
         session: String,
         force: bool,

@@ -15,7 +15,7 @@ use tracing::info;
 /// misread what this one writes: an older ssf refuses a file whose version
 /// it does not know rather than overwrite it with its own idea of the
 /// format, and a file written before versions existed reads as 0.
-pub const STATE_VERSION: u32 = 1;
+pub const STATE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct State {
@@ -216,8 +216,21 @@ impl std::fmt::Display for Events {
     }
 }
 
+/// Why an owning session is off, and who has its next action. The launch stack
+/// is retained so a config change cannot resume a different harness's conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Parked {
+    pub since: String,
+    pub blocker: String,
+    pub next_action_owner: String,
+    pub stack: Overrides,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IssueState {
+    /// Explicit execution hold, independent of GitHub completion. Only resume clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked: Option<Parked>,
     pub number: u64,
     #[serde(default)]
     pub title: String,
@@ -487,6 +500,7 @@ impl IssueState {
             && self.retired_at.is_some()
             && self.released_at.is_some()
             && self.worktree_id.is_none()
+            && self.parked.is_none()
             && !self.release_pending
             && !self.cleanup_pending
             && !self.first_prompt_attempted
@@ -545,6 +559,7 @@ impl IssueState {
             && self.subscribers.is_empty()
             && self.worktree_id.is_none()
             && !self.cleanup_pending
+            && self.parked.is_none()
             && !self.release_pending
             && self.handover.is_none()
             && self.handover_note.is_none()

@@ -169,10 +169,20 @@ fn state_not_saved(e: &anyhow::Error) -> bool {
 /// take one.  Nothing is lost in any of those, so the item keeps its place,
 /// its events stay un-seen, and the next pass tries again.
 fn is_held(e: &anyhow::Error) -> bool {
-    is_blocked(e)
+    e.is::<SessionParked>()
+        || is_blocked(e)
         || crate::delivery_channel::hold(e).is_some()
         || crate::herdr::at_question(e).is_some()
 }
+
+#[derive(Debug)]
+struct SessionParked(String);
+impl std::fmt::Display for SessionParked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is parked; explicit ssf resume is required", self.0)
+    }
+}
+impl std::error::Error for SessionParked {}
 
 pub struct Engine {
     cfg: Config,
@@ -449,6 +459,7 @@ mod implementation {
     mod issues;
     mod lifecycle;
     mod onboarding;
+    mod parking;
     mod reconciliation;
     pub(super) mod releases;
     pub(super) mod scratch;

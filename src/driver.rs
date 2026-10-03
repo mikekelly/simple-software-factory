@@ -781,6 +781,25 @@ impl Driver {
         }
     }
 
+    /// Resume a parked conversation without answering dialogs or starting fresh.
+    pub async fn start_parked(
+        &self,
+        worktree_id: &str,
+        command: &str,
+        title: &str,
+        harness: &str,
+        text: &str,
+    ) -> Result<String> {
+        match self {
+            Driver::Herdr(d) => {
+                d.start_parked(worktree_id, command, title, harness, text)
+                    .await
+            }
+            #[cfg(test)]
+            Driver::Stub(d) => d.start(worktree_id, command, harness, text),
+        }
+    }
+
     /// Whether the workspace still exists.
     pub async fn worktree_exists(&self, worktree_id: &str) -> Result<bool> {
         match self {

@@ -60,6 +60,18 @@ impl Engine {
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::refused(&e),
             },
+            Request::Park {
+                session,
+                blocker,
+                next_action_owner,
+            } => match self.park(&session, &blocker, &next_action_owner).await {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::refused(&e),
+            },
+            Request::Resume { session } => match self.resume_parked(&session).await {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::refused(&e),
+            },
             Request::Release { session, force } => match self.release(&session, force).await {
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::refused(&e),

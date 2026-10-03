@@ -18,6 +18,8 @@ const cardsNode = document.querySelector("#cards");
 const emptyNode = document.querySelector("#empty");
 const noticeNode = document.querySelector("#notice");
 const statusNode = document.querySelector("#refresh-status");
+const parkedNode = document.querySelector("#parked");
+const mountedParked = new Map();
 const monitoredNode = document.querySelector("#monitored");
 const refreshButton = document.querySelector("#refresh");
 const template = document.querySelector("#card-template");
@@ -269,6 +271,16 @@ async function refresh() {
     terminalInput = body.terminal_input === true;
     fill(buildNode, body.build || "");
     render(body.cards, body.monitored_items || []);
+    const parked = body.parked || [];
+    place(parkedNode.querySelector("ul"), parked.map((session) => {
+      let row = mountedParked.get(session.owner);
+      if (!row) { row = document.createElement("li"); mountedParked.set(session.owner, row); }
+      const items = [session.origin, ...(session.additional || [])].map((item) => `${item.id} (${item.github_state || "unknown"})`).join(", ");
+      fill(row, `${items} — ${session.parked.blocker} · next action: ${session.parked.next_action_owner} · resume: ssf resume --as ${session.owner}`);
+      return row;
+    }));
+    forget(mountedParked, new Set(parked.map((session) => session.owner)));
+    show(parkedNode, parked.length !== 0);
     if (body.warning) show(emptyNode, false);
     fill(noticeNode, body.warning ? `Status may be incomplete: ${body.warning}` : "");
     show(noticeNode, Boolean(body.warning));

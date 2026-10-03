@@ -30,6 +30,8 @@ pub fn session_id(repo: &str, number: u64) -> String {
 /// One tracked item and the agent session working on it.
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parked: Option<crate::state::Parked>,
     pub id: String,
     pub repo: String,
     /// The item's number; 0 for a scratch session, which has none.
@@ -666,6 +668,7 @@ pub fn sessions_with(
                 ws,
                 workspaces.is_some(),
             );
+            row.parked = source.parked.clone();
             row.pane_input = cfg.item_pane_input(repo);
             // The branch the agent pushed, as its pull request names it,
             // wins over the one ssf assigned the workspace (#660).
@@ -941,6 +944,7 @@ fn join(
         })
     });
     Session {
+        parked: item.parked.clone(),
         scratch_state: None,
         id: session_id(&repo.name, item.number),
         repo: repo.name.clone(),
@@ -1090,6 +1094,12 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
             marker
         ));
         let mut facts: Vec<String> = Vec::new();
+        if let Some(p) = &s.parked {
+            facts.push(format!(
+                "parked: {} (next action: {}; explicit resume required)",
+                p.blocker, p.next_action_owner
+            ));
+        }
         if let Some(b) = &s.branch {
             facts.push(format!("branch {b}"));
         }
@@ -1474,6 +1484,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
         .iter()
         .filter(|row| {
             (row["active"] == true || row["agent_live"] == true)
+                && row["parked"].is_null()
                 && row["subscriber_only"] != true
                 && !text(row, "owner").is_empty()
         })
@@ -1607,6 +1618,13 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
     };
     // Every scratch session, the killed ones included: a killed one has no
     // card, and a client offers its Resume from here (#414).
+    let parked: Vec<Value> = rows.iter()
+        .filter(|row| !row["parked"].is_null() && text(row, "id") == text(row, "owner"))
+        .map(|row| json!({"owner":row["id"], "origin":issue(row, text(row,"id")),
+            "parked":row["parked"], "worktree_path":row["worktree_path"], "branch":row["branch"],
+            "agent_session_id":row["agent_session_id"], "agent_live":row["agent_live"],
+            "additional":rows.iter().filter(|alias| text(alias,"owner") == text(row,"id") && text(alias,"id") != text(row,"id")).map(|alias| issue(alias,text(row,"id"))).collect::<Vec<_>>()}))
+        .collect();
     let scratch: Vec<Value> = rows
         .iter()
         .filter(|row| text(row, "kind") == "scratch")
@@ -1649,7 +1667,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
         })
         .collect();
     Ok(
-        json!({"cards":cards,"monitored_items":unattached,"scratch":scratch,"blocked":blocked,"released":released,"last_error":payload["last_error"],"doctor":payload["doctor"],"host":payload["host"],"repositories":watched_repositories(payload),"repository_projects":repository_projects(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
+        json!({"cards":cards,"parked":parked,"monitored_items":unattached,"scratch":scratch,"blocked":blocked,"released":released,"last_error":payload["last_error"],"doctor":payload["doctor"],"host":payload["host"],"repositories":watched_repositories(payload),"repository_projects":repository_projects(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
     )
 }
 

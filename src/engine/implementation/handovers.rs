@@ -20,6 +20,11 @@ create another on the stack you want (`ssf scratch create`)"
         }
         let (repo, number, id) = self.known_session(session)?;
         let st = self.entry(&repo, number).clone();
+        if st.parked.is_some() {
+            anyhow::bail!(Refused::conflict(format!(
+                "{id} is parked; resume it before handover"
+            )));
+        }
         if !st.active || st.worktree_id.is_none() {
             anyhow::bail!(Refused::conflict(format!(
                 "{id}: the item has no running session; nothing to hand over (start its first \

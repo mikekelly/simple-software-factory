@@ -112,6 +112,8 @@ pub(super) fn forwarded_name(cmd: &Command) -> Option<&'static str> {
         Command::Sub { .. } => "sub",
         Command::Unsub { .. } => "unsub",
         Command::Subs { .. } => "subs",
+        Command::Park { .. } => "park",
+        Command::Resume { .. } => "resume",
         Command::Release { .. } => "release",
         Command::Handover { .. } => "handover",
         Command::Assign { .. } => "assign",

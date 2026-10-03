@@ -669,3 +669,43 @@ the resumed one exits at once), ssf waits for it to settle (answering a folder
 trust prompt), and nothing is pasted to announce the start. The person at the
 terminal gives the next prompt; a message that found it gone is pasted alone,
 as it would have been into a running session.
+
+## Parking an unfinished item
+
+When acceptance, a dependency or a person's next action is pending, park the
+owning session without completing the GitHub issue or deleting its work:
+
+```sh
+ssf park --as owner/repo#123 --blocker "Device acceptance pending after source PR merged" --next-action-owner @alice
+ssf resume --as owner/repo#123
+```
+
+Both commands support `--json`. Inside an owning agent session, `--as` may be
+omitted. A PR alias resolves to the issue session that owns it: its open PRs
+keep the same owner and independent GitHub completion states. Parked sessions
+appear separately from active execution cards, with their blocker and next-action
+owner. `ssf peers` and `ssf status --json` retain the workspace and conversation evidence.
+
+Parking stops only an agent freshly reported idle, after checking it has no
+approval, trust or sign-in dialog, pending handover/release, or unacknowledged
+mailbox delivery. Working, blocked and unknown agents are refused; reach an
+idle safe boundary first. There is no force option and parking answers no
+dialogs. A missing resumable conversation also refuses parking.
+
+The checkout, branch, dirty files, unpublished commits, stash and conversation
+stay in place. Comments, polling, assignments and daemon restart never clear the
+hold. Only explicit `ssf resume` starts the original conversation in the exact
+retained checkout, using its parked launch stack; it refuses if that checkout
+is missing and never recreates work on a different base branch. Open-item activity held
+while parked remains pending for delivery after resume. Closure and merge evidence
+are recorded while the owner remains parked. The resume message
+also asks the agent to read the issue and its owned PRs before continuing.
+
+If stopping fails after the hold is saved, the session remains parked; inspect
+the agent and retry parking at an idle boundary before resuming. A failed
+resume keeps the hold and answers no dialogs. A live agent left by a failed resume must be inspected
+and parked again at a safe boundary before another resume. Handover requires
+resuming first. Parking does not relax checked release or purge safeguards.
+
+This lifecycle writes state format version 2. Older daemons refuse that state;
+follow the documented state-backup rollback procedure when reverting the binary.

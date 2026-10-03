@@ -101,3 +101,10 @@ doctor` checkpoints; run them.
     checkout remotes itself. `ssf doctor` verifies the reconciliation.
 14. **On any conflict between two states, stop**, preserve both versions
     and have the person choose; never guess or discard state.
+
+An unfinished issue can be parked at a confirmed idle boundary with
+`ssf park --blocker "pending acceptance" --next-action-owner @person`.
+It keeps its owned PRs, checkout, branch, stash and conversation; GitHub items
+stay open. Ordinary activity never resumes it. A person explicitly runs
+`ssf resume --as owner/repo#N` when the next action is ready. See
+[session parking](sessions.md#parking-an-unfinished-item).

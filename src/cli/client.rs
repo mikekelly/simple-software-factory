@@ -1034,6 +1034,13 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         } => sub(&item, r#as.as_deref(), json, true, events.as_deref()).await,
         Command::Unsub { item, r#as, json } => sub(&item, r#as.as_deref(), json, false, None).await,
         Command::Subs { r#as, json } => subs(r#as.as_deref(), json),
+        Command::Park {
+            r#as,
+            blocker,
+            next_action_owner,
+            json,
+        } => park_resume(r#as.as_deref(), Some((blocker, next_action_owner)), json).await,
+        Command::Resume { r#as, json } => park_resume(r#as.as_deref(), None, json).await,
         Command::Release {
             item,
             r#as,

@@ -983,3 +983,40 @@ pub(super) async fn scratch(command: super::ScratchCommand) -> Result<()> {
         }
     }
 }
+
+/// Explicit execution lifecycle commands, resolved through the daemon's owner map.
+pub(super) async fn park_resume(
+    as_: Option<&str>,
+    park: Option<(String, String)>,
+    json: bool,
+) -> Result<()> {
+    let session = session_identity(as_)?
+        .map(|(id, _)| id)
+        .context("name the session with --as owner/repo#N")?;
+    let req = match park {
+        Some((blocker, next_action_owner)) => ipc::Request::Park {
+            session,
+            blocker,
+            next_action_owner,
+        },
+        None => ipc::Request::Resume { session },
+    };
+    let v = ipc::call(&req).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+    } else if let Some(parked) = v.get("parked").filter(|v| v.is_object()) {
+        println!(
+            "{}: parked; {} (next action: {}). Resume explicitly with ssf resume --as {}.",
+            v["session"].as_str().unwrap_or(""),
+            parked["blocker"].as_str().unwrap_or(""),
+            parked["next_action_owner"].as_str().unwrap_or(""),
+            v["session"].as_str().unwrap_or("")
+        );
+    } else {
+        println!(
+            "{}: resumed in its retained workspace and conversation.",
+            v["session"].as_str().unwrap_or("")
+        );
+    }
+    Ok(())
+}
