@@ -56,6 +56,39 @@ fn report_json(problems: usize, checks: Vec<Value>) -> Value {
     json!({"problems": problems, "checks": checks})
 }
 
+enum ItemActivity<'a> {
+    Parked(u64, &'a crate::state::Parked),
+    Probe,
+    Skip,
+}
+
+fn item_activity<'a>(
+    repo: &'a crate::state::RepoState,
+    session: &crate::state::IssueState,
+) -> ItemActivity<'a> {
+    let owner = crate::state::owner_in(&repo.issues, session.number);
+    if let Some(parked) = repo.issues.get(&owner).and_then(|s| s.parked.as_ref()) {
+        return ItemActivity::Parked(owner, parked);
+    }
+    if session.active && session.shares_workspace_of.is_none() && session.worktree_id.is_some() {
+        ItemActivity::Probe
+    } else {
+        ItemActivity::Skip
+    }
+}
+
+fn parked_activity_message(
+    repo: &str,
+    number: u64,
+    owner: u64,
+    parked: &crate::state::Parked,
+) -> String {
+    format!(
+        "{repo}#{number}: item-activity intentionally parked with owner {repo}#{owner}; blocker: {}; next action: {}; explicit resume: ssf resume --as {repo}#{owner}",
+        parked.blocker, parked.next_action_owner
+    )
+}
+
 pub(super) async fn doctor(json_out: bool, ack_untagged: bool) -> Result<()> {
     JSON_MODE.store(json_out, std::sync::atomic::Ordering::Relaxed);
     let problems = std::cell::Cell::new(0);
@@ -549,11 +582,18 @@ pub(super) async fn doctor(json_out: bool, ack_untagged: bool) -> Result<()> {
             );
         }
         if let Some(repo_state) = state.repos.get(&r.name) {
-            for session in repo_state.issues.values().filter(|session| {
-                session.active
-                    && session.shares_workspace_of.is_none()
-                    && session.worktree_id.is_some()
-            }) {
+            for session in repo_state.issues.values() {
+                match item_activity(repo_state, session) {
+                    ItemActivity::Parked(owner, parked) => {
+                        record(
+                            Level::Note,
+                            parked_activity_message(&r.name, session.number, owner, parked),
+                        );
+                        continue;
+                    }
+                    ItemActivity::Skip => continue,
+                    ItemActivity::Probe => {}
+                }
                 let harness = session
                     .overrides
                     .as_ref()
@@ -1396,6 +1436,87 @@ pub(super) fn which(bin: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+
+    #[test]
+    fn parked_item_activity_reports_owner_and_alias_context_without_a_pane() {
+        use crate::state::{IssueState, Overrides, Parked, RepoState};
+
+        let mut repo = RepoState::default();
+        repo.issues.insert(
+            384,
+            IssueState {
+                number: 384,
+                active: true,
+                worktree_id: Some("preserved-checkout".into()),
+                terminal_handle: None,
+                parked: Some(Parked {
+                    since: "2026-10-03T21:00:00Z".into(),
+                    blocker: "Device acceptance pending".into(),
+                    next_action_owner: "@alice".into(),
+                    stack: Overrides {
+                        harness: "codex".into(),
+                        model: None,
+                        effort: None,
+                    },
+                }),
+                ..Default::default()
+            },
+        );
+        // An alias need not have an active flag, workspace or pane of its own.
+        repo.issues.insert(
+            517,
+            IssueState {
+                number: 517,
+                shares_workspace_of: Some(384),
+                ..Default::default()
+            },
+        );
+        for number in [384, 517] {
+            let ItemActivity::Parked(owner, parked) = item_activity(&repo, &repo.issues[&number])
+            else {
+                panic!("parked item {number} must not probe a missing pane");
+            };
+            assert_eq!(owner, 384);
+            let message = parked_activity_message("acme/widgets", number, owner, parked);
+            assert!(message.contains(&format!("acme/widgets#{number}:")));
+            assert!(message.contains("intentionally parked with owner acme/widgets#384"));
+            assert!(message.contains("Device acceptance pending"));
+            assert!(message.contains("next action: @alice"));
+            assert!(message.contains("ssf resume --as acme/widgets#384"));
+            assert_eq!(check_json(Level::Note, &message)["level"], "note");
+        }
+
+        repo.issues.get_mut(&384).unwrap().parked = None;
+        assert!(matches!(
+            item_activity(&repo, &repo.issues[&384]),
+            ItemActivity::Probe
+        ));
+        assert!(matches!(
+            item_activity(&repo, &repo.issues[&517]),
+            ItemActivity::Skip
+        ));
+    }
+
+    #[test]
+    fn unparked_active_item_activity_still_probes_an_unavailable_channel() {
+        use crate::state::{IssueState, RepoState};
+
+        let mut repo = RepoState::default();
+        repo.issues.insert(
+            381,
+            IssueState {
+                number: 381,
+                active: true,
+                worktree_id: Some("live-checkout".into()),
+                terminal_handle: None,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            item_activity(&repo, &repo.issues[&381]),
+            ItemActivity::Probe
+        ));
+    }
 
     #[test]
     fn json_report_has_problems_and_leveled_checks() {
